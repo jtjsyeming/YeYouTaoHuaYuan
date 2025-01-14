@@ -1,0 +1,53 @@
+﻿@page "/loveTime"
+
+<h1>爱情计时器</h1>
+
+<div class="timer">我们相识已经过去了：@meetElapsedTime</div>
+<div class="timer">我们相爱已经过去了：@loveElapsedTime</div>
+<div class="timer">我们步入婚姻已经过去了：@marriedElapsedTime</div>
+
+<h2>输入你的时间节点和想要计算的类型</h2>
+
+@code {
+    private string loveElapsedTime = string.Empty;
+    private string loveElapsedTimeDay = string.Empty;
+    private string loveElapsedTimeMonths = string.Empty;
+    private string loveElapsedTimeYear = string.Empty;
+    private string meetElapsedTime = string.Empty;
+    private string meetElapsedTimeDay = string.Empty;
+    private string meetElapsedTimeMonths = string.Empty;
+    private string meetElapsedTimeYear = string.Empty;
+    private string marriedElapsedTime = string.Empty;
+    private string marriedElapsedTimeDay = string.Empty;
+    private string marriedElapsedTimeMonths = string.Empty;
+    private string marriedElapsedTimeYear = string.Empty;
+
+    protected override void OnInitialized()
+    {
+        CalculateElapsedTime(new DateTime(2018, 4, 22), "love");
+        CalculateElapsedTime(new DateTime(2022, 2, 25), "meet");
+        CalculateElapsedTime(new DateTime(2023, 8, 8), "married");
+    }
+
+    protected override void OnParametersSet()
+    {
+        base.OnParametersSet();
+    }
+
+    private void CalculateElapsedTime(DateTime pastDate, string type)
+    {
+        var elapsed = DateTime.Now - pastDate;
+        switch (type)
+        {
+            case "love":
+                loveElapsedTime = $"{elapsed.Days} 天, {elapsed.Hours} 小时, {elapsed.Minutes} 分钟, {elapsed.Seconds} 秒";
+                break;
+            case "meet":
+                meetElapsedTime = $"{elapsed.Days} 天, {elapsed.Hours} 小时, {elapsed.Minutes} 分钟, {elapsed.Seconds} 秒";
+                break;
+            case "married":
+                marriedElapsedTime = $"{elapsed.Days} 天, {elapsed.Hours} 小时, {elapsed.Minutes} 分钟, {elapsed.Seconds} 秒";
+                break;
+        }
+    }
+}

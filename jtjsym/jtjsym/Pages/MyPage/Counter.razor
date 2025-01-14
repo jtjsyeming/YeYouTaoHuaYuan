@@ -1,0 +1,61 @@
+﻿@page "/counter"
+@using Microsoft.FluentUI.AspNetCore.Components
+
+<PageTitle>按下试试</PageTitle>
+
+<h1>按下试试</h1>
+
+<p role="status">次数: @knockCount</p>
+
+<style>
+    .btn-primary {
+        width: 48px;
+        height: 48px;
+        background-image: url('Images/counter.gif'); /* 木鱼图片路径 */
+        background-size: cover;
+        background-position: center;
+        background-repeat: no-repeat;
+        border: none;
+        border-radius: 50%; /* 让按钮变成圆形 */
+        cursor: pointer;
+        outline: none;
+        transition: transform 0.1s ease; /* 点击效果过渡 */
+    }
+
+    .btn-primary:active {
+            transform: scale(1.1); /* 点击时放大 */
+        }
+</style>
+
+@if (ShowImage)
+{
+    <FluentIcon Value="@(Icon.FromImageUrl("Images/counter.gif"))" Width="24px" />
+}
+
+<FluentButton IconEnd="@(new Icons.Filled.Size48.AnimalPawPrint().WithColor("#e48bfa"))" class=" btn-primary" @onclick="KnockWoodenFish" @onmouseout="StopKnocking"> </FluentButton>
+
+@if (ShowImage)
+{
+    <FluentIcon Value="@(Icon.FromImageUrl("Images/counter.gif"))" Width="24px" />
+}
+
+@code {
+    private int knockCount = 0;
+    private bool ShowImage { get; set; } = false;
+
+    private void KnockWoodenFish()
+    {
+        ShowImage = true;
+        IncrementKnock();
+    }
+
+    private void StopKnocking()
+    {
+        ShowImage = false;
+    }
+
+    private void IncrementKnock()
+    {
+        knockCount++;
+    }
+}
