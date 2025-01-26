@@ -1,53 +1,140 @@
-﻿@page "/loveTime"
+@page "/loveTime"
 
 <h1>爱情计时器</h1>
 
-<div class="timer">我们相识已经过去了：@meetElapsedTime</div>
-<div class="timer">我们相爱已经过去了：@loveElapsedTime</div>
-<div class="timer">我们步入婚姻已经过去了：@marriedElapsedTime</div>
+<div class="timer">我们相识已经过去了：@elapsedTimes["meet"].ElapsedTime</div>
+<div class="timer">我们相爱已经过去了：@elapsedTimes["love"].ElapsedTime</div>
+<div class="timer">我们步入婚姻已经过去了：@elapsedTimes["married"].ElapsedTime</div>
 
 <h2>输入你的时间节点和想要计算的类型</h2>
 
+
+@using System.Globalization
+@inject IJSRuntime JSRuntime
+
+<h3>爱情计时器</h3>
+<FluentSelect TOption="string"
+			  Label="年份"
+			  ValueChanged="@(EventCallback.Factory.Create<string>(this, v => selectedYear = v))"
+			  Value="selectedYear"
+			  class="custom-select"
+			  Width="200px"
+			  Height="250px">
+	@foreach (var year in years)
+	{
+		<FluentOption TOption="string" Value="@year">@year</FluentOption>
+	}
+</FluentSelect>
+
+<FluentSelect TOption="string"
+			  Label="月份"
+			  ValueChanged="@(EventCallback.Factory.Create<string>(this, v => selectedMonth = v))"
+			  Value="selectedMonth"
+			  class="custom-select"
+			  Width="200px"
+			  Height="250px">
+	@foreach (var month in months)
+	{
+		<FluentOption TOption="string" Value="@month">@month</FluentOption>
+	}
+</FluentSelect>
+
+<FluentSelect TOption="string"
+			  Label="日期"
+			  ValueChanged="@(EventCallback.Factory.Create<string>(this, v => selectedDay = v))"
+			  Value="selectedDay"
+			  class="custom-select"
+			  Width="200px"
+			  Height="250px">
+	@foreach (var day in days)
+	{
+		<FluentOption TOption="string" Value="@day">@day</FluentOption>
+	}
+</FluentSelect>
+
+<FluentCard>
+	<FluentButton OnClick="@(() => CalculateElapsedTime("meet"))">计算相识时间</FluentButton>
+	<FluentButton OnClick="@(() => CalculateElapsedTime("love"))">计算恋爱时间</FluentButton>
+	<FluentButton OnClick="@(() => CalculateElapsedTime("married"))">计算结婚时间</FluentButton>
+</FluentCard>
+
+
 @code {
-    private string loveElapsedTime = string.Empty;
-    private string loveElapsedTimeDay = string.Empty;
-    private string loveElapsedTimeMonths = string.Empty;
-    private string loveElapsedTimeYear = string.Empty;
-    private string meetElapsedTime = string.Empty;
-    private string meetElapsedTimeDay = string.Empty;
-    private string meetElapsedTimeMonths = string.Empty;
-    private string meetElapsedTimeYear = string.Empty;
-    private string marriedElapsedTime = string.Empty;
-    private string marriedElapsedTimeDay = string.Empty;
-    private string marriedElapsedTimeMonths = string.Empty;
-    private string marriedElapsedTimeYear = string.Empty;
+	private class ElapsedTimeInfo
+	{
+		public string ElapsedTime { get; set; } = string.Empty;
+		public string ElapsedTimeDay { get; set; } = string.Empty;
+		public string ElapsedTimeMonths { get; set; } = string.Empty;
+		public string ElapsedTimeYear { get; set; } = string.Empty;
+	}
 
-    protected override void OnInitialized()
-    {
-        CalculateElapsedTime(new DateTime(2018, 4, 22), "love");
-        CalculateElapsedTime(new DateTime(2022, 2, 25), "meet");
-        CalculateElapsedTime(new DateTime(2023, 8, 8), "married");
-    }
+	private Dictionary<string, ElapsedTimeInfo> elapsedTimes = new()
+	{
+		{ "love", new ElapsedTimeInfo() },
+		{ "meet", new ElapsedTimeInfo() },
+		{ "married", new ElapsedTimeInfo() }
+	};
 
-    protected override void OnParametersSet()
-    {
-        base.OnParametersSet();
-    }
+	private List<string> years = Enumerable.Range(1950, DateTime.Now.Year - 1949).Select(y => y.ToString()).ToList();
+	private List<string> months = Enumerable.Range(1, 12).Select(m => m.ToString()).ToList();
+	private List<string> days = Enumerable.Range(1, 31).Select(d => d.ToString()).ToList();
 
-    private void CalculateElapsedTime(DateTime pastDate, string type)
-    {
-        var elapsed = DateTime.Now - pastDate;
-        switch (type)
-        {
-            case "love":
-                loveElapsedTime = $"{elapsed.Days} 天, {elapsed.Hours} 小时, {elapsed.Minutes} 分钟, {elapsed.Seconds} 秒";
-                break;
-            case "meet":
-                meetElapsedTime = $"{elapsed.Days} 天, {elapsed.Hours} 小时, {elapsed.Minutes} 分钟, {elapsed.Seconds} 秒";
-                break;
-            case "married":
-                marriedElapsedTime = $"{elapsed.Days} 天, {elapsed.Hours} 小时, {elapsed.Minutes} 分钟, {elapsed.Seconds} 秒";
-                break;
-        }
-    }
+	private string selectedYear = string.Empty;
+	private string selectedMonth = string.Empty;
+	private string selectedDay = string.Empty;
+
+	private readonly Dictionary<string, DateTime> timePoints = new()
+	{
+		{ "love", new DateTime(2018, 4, 22) },
+		{ "meet", new DateTime(2022, 2, 25) },
+		{ "married", new DateTime(2023, 8, 8) }
+	};
+
+	protected override void OnInitialized()
+	{
+		foreach (var timePoint in timePoints)
+		{
+			CalculateElapsedTime(timePoint.Value, timePoint.Key);
+		}
+	}
+
+	private void CalculateElapsedTime(DateTime pastDate, string type)
+	{
+		var elapsed = DateTime.Now - pastDate;
+		string formattedElapsedTime = $"{elapsed.Days} 天, {elapsed.Hours} 小时, {elapsed.Minutes} 分钟, {elapsed.Seconds} 秒";
+
+		var elapsedTimeInfo = elapsedTimes[type];
+		elapsedTimeInfo.ElapsedTime = formattedElapsedTime;
+
+		int totalYears = elapsed.Days / 365;
+		int totalMonths = (elapsed.Days % 365) / 30;
+		int totalDays = (elapsed.Days % 365) % 30;
+
+		elapsedTimeInfo.ElapsedTimeYear = totalYears.ToString();
+		elapsedTimeInfo.ElapsedTimeMonths = totalMonths.ToString();
+		elapsedTimeInfo.ElapsedTimeDay = totalDays.ToString();
+	}
+
+	private void CalculateElapsedTime(string type)
+	{
+		if (int.TryParse(selectedYear, out int year) &&
+			int.TryParse(selectedMonth, out int month) &&
+			int.TryParse(selectedDay, out int day))
+		{
+			DateTime selectedDate = new DateTime(year, month, day);
+			var elapsed = DateTime.Now - selectedDate;
+
+			int totalYears = elapsed.Days / 365;
+			int totalMonths = (elapsed.Days % 365) / 30;
+			int totalDays = (elapsed.Days % 365) % 30;
+
+			string formattedElapsedTime = $"{elapsed.Days} 天, {elapsed.Hours} 小时, {elapsed.Minutes} 分钟, {elapsed.Seconds} 秒";
+
+			var elapsedTimeInfo = elapsedTimes[type];
+			elapsedTimeInfo.ElapsedTime = formattedElapsedTime;
+			elapsedTimeInfo.ElapsedTimeYear = totalYears.ToString();
+			elapsedTimeInfo.ElapsedTimeMonths = totalMonths.ToString();
+			elapsedTimeInfo.ElapsedTimeDay = totalDays.ToString();
+		}
+	}
 }

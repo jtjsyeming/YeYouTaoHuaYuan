@@ -1,0 +1,16 @@
+# User-specific files
+*.suo
+*.user
+launchSettings.json
+*.sln.docstates
+*.sln.metaproj
+*.sln.metaproj.tmp
+.vs/
+.vscode/
+*.cache
+*.code-workspace
+*.lutconfig
+
+# Build results
+[Bb]in/
+[Oo]bj/

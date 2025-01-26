@@ -1,7 +1,0 @@
-E:\300programing\330GitHub\jtjsym\jtjsym\obj\Release\net6.0\PubTmp\Out\jtjsym.exe
-E:\300programing\330GitHub\jtjsym\jtjsym\obj\Release\net6.0\PubTmp\Out\appsettings.Development.json
-E:\300programing\330GitHub\jtjsym\jtjsym\obj\Release\net6.0\PubTmp\Out\appsettings.json
-E:\300programing\330GitHub\jtjsym\jtjsym\obj\Release\net6.0\PubTmp\Out\jtjsym.dll
-E:\300programing\330GitHub\jtjsym\jtjsym\obj\Release\net6.0\PubTmp\Out\jtjsym.deps.json
-E:\300programing\330GitHub\jtjsym\jtjsym\obj\Release\net6.0\PubTmp\Out\jtjsym.runtimeconfig.json
-E:\300programing\330GitHub\jtjsym\jtjsym\obj\Release\net6.0\PubTmp\Out\jtjsym.pdb
