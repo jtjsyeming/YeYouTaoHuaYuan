@@ -1,6 +1,5 @@
 using jtjsym.Data;
 using Microsoft.Fast.Components.FluentUI;
-using Microsoft.FluentUI.AspNetCore.Components;
 
 var builder = WebApplication.CreateBuilder(args);
 

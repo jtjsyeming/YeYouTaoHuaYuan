@@ -14,3 +14,5 @@ launchSettings.json
 # Build results
 [Bb]in/
 [Oo]bj/
+/jtjsym/jtjsym/[Pp]roperties/
+/jtjsym/[Pp]ublish/

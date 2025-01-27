@@ -13,6 +13,7 @@
 @inject IJSRuntime JSRuntime
 
 <h3>爱情计时器</h3>
+
 <FluentSelect TOption="string"
 			  Label="年份"
 			  ValueChanged="@(EventCallback.Factory.Create<string>(this, v => selectedYear = v))"
@@ -70,8 +71,8 @@
 
 	private Dictionary<string, ElapsedTimeInfo> elapsedTimes = new()
 	{
-		{ "love", new ElapsedTimeInfo() },
 		{ "meet", new ElapsedTimeInfo() },
+		{ "love", new ElapsedTimeInfo() },
 		{ "married", new ElapsedTimeInfo() }
 	};
 
@@ -85,8 +86,8 @@
 
 	private readonly Dictionary<string, DateTime> timePoints = new()
 	{
-		{ "love", new DateTime(2018, 4, 22) },
-		{ "meet", new DateTime(2022, 2, 25) },
+		{ "meet", new DateTime(2018, 4, 22) },
+		{ "love", new DateTime(2022, 2, 25) },
 		{ "married", new DateTime(2023, 8, 8) }
 	};
 
