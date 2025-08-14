@@ -14,51 +14,50 @@
 
 <h3>爱情计时器</h3>
 
-<FluentSelect TOption="string"
-			  Label="年份"
-			  ValueChanged="@(EventCallback.Factory.Create<string>(this, v => selectedYear = v))"
-			  Value="selectedYear"
-			  class="custom-select"
-			  Width="200px"
-			  Height="250px">
-	@foreach (var year in years)
-	{
-		<FluentOption TOption="string" Value="@year">@year</FluentOption>
-	}
-</FluentSelect>
+<div class="date-bar">
+    <!-- 年份 -->
+    <FluentSelect TOption="string"
+                  Label="年份："
+                  @bind-Value="selectedYear"
+                  class="custom-select"
+                  Width="120px">
+        @foreach (var y in years)
+        {
+            <FluentOption Value="@y">@y</FluentOption>
+        }
+    </FluentSelect>
 
-<FluentSelect TOption="string"
-			  Label="月份"
-			  ValueChanged="@(EventCallback.Factory.Create<string>(this, v => selectedMonth = v))"
-			  Value="selectedMonth"
-			  class="custom-select"
-			  Width="200px"
-			  Height="250px">
-	@foreach (var month in months)
-	{
-		<FluentOption TOption="string" Value="@month">@month</FluentOption>
-	}
-</FluentSelect>
+    <!-- 月份 -->
+    <FluentSelect TOption="string"
+                  Label="月份："
+                  @bind-Value="selectedMonth"
+                  class="custom-select"
+                  Width="100px">
+        @foreach (var m in months)
+        {
+            <FluentOption Value="@m">@m</FluentOption>
+        }
+    </FluentSelect>
 
-<FluentSelect TOption="string"
-			  Label="日期"
-			  ValueChanged="@(EventCallback.Factory.Create<string>(this, v => selectedDay = v))"
-			  Value="selectedDay"
-			  class="custom-select"
-			  Width="200px"
-			  Height="250px">
-	@foreach (var day in days)
-	{
-		<FluentOption TOption="string" Value="@day">@day</FluentOption>
-	}
-</FluentSelect>
+    <!-- 日期 -->
+    <FluentSelect TOption="string"
+                  Label="日期："
+                  @bind-Value="selectedDay"
+                  class="custom-select"
+                  Width="100px">
+        @foreach (var d in days)
+        {
+            <FluentOption Value="@d">@d</FluentOption>
+        }
+    </FluentSelect>
+</div>
 
-<FluentCard>
-	<FluentButton OnClick="@(() => CalculateElapsedTime("meet"))">计算相识时间</FluentButton>
-	<FluentButton OnClick="@(() => CalculateElapsedTime("love"))">计算恋爱时间</FluentButton>
-	<FluentButton OnClick="@(() => CalculateElapsedTime("married"))">计算结婚时间</FluentButton>
-</FluentCard>
 
+<FluentStack  Horizontal="true" HorizontalGap="100" Style="justify-content:center">
+	<FluentButton class="timer" OnClick="@(() => CalculateElapsedTime("meet"))">计算相识时间</FluentButton>
+	<FluentButton class="timer" OnClick="@(() => CalculateElapsedTime("love"))">计算恋爱时间</FluentButton>
+	<FluentButton class="timer" OnClick="@(() => CalculateElapsedTime("married"))">计算结婚时间</FluentButton>
+</FluentStack >
 
 @code {
 	private class ElapsedTimeInfo
@@ -80,9 +79,9 @@
 	private List<string> months = Enumerable.Range(1, 12).Select(m => m.ToString()).ToList();
 	private List<string> days = Enumerable.Range(1, 31).Select(d => d.ToString()).ToList();
 
-	private string selectedYear = string.Empty;
-	private string selectedMonth = string.Empty;
-	private string selectedDay = string.Empty;
+	private string selectedYear = "1950";
+	private string selectedMonth = "1";
+	private string selectedDay = "1";
 
 	private readonly Dictionary<string, DateTime> timePoints = new()
 	{
