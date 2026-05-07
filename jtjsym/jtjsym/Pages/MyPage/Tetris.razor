@@ -1,0 +1,866 @@
+@page "/tetris"
+@using Microsoft.FluentUI.AspNetCore.Components
+@using System.Timers
+
+<PageTitle>俄罗斯方块</PageTitle>
+
+<div class="tetris-container">
+    <!-- 上部区域：画布 + 右侧信息面板 -->
+    <div class="top-area">
+        <!-- 左侧游戏画布区域 - 占3/4 -->
+        <div class="game-area">
+            <div class="game-canvas">
+                @for (int row = 0; row < GRID_HEIGHT; row++)
+                {
+                        <div class="grid-row">
+                        @for (int col = 0; col < GRID_WIDTH; col++)
+                        {
+                            var bgColor = gameGrid[row][col] > 0 ? BLOCK_COLORS[gameGrid[row][col] - 1] : GRID_COLOR;
+                            var borderColor = gameGrid[row][col] > 0 ? "#333" : "#1a1a1a";
+                                    <div class="grid-cell" style="background-color: @bgColor; border-color: @borderColor;"></div>
+                        }
+                        </div>
+                }
+                <!-- 渲染当前方块 -->
+                @if (currentPiece != null)
+                {
+                        <div class="current-piece-overlay" style="top: @(y * 30)px; left: @(x * 30)px;">
+                        @for (int row = 0; row < currentPiece.Length; row++)
+                        {
+                                    <div class="piece-row">
+                                @for (int col = 0; col < currentPiece[row].Length; col++)
+                                {
+                                    if (currentPiece[row][col] == 1)
+                                    {
+                                                        <div class="piece-cell" style="background-color: @BLOCK_COLORS[currentIndex];"></div>
+                                    }
+                                    else
+                                    {
+                                                        <div class="piece-empty"></div>
+                                    }
+                                }
+                                    </div>
+                        }
+                        </div>
+                }
+            </div>
+        </div>
+
+        <!-- 右侧信息面板 - 占1/4 -->
+        <div class="side-panel">
+            <div class="panel-content">
+                <!-- 难度显示 -->
+                <div class="info-row">
+                    <span class="info-label">难度等级:</span>
+                    <span class="info-value">@difficultyLevel</span>
+                </div>
+
+                <hr class="divider" />
+
+                <!-- 分数显示 -->
+                <div class="info-row">
+                    <span class="info-label">分数:</span>
+                    <span class="info-value">@score</span>
+                </div>
+
+                <hr class="divider" />
+
+                <!-- 下一方块预览 -->
+                <span class="info-label">下一方块:</span>
+                <div class="next-piece-preview">
+                    @if (nextPiece != null)
+                    {
+                        @for (int row = 0; row < nextPiece.Length; row++)
+                        {
+                                    <div class="preview-row">
+                                @for (int col = 0; col < nextPiece[row].Length; col++)
+                                {
+                                    var bgColor = nextPiece[row][col] == 1 ? BLOCK_COLORS[nextIndex] : "transparent";
+                                                <div class="preview-cell" style="background-color: @bgColor;"></div>
+                                }
+                                    </div>
+                        }
+                    }
+                    else
+                    {
+                            <div class="preview-empty">等待开始...</div>
+                    }
+                </div>
+
+                <hr class="divider" />
+
+                <!-- 游戏控制按钮 -->
+                <div class="game-controls">
+                    @if (!isPaused)
+                    {
+                            <button class="game-btn control-btn pause-btn" 
+                                    @onclick="PauseGame"
+                                    disabled="@isGameOver">
+                                暂停游戏
+                            </button>
+                    }
+                    else
+                    {
+                            <button class="game-btn control-btn" style="background-color: #666; cursor: not-allowed;" disabled>
+                                已暂停
+                            </button>
+                            <button class="game-btn control-btn continue-btn" 
+                                    @onclick="ResumeGame"
+                                    disabled="@isGameOver">
+                                继续游戏
+                            </button>
+                    }
+
+                    <button class="game-btn control-btn restart-btn" 
+                            @onclick="RestartGame">
+                        重新开始
+                    </button>
+                </div>
+
+                @if (isGameOver)
+                {
+                        <div class="game-over-text">
+                            游戏结束!
+                        </div>
+                }
+            </div>
+        </div>
+    </div>
+
+    <!-- 下部区域：操作按钮 -->
+    <div class="bottom-area">
+        <div class="control-buttons">
+            <div class="direction-pad">
+                <!-- 旋转按钮 -->
+                <button class="game-btn rotate-btn" 
+                        @onclick="RotatePiece"
+                        disabled="@(isGameOver || isPaused)">
+                    旋转
+                </button>
+                <!-- 方向键 -->
+                <div class="dir-buttons">
+                    <button class="game-btn direction-btn" 
+                            @onclick="() => MovePiece(-1, 0)"
+                            disabled="@(isGameOver || isPaused)">
+                        ←
+                    </button>
+                    <button class="game-btn direction-btn down-btn" 
+                            @onpointerdown="OnDownButtonPress"
+                            @onpointerup="OnDownButtonRelease"
+                            @onpointerout="OnDownButtonRelease"
+                            @onpointerleave="OnDownButtonRelease"
+                            disabled="@(isGameOver || isPaused)">
+                        ↓
+                    </button>
+                    <button class="game-btn direction-btn" 
+                            @onclick="() => MovePiece(1, 0)"
+                            disabled="@(isGameOver || isPaused)">
+                        →
+                    </button>
+                </div>
+            </div>
+        </div>
+    </div>
+</div>
+
+<style>
+    /* 整体容器 */
+    .tetris-container {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        padding: 10px;
+        min-height: 100vh;
+        background-color: #0a0a0a;
+        gap: 15px;
+    }
+
+    /* 上部区域：画布 + 信息面板 */
+    .top-area {
+        display: flex;
+        justify-content: center;
+        align-items: flex-start;
+        width: 80%;
+        max-width: 600px;
+        gap: 10px;
+    }
+
+    /* 游戏画布区域 - 占3/4 */
+    .game-area {
+        flex: 3;
+        display: flex;
+        justify-content: center;
+    }
+
+    /* 游戏画布 */
+    .game-canvas {
+        position: relative;
+        background-color: #1a1a1a;
+        border: 2px solid #333;
+        display: inline-block;
+    }
+
+    .grid-row {
+        display: flex;
+    }
+
+    .grid-cell {
+        width: 30px;
+        height: 30px;
+        border: 1px solid;
+        box-sizing: border-box;
+    }
+
+    /* 当前方块 */
+    .current-piece-overlay {
+        position: absolute;
+        pointer-events: none;
+    }
+
+    .piece-row {
+        display: flex;
+    }
+
+    .piece-cell {
+        width: 30px;
+        height: 30px;
+        border: 1px solid #333;
+        box-sizing: border-box;
+    }
+
+    .piece-empty {
+        width: 30px;
+        height: 30px;
+    }
+
+    /* 侧边信息面板 - 占1/4 */
+    .side-panel {
+        flex: 1;
+        background-color: #1a1a1a;
+        border: 2px solid #333;
+        border-radius: 8px;
+        padding: 12px;
+        min-width: 110px;
+    }
+
+    .panel-content {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+    }
+
+    /* 信息行 */
+    .info-row {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+    }
+
+    .info-label {
+        color: #aaa;
+        font-size: 13px;
+    }
+
+    .info-value {
+        color: white;
+        font-size: 16px;
+        font-weight: bold;
+    }
+
+    /* 分隔线 */
+    .divider {
+        border: none;
+        border-top: 1px solid #444;
+        margin: 3px 0;
+    }
+
+    /* 下一方块预览 */
+    .next-piece-preview {
+        background-color: #0a0a0a;
+        border: 1px solid #444;
+        border-radius: 4px;
+        padding: 8px;
+        min-height: 60px;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+    }
+
+    .preview-row {
+        display: flex;
+    }
+
+    .preview-cell {
+        width: 18px;
+        height: 18px;
+        border: 1px solid #444;
+        display: inline-block;
+        box-sizing: border-box;
+    }
+
+    .preview-empty {
+        color: #666;
+        padding: 8px;
+        font-size: 12px;
+    }
+
+    /* 游戏控制按钮 */
+    .game-controls {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        margin-top: 4px;
+    }
+
+    .control-btn {
+        width: 100%;
+        height: 36px;
+        font-size: 14px;
+    }
+
+    .pause-btn {
+        background-color: #0078D4;
+    }
+
+    .continue-btn {
+        background-color: #107C10;
+    }
+
+    .restart-btn {
+        background-color: #D83B01;
+    }
+
+    /* 游戏结束提示 */
+    .game-over-text {
+        color: #ff4444;
+        font-size: 14px;
+        font-weight: bold;
+        text-align: center;
+        margin-top: 6px;
+        padding: 6px;
+        background-color: rgba(255, 68, 68, 0.1);
+        border-radius: 4px;
+    }
+
+    /* 下部区域：操作按钮 */
+    .bottom-area {
+        display: flex;
+        justify-content: center;
+        width: 100%;
+        max-width: 600px;
+    }
+
+    .control-buttons {
+        display: flex;
+        justify-content: center;
+    }
+
+    .direction-pad {
+        display: flex;
+        align-items: center;
+        gap: 20px;
+    }
+
+    .dir-buttons {
+        display: flex;
+        gap: 8px;
+    }
+
+    /* 通用按钮样式 */
+    .game-btn {
+        color: white;
+        border: none;
+        border-radius: 6px;
+        cursor: pointer;
+        font-weight: bold;
+        transition: filter 0.2s, transform 0.2s;
+    }
+
+    .game-btn:hover:not(:disabled) {
+        filter: brightness(1.1);
+        transform: scale(1.05);
+    }
+
+    .game-btn:active:not(:disabled) {
+        filter: brightness(0.9);
+        transform: scale(0.95);
+    }
+
+    .game-btn:disabled {
+        opacity: 0.5;
+        cursor: not-allowed;
+    }
+
+    /* 旋转按钮 */
+    .rotate-btn {
+        width: 90px;
+        height: 50px;
+        background-color: #0078D4;
+        font-size: 18px;
+    }
+
+    /* 方向按钮 */
+    .direction-btn {
+        width: 55px;
+        height: 55px;
+        background-color: #0078D4;
+        font-size: 24px;
+    }
+
+    /* 向下按钮特殊样式 */
+    .down-btn {
+        background-color: #106EBE;
+    }
+</style>
+
+@code {
+    private const int GRID_WIDTH = 10;
+    private const int GRID_HEIGHT = 20;
+    private const int INITIAL_SPEED = 1000;
+    private const int ACCELERATION = 50;
+    private const int SOFT_DROP_INTERVAL = 50;
+    private bool isDisposed = false;
+
+    private readonly string[] BLOCK_COLORS = new string[]
+    {
+        "#00FFFF", "#0000FF", "#FFA500", "#FFFF00", "#00FF00", "#800080", "#FF0000"
+    };
+    private const string GRID_COLOR = "#1a1a1a";
+
+    private readonly int[][][] SHAPES = new int[][][]
+    {
+        new int[][] { new int[] { 1, 1, 1, 1 } },
+        new int[][] { new int[] { 1, 0, 0 }, new int[] { 1, 1, 1 } },
+        new int[][] { new int[] { 0, 0, 1 }, new int[] { 1, 1, 1 } },
+        new int[][] { new int[] { 1, 1 }, new int[] { 1, 1 } },
+        new int[][] { new int[] { 0, 1, 1 }, new int[] { 1, 1, 0 } },
+        new int[][] { new int[] { 0, 1, 0 }, new int[] { 1, 1, 1 } },
+        new int[][] { new int[] { 1, 1, 0 }, new int[] { 0, 1, 1 } }
+    };
+
+    private int[][] gameGrid = Array.Empty<int[]>();
+    private int[][]? currentPiece;
+    private int[][]? nextPiece;
+    private int x, y;
+    private int currentIndex;
+    private int nextIndex;
+    private int score = 0;
+    private int difficultyLevel = 1;
+    private int speed = INITIAL_SPEED;
+    private bool isGameOver = false;
+    private bool isPaused = false;
+    private bool isSoftDropping = false;
+    private System.Timers.Timer? gameTimer;
+    private System.Timers.Timer? difficultyTimer;
+    private System.Timers.Timer? softDropTimer;
+    private readonly object timerLock = new object();
+
+    protected override void OnInitialized()
+    {
+        InitializeGame();
+        StartGame();
+    }
+
+    private void InitializeGame()
+    {
+        gameGrid = new int[GRID_HEIGHT][];
+        for (int i = 0; i < GRID_HEIGHT; i++)
+        {
+            gameGrid[i] = new int[GRID_WIDTH];
+        }
+        score = 0;
+        difficultyLevel = 1;
+        speed = INITIAL_SPEED;
+        isGameOver = false;
+        isPaused = false;
+        isSoftDropping = false;
+    }
+
+    private void StartGame()
+    {
+        NewPiece();
+        StartTimers();
+    }
+
+    private void StartTimers()
+    {
+        StopTimers();
+
+        lock (timerLock)
+        {
+            if (isDisposed) return;
+
+            gameTimer = new System.Timers.Timer(speed);
+            gameTimer.Elapsed += OnGameTimerElapsed;
+            gameTimer.AutoReset = true;
+            gameTimer.Start();
+
+            difficultyTimer = new System.Timers.Timer(180000);
+            difficultyTimer.Elapsed += OnDifficultyTimerElapsed;
+            difficultyTimer.AutoReset = true;
+            difficultyTimer.Start();
+        }
+    }
+
+    private void StopTimers()
+    {
+        lock (timerLock)
+        {
+            if (gameTimer != null)
+            {
+                gameTimer.Stop();
+                gameTimer.Elapsed -= OnGameTimerElapsed;
+                gameTimer.Dispose();
+                gameTimer = null;
+            }
+
+            if (difficultyTimer != null)
+            {
+                difficultyTimer.Stop();
+                difficultyTimer.Elapsed -= OnDifficultyTimerElapsed;
+                difficultyTimer.Dispose();
+                difficultyTimer = null;
+            }
+        }
+
+        StopSoftDrop();
+    }
+
+    private void StartSoftDrop()
+    {
+        if (isSoftDropping || isPaused || isGameOver) return;
+
+        lock (timerLock)
+        {
+            if (isDisposed) return;
+
+            isSoftDropping = true;
+            softDropTimer = new System.Timers.Timer(SOFT_DROP_INTERVAL);
+            softDropTimer.Elapsed += OnSoftDropTimerElapsed;
+            softDropTimer.AutoReset = true;
+            softDropTimer.Start();
+
+            if (gameTimer != null)
+            {
+                gameTimer.Stop();
+            }
+        }
+    }
+
+    private void StopSoftDrop()
+    {
+        lock (timerLock)
+        {
+            isSoftDropping = false;
+
+            if (softDropTimer != null)
+            {
+                softDropTimer.Stop();
+                softDropTimer.Elapsed -= OnSoftDropTimerElapsed;
+                softDropTimer.Dispose();
+                softDropTimer = null;
+            }
+
+            if (!isPaused && !isGameOver && gameTimer != null && !isDisposed)
+            {
+                gameTimer.Start();
+            }
+        }
+    }
+
+    private async void OnGameTimerElapsed(object? sender, ElapsedEventArgs e)
+    {
+        if (isDisposed) return;
+
+        try
+        {
+            if (!isPaused && !isGameOver && !isSoftDropping)
+            {
+                await InvokeAsync(() =>
+                {
+                    if (!isDisposed) DropPiece();
+                });
+            }
+        }
+        catch (ObjectDisposedException)
+        {
+            // 忽略已释放对象的错误
+        }
+    }
+
+    private async void OnSoftDropTimerElapsed(object? sender, ElapsedEventArgs e)
+    {
+        if (isDisposed) return;
+
+        try
+        {
+            if (!isPaused && !isGameOver && isSoftDropping)
+            {
+                await InvokeAsync(() =>
+                {
+                    if (!isDisposed) SoftDropPiece();
+                });
+            }
+        }
+        catch (ObjectDisposedException)
+        {
+            // 忽略已释放对象的错误
+        }
+    }
+
+    private async void OnDifficultyTimerElapsed(object? sender, ElapsedEventArgs e)
+    {
+        if (isDisposed) return;
+
+        try
+        {
+            if (!isGameOver)
+            {
+                await InvokeAsync(() =>
+                {
+                    if (!isDisposed) IncreaseDifficulty();
+                });
+            }
+        }
+        catch (ObjectDisposedException)
+        {
+            // 忽略已释放对象的错误
+        }
+    }
+
+    private void OnDownButtonPress() => StartSoftDrop();
+    private void OnDownButtonRelease() => StopSoftDrop();
+
+    private void NewPiece()
+    {
+        if (isDisposed) return;
+
+        if (nextPiece == null)
+        {
+            nextIndex = Random.Shared.Next(SHAPES.Length);
+            nextPiece = SHAPES[nextIndex];
+        }
+
+        currentIndex = nextIndex;
+        currentPiece = nextPiece;
+        nextIndex = Random.Shared.Next(SHAPES.Length);
+        nextPiece = SHAPES[nextIndex];
+
+        x = GRID_WIDTH / 2 - currentPiece[0].Length / 2;
+        y = 0;
+
+        if (CheckCollision(currentPiece, x, y))
+        {
+            GameOver();
+        }
+    }
+
+    private void DropPiece()
+    {
+        if (isDisposed || currentPiece == null || isGameOver || isSoftDropping) return;
+
+        if (!CheckCollision(currentPiece, x, y + 1))
+        {
+            y++;
+        }
+        else
+        {
+            LockPiece();
+            ClearRows();
+            NewPiece();
+        }
+        StateHasChanged();
+    }
+
+    private void SoftDropPiece()
+    {
+        if (isDisposed || currentPiece == null || isGameOver || !isSoftDropping) return;
+
+        if (!CheckCollision(currentPiece, x, y + 1))
+        {
+            y++;
+            score += 1;
+            StateHasChanged();
+        }
+        else
+        {
+            LockPiece();
+            ClearRows();
+            NewPiece();
+            StopSoftDrop();
+            StateHasChanged();
+        }
+    }
+
+    private void MovePiece(int dx, int dy)
+    {
+        if (isDisposed || currentPiece == null || isGameOver || isPaused) return;
+
+        if (!CheckCollision(currentPiece, x + dx, y + dy))
+        {
+            x += dx;
+            y += dy;
+            StateHasChanged();
+        }
+    }
+
+    private void RotatePiece()
+    {
+        if (isDisposed || currentPiece == null || isGameOver || isPaused) return;
+
+        int rows = currentPiece.Length;
+        int cols = currentPiece[0].Length;
+        int[][] rotated = new int[cols][];
+
+        for (int i = 0; i < cols; i++)
+        {
+            rotated[i] = new int[rows];
+            for (int j = 0; j < rows; j++)
+            {
+                rotated[i][j] = currentPiece[rows - 1 - j][i];
+            }
+        }
+
+        if (!CheckCollision(rotated, x, y))
+        {
+            currentPiece = rotated;
+            StateHasChanged();
+        }
+    }
+
+    private bool CheckCollision(int[][] piece, int offX, int offY)
+    {
+        if (isDisposed) return true;
+
+        for (int row = 0; row < piece.Length; row++)
+        {
+            for (int col = 0; col < piece[row].Length; col++)
+            {
+                if (piece[row][col] == 1)
+                {
+                    int newX = offX + col;
+                    int newY = offY + row;
+
+                    if (newX < 0 || newX >= GRID_WIDTH || newY >= GRID_HEIGHT)
+                        return true;
+
+                    if (newY >= 0 && gameGrid[newY][newX] > 0)
+                        return true;
+                }
+            }
+        }
+        return false;
+    }
+
+    private void LockPiece()
+    {
+        if (isDisposed || currentPiece == null) return;
+
+        for (int row = 0; row < currentPiece.Length; row++)
+        {
+            for (int col = 0; col < currentPiece[row].Length; col++)
+            {
+                if (currentPiece[row][col] == 1)
+                {
+                    int gridY = y + row;
+                    int gridX = x + col;
+                    if (gridY >= 0 && gridY < GRID_HEIGHT && gridX >= 0 && gridX < GRID_WIDTH)
+                    {
+                        gameGrid[gridY][gridX] = currentIndex + 1;
+                    }
+                }
+            }
+        }
+    }
+
+    private void ClearRows()
+    {
+        if (isDisposed) return;
+
+        int rowsCleared = 0;
+        for (int row = GRID_HEIGHT - 1; row >= 0; row--)
+        {
+            if (Array.TrueForAll(gameGrid[row], cell => cell > 0))
+            {
+                for (int r = row; r > 0; r--)
+                {
+                    gameGrid[r] = gameGrid[r - 1];
+                }
+                gameGrid[0] = new int[GRID_WIDTH];
+                rowsCleared++;
+                row++;
+            }
+        }
+
+        if (rowsCleared > 0)
+        {
+            score += rowsCleared switch
+            {
+                1 => 100,
+                2 => 300,
+                3 => 600,
+                4 => 1000,
+                _ => 100 * rowsCleared
+            };
+        }
+    }
+
+    private void IncreaseDifficulty()
+    {
+        if (isDisposed) return;
+
+        difficultyLevel++;
+        speed = Math.Max(100, speed - ACCELERATION);
+
+        if (gameTimer != null)
+        {
+            gameTimer.Interval = speed;
+        }
+        StateHasChanged();
+    }
+
+    private void PauseGame()
+    {
+        if (isDisposed) return;
+
+        isPaused = true;
+        gameTimer?.Stop();
+        StopSoftDrop();
+        StateHasChanged();
+    }
+
+    private void ResumeGame()
+    {
+        if (isDisposed) return;
+
+        isPaused = false;
+        gameTimer?.Start();
+        StateHasChanged();
+    }
+
+    private void RestartGame()
+    {
+        StopTimers();
+        InitializeGame();
+        currentPiece = null;
+        nextPiece = null;
+        StartGame();
+        StateHasChanged();
+    }
+
+    private void GameOver()
+    {
+        if (isDisposed) return;
+
+        isGameOver = true;
+        StopTimers();
+        StateHasChanged();
+    }
+
+    public void Dispose()
+    {
+        isDisposed = true;
+        StopTimers();
+    }
+}

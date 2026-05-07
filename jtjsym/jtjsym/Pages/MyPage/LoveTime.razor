@@ -53,11 +53,14 @@
 </div>
 
 
-<FluentStack  Horizontal="true" HorizontalGap="100" Style="justify-content:center">
-	<FluentButton class="timer" OnClick="@(() => CalculateElapsedTime("meet"))">计算相识时间</FluentButton>
-	<FluentButton class="timer" OnClick="@(() => CalculateElapsedTime("love"))">计算恋爱时间</FluentButton>
-	<FluentButton class="timer" OnClick="@(() => CalculateElapsedTime("married"))">计算结婚时间</FluentButton>
-</FluentStack >
+<FluentStack Horizontal="true"
+             HorizontalGap="20"
+             Wrap="true"
+             Style="justify-content:center; padding: 10px;">
+    <FluentButton class="timer" OnClick="@(() => CalculateElapsedTime("meet"))">计算相识时间</FluentButton>
+    <FluentButton class="timer" OnClick="@(() => CalculateElapsedTime("love"))">计算恋爱时间</FluentButton>
+    <FluentButton class="timer" OnClick="@(() => CalculateElapsedTime("married"))">计算结婚时间</FluentButton>
+</FluentStack>
 
 @code {
 	private class ElapsedTimeInfo

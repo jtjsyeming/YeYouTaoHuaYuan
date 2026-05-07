@@ -126,31 +126,29 @@ body {
 }
 
 div {
-    color: #e48bfa;
+    color: #886D68;
 }
 
-.timer{
-    font-size:1em;
-    margin:20px;
-    padding:0 30px;
-    height:52px;
-    border:1px solid #e48bfa;
-    border-radius:10px;
-    display:inline-flex;
-    align-items:center;
-    justify-content:center;
-    transition:all .3s ease;
-
+.timer {
+    font-size: 1em;
+    margin: 20px;
+    padding: 0 30px;
+    height: 52px;
+    border: 1px solid #886D68;
+    border-radius: 10px;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    transition: all .3s ease;
     /* 1. 去掉聚焦圆环 */
-    outline:none;
-
+    outline: none;
     /* 2. 改字色 */
-    color:#e48bfa;          /* 想用主题色可改成 var(--neutral-foreground-rest) */
+    color: #e48bfa; /* 想用主题色可改成 var(--neutral-foreground-rest) */
 }
 
-.timer:focus-visible{
-    outline:2px solid #e48bfa;
-    outline-offset:2px;
+.timer:focus-visible {
+    outline: 2px solid #886D68;
+    outline-offset: 2px;
 }
 
 .timer::after{
