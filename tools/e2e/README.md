@@ -46,6 +46,7 @@ dotnet run --project ../../jtjsym/jtjsym --no-launch-profile --environment Devel
 | `npm run test:g2048` | G2048 全量（含 40 步不变式） | 40 秒 |
 | `npm run test:tris` | TRIS 全量（含 150s 自动玩 + 190s 难度项） | 7~8 分钟 |
 | `npm run test:code` / `test:nf` | CODE / NF（含 Firefox 兼容、Slow 3G） | 2~3 分钟 |
+| `npm run test:d02` | D02 键盘操作 + 2048 数值配色（D02-4 为 `fixme`） | 1.5 分钟 |
 | `npm run test:fast` | nav + lt + g2048 + code_nf（不含 tris 长时项） | 6 分钟 |
 | `npm run test:all` | 全部 | 17~20 分钟 |
 

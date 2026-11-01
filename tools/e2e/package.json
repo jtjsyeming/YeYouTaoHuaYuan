@@ -14,6 +14,7 @@
     "test:code": "playwright test tests/code_nf.spec.mjs --grep \"CODE-[0-9]\"",
     "test:nf": "playwright test tests/code_nf.spec.mjs tests/d11_d12.spec.mjs --grep \"NF-[0-9]|D-1[12]\"",
     "test:d11d12": "playwright test tests/d11_d12.spec.mjs",
+    "test:d02": "playwright test tests/d02_keyboard_ui.spec.mjs",
     "test:fast": "playwright test tests/nav_fish.spec.mjs tests/lt.spec.mjs tests/g2048.spec.mjs tests/code_nf.spec.mjs tests/d11_d12.spec.mjs",
     "test:all": "playwright test"
   },

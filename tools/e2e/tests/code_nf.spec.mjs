@@ -55,7 +55,7 @@ test.describe('NF 非功能', () => {
       await page.locator(`.controls button:has-text("${d}")`).click();
       await sleep(300);
     }
-    const score = ((await page.textContent('p:has-text("Score")')) || '').trim();
+    const score = ((await page.textContent('p:has-text("分数")')) || '').trim();
 
     await open(page, '/tetris', 1600);
     await page.locator('.game-btn:has-text("←")').click();
@@ -65,7 +65,7 @@ test.describe('NF 非功能', () => {
 
     check(
       'NF-01',
-      /次数:\s*1/.test(fish) && /Score/.test(score) && tinfo.length === 2 && errs.length === 0,
+      /次数:\s*1/.test(fish) && /分数/.test(score) && tinfo.length === 2 && errs.length === 0,
       `页面：${log.join(' ')}；木鱼="${fish}"；2048="${score}"；Tetris=${JSON.stringify(tinfo)}；JS 异常=${errs.length}（文档要求各玩 1 分钟，此处为功能抽查）`,
     );
   });
@@ -172,11 +172,11 @@ test.describe('NF 非功能', () => {
     await p3.locator('.game-btn:has-text("旋转")').click();
     await sleep(900);
     const c = ((await page.textContent('p[role=status]')) || '').trim();
-    const g = ((await p2.textContent('p:has-text("Score")')) || '').trim();
+    const g = ((await p2.textContent('p:has-text("分数")')) || '').trim();
     const t = await p3.evaluate(() => [...document.querySelectorAll('.info-value')].map(e => e.textContent.trim()));
     await p2.close();
     await p3.close();
-    check('NF-04', /次数:\s*1/.test(c) && /Score/.test(g) && t.length === 2, `木鱼="${c}"；2048="${g}"；Tetris 难度/分数=${JSON.stringify(t)}`);
+    check('NF-04', /次数:\s*1/.test(c) && /分数/.test(g) && t.length === 2, `木鱼="${c}"；2048="${g}"；Tetris 难度/分数=${JSON.stringify(t)}`);
   });
 
   test('NF-06 遍历 6 页控制台无红色异常', async ({ page }) => {

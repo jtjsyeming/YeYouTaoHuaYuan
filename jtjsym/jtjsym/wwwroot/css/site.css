@@ -92,7 +92,7 @@ a, .btn-link {
     background-color: #eeeeee;
     font-size: calc(var(--tile-size) * 0.4);
     font-weight: bold;
-    border: 1px solid #999;
+    border: 1px solid transparent;   /* 原 #999：彩色块上一圈灰描边很脏；box-sizing 已是 border-box，尺寸不变 */
     box-sizing: border-box;
 }
 
@@ -198,3 +198,27 @@ div {
         row-gap: .5rem;
     }
 }
+
+/* ===== 2048 tile 数值配色（D-02）=====
+   位置要求：必须在本文件末尾（.tile 规则之后）。
+   .tile-empty/.tile-2…/.tile-128 与 .tile 特异性相同（0,1,0），只能靠源码顺序覆盖；
+   若写在 .tile 前面，.tile 的 background-color:#eeeeee 与 font-size 会把下面全部压回去。
+   注意：.tile 的 color 继承自 div{color:#886D68}，8 及以上必须显式给白字，
+   否则是"深褐字压在橙/黄底上"，对比度极差。*/
+.tile-empty  { background: rgba(255, 255, 255, .06); }
+.tile-2      { background: #eee4da; color: #776e65; }
+.tile-4      { background: #ede0c8; color: #776e65; }
+.tile-8      { background: #f2b179; color: #f9f6f2; }
+.tile-16     { background: #f59563; color: #fff; }
+.tile-32     { background: #f67c5f; color: #fff; }
+.tile-64     { background: #f65e3b; color: #fff; }
+.tile-128    { background: #edcf72; color: #fff; }
+.tile-256    { background: #edcc61; color: #fff; }
+.tile-512    { background: #edc850; color: #fff; }
+.tile-1024   { background: #edc53f; color: #fff; }
+.tile-2048   { background: #edc22e; color: #fff; }
+.tile-super  { background: #3c3a32; color: #fff; }
+
+/* 多位数字号收缩，基准 .tile 的 0.4（--tile-size 由《08》统一定义在 .game-container 上） */
+.tile-128, .tile-256, .tile-512     { font-size: calc(var(--tile-size, 50px) * .32); }
+.tile-1024, .tile-2048, .tile-super { font-size: calc(var(--tile-size, 50px) * .26); }

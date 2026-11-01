@@ -63,8 +63,9 @@ export const readBoard = page =>
   );
 
 export const readScore = async page => {
-  const txt = await page.textContent('p:has-text("Score")');
-  return parseInt(/Score:\s*(\d+)/.exec(txt)?.[1] ?? '-1');
+  // D-02 起页面文案由 "Score: N" 改为 "分数：N"；正则同时兼容两种写法，双保险
+  const txt = await page.textContent('p:has-text("分数")');
+  return parseInt(/(?:分数|Score)[:：]\s*(\d+)/.exec(txt)?.[1] ?? '-1');
 };
 
 export const countTiles = b => b.flat().filter(v => v !== 0).length;

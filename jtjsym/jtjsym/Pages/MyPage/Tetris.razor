@@ -1,6 +1,8 @@
 @page "/tetris"
 @using Microsoft.FluentUI.AspNetCore.Components
 @using System.Timers
+@inject IJSRuntime JS
+@implements IAsyncDisposable
 
 <PageTitle>俄罗斯方块</PageTitle>
 
@@ -493,6 +495,11 @@
     private const int SOFT_DROP_INTERVAL = 50;
     private bool isDisposed = false;
 
+    // 键盘：window 级 JS 监听的模块句柄与回调引用（详见 wwwroot/js/gamekeyboard.js）
+    private IJSObjectReference? keyModule;
+    private DotNetObjectReference<Tetris>? keyRef;
+    private int keyRegId;
+
     private readonly string[] BLOCK_COLORS = new string[]
     {
         "#00FFFF", "#0000FF", "#FFA500", "#FFFF00", "#00FF00", "#800080", "#FF0000"
@@ -929,9 +936,74 @@
         StateHasChanged();
     }
 
+    /// <summary>
+    /// 即有的同步释放逻辑（isDisposed = true + 停 3 个 Timer）。
+    /// 注意：本类此前未实现任何 Dispose 接口，Blazor 从不调用它 —— 本次由 DisposeAsync 显式调用，
+    /// 这个方法才第一次真正生效（D-13）。
+    /// </summary>
     public void Dispose()
     {
         isDisposed = true;
         StopTimers();
+    }
+
+    // ───────────────────────── 键盘操作（D-02）─────────────────────────
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // 仅交互实例会走到 firstRender=true，规避 ServerPrerendered 的预渲染实例
+        if (!firstRender || keyModule is not null) return;
+
+        keyRef = DotNetObjectReference.Create(this);
+        keyModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/gamekeyboard.js");
+        // Tetris：←/→ 允许按住连发（快速贴边需要）；↑ 旋转、↓ 软降不连发
+        // （↓ 的连续下落由 softDropTimer 驱动，与浏览器 repeat 无关）
+        keyRegId = await keyModule.InvokeAsync<int>("register", keyRef,
+            new { repeatKeys = new[] { "ArrowLeft", "ArrowRight" } });
+    }
+
+    /// <summary>
+    /// 注意：[JSInvokable] 不会自动重渲染。MovePiece/RotatePiece 内部各自 StateHasChanged()，
+    /// StartSoftDrop/StopSoftDrop 由 softDropTimer 驱动刷新，故这里不再额外触发。
+    /// </summary>
+    [JSInvokable]
+    public async Task OnKeyDown(string key)
+    {
+        await InvokeAsync(() =>
+        {
+            switch (key)
+            {
+                case "ArrowLeft":  MovePiece(-1, 0); break;
+                case "ArrowRight": MovePiece(1, 0);  break;
+                case "ArrowUp":    RotatePiece();    break;
+                case "ArrowDown":  StartSoftDrop();  break;   // 自带 isSoftDropping 幂等守卫
+            }
+        });
+    }
+
+    [JSInvokable]
+    public async Task OnKeyUp(string key)
+    {
+        if (key == "ArrowDown")
+            await InvokeAsync(StopSoftDrop);
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        if (keyModule is not null)
+        {
+            try
+            {
+                await keyModule.InvokeVoidAsync("unregister", keyRegId);
+                await keyModule.DisposeAsync();
+            }
+            catch (JSDisconnectedException) { /* 断线/关页，无需清理 */ }
+            catch (ObjectDisposedException) { /* 电路已释放 */ }
+            keyModule = null;
+        }
+        keyRef?.Dispose();
+        keyRef = null;
+
+        Dispose();   // ★ 关键：既有同步释放逻辑（isDisposed=true + StopTimers）现在才第一次真正被调用
     }
 }

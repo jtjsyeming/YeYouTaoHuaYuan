@@ -1,5 +1,7 @@
 ﻿@page "/game_2048"
 @inject NavigationManager Navigation
+@inject IJSRuntime JS
+@implements IAsyncDisposable
 
 <PageTitle>2048</PageTitle>
 
@@ -11,7 +13,7 @@
         <div class="row">
             @for (int col = 0; col < GridSize; col++)
             {
-                <div class="tile">@board[row, col]</div>
+                <div class="tile @TileClass(board[row, col])">@(board[row, col] == 0 ? "" : board[row, col].ToString())</div>
             }
         </div>
     }
@@ -26,7 +28,7 @@
     </div>
 </div>
 
-<p>Score: @Score</p>
+<p>分数：@Score</p>
 <p><button @onclick="RestartGame">重玩</button></p>
 
 @if (isGameOver)
@@ -44,6 +46,19 @@
     private int Score = 0;
 
     private bool isGameOver = false;
+
+    // 键盘：window 级 JS 监听的模块句柄与回调引用（详见 wwwroot/js/gamekeyboard.js）
+    private IJSObjectReference? keyModule;
+    private DotNetObjectReference<Game_2048>? keyRef;
+    private int keyRegId;
+
+    /// <summary>按数值映射配色类：0 → 空块（无文字），2048 以上 → tile-super</summary>
+    private static string TileClass(int v) => v switch
+    {
+        0       => "tile-empty",
+        <= 2048 => $"tile-{v}",
+        _       => "tile-super"
+    };
 
     private void AfterMove(int[,] boardBefore)
     {
@@ -143,6 +158,7 @@
 
     private void MoveLeft()
     {
+        if (isGameOver) return;   // 结束后按钮与方向键共用同一守卫
         var before = (int[,])board.Clone();
         for (int row = 0; row < GridSize; row++)
         {
@@ -155,6 +171,7 @@
 
     private void MoveRight()
     {
+        if (isGameOver) return;
         var before = (int[,])board.Clone();
         for (int row = 0; row < GridSize; row++)
         {
@@ -167,6 +184,7 @@
 
     private void MoveUp()
     {
+        if (isGameOver) return;
         var before = (int[,])board.Clone();
         for (int col = 0; col < GridSize; col++)
         {
@@ -179,6 +197,7 @@
 
     private void MoveDown()
     {
+        if (isGameOver) return;
         var before = (int[,])board.Clone();
         for (int col = 0; col < GridSize; col++)
         {
@@ -259,6 +278,59 @@
         }
 
         return merged.ToArray();
+    }
+
+    // ───────────────────────── 键盘操作（D-02）─────────────────────────
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // 仅交互实例会走到 firstRender=true，规避 ServerPrerendered 的预渲染实例
+        if (!firstRender || keyModule is not null) return;
+
+        keyRef = DotNetObjectReference.Create(this);
+        keyModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/gamekeyboard.js");
+        // 2048：一次按键 = 一步，忽略连发（按住 ← 连发会连吃新块、分数乱涨）
+        keyRegId = await keyModule.InvokeAsync<int>("register", keyRef,
+            new { repeatKeys = Array.Empty<string>() });
+    }
+
+    /// <summary>
+    /// 注意：[JSInvokable] 不会自动重渲染（与 @onclick 不同）。
+    /// 四个 MoveX() 经 AfterMove 内部各自 StateHasChanged()，故这里不再额外触发，避免双帧渲染。
+    /// </summary>
+    [JSInvokable]
+    public async Task OnKeyDown(string key)
+    {
+        await InvokeAsync(() =>
+        {
+            switch (key)
+            {
+                case "ArrowLeft":  MoveLeft();  break;
+                case "ArrowRight": MoveRight(); break;
+                case "ArrowUp":    MoveUp();    break;
+                case "ArrowDown":  MoveDown();  break;
+            }
+        });
+    }
+
+    [JSInvokable]
+    public Task OnKeyUp(string key) => Task.CompletedTask;   // 2048 无 keyup 需求，接口占位
+
+    public async ValueTask DisposeAsync()
+    {
+        if (keyModule is not null)
+        {
+            try
+            {
+                await keyModule.InvokeVoidAsync("unregister", keyRegId);
+                await keyModule.DisposeAsync();
+            }
+            catch (JSDisconnectedException) { /* 断线/关页，无需清理 */ }
+            catch (ObjectDisposedException) { /* 电路已释放 */ }
+            keyModule = null;
+        }
+        keyRef?.Dispose();
+        keyRef = null;
     }
 }
 
