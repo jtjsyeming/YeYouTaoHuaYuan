@@ -12,7 +12,7 @@
 |---|---|
 | .NET SDK | 8.0 |
 | IDE | Visual Studio 2022 / VS Code / Rider 均可 |
-| 前端工具 | 无需 Node/npm（libman.json 管理 libman 静态库；实际静态资源已入库） |
+| 前端工具 | **站点本身无需 Node/npm**（libman.json 管理 libman 静态库；实际静态资源已入库）。**跑端到端测试才需要 Node ≥ 18**（`tools/e2e`，仅开发期依赖，不进发布链路） |
 | 数据库 | 无 |
 
 ## 三、常用命令
@@ -22,12 +22,20 @@
 dotnet restore
 dotnet run            # 默认监听 launchSettings 配置的端口，HTTPS 重定向已开启
 
+# 站点必须带 --environment Development 才服务 _content/* 静态资源（见下方注）
+dotnet run --project jtjsym/jtjsym --no-launch-profile --environment Development --urls http://localhost:14074
+
 # 发布（使用现成的 FolderProfile）
 dotnet publish -c Release -o ./bin/publish
 
 # 工具（.config/dotnet-tools.json 中声明过 libman）
 dotnet tool restore
+
+# 端到端回归（在仓库根目录；首次需 npx playwright install chromium firefox）
+cd tools/e2e && npm ci && npm run test:smoke
 ```
+
+> **`--no-launch-profile` 必须配 `--environment Development`**：该参数会跳过 `launchSettings.json`，环境回落为 `Production`，此时 StaticWebAssets 不再从构建输出提供，`_content/Microsoft.Fast.Components.FluentUI/*` 全部 404 → Fluent 自定义元素不升级，`<fluent-option>` 以行内元素撑出 2.7~3.1 倍页宽。页面"看着能点"，但所有尺寸/溢出类断言都会得到假结果。
 
 ## 四、技术栈速查表
 

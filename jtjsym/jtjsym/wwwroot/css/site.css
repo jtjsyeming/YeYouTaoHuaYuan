@@ -172,3 +172,29 @@ div {
 .blazor-error-boundary::after {
     content: "An error has occurred."
 }
+
+/* ===== D-12：/loveTime 窄屏适配 =====
+   根因：.date-bar 三个 FluentSelect 用内联 Width 写死 120/100/100px（外加约 60px 间隔），
+        整行需 440px（可用宽 = 视口 − px-4 的 48），阈值 ≈488px；不换行即横向溢出，
+        且 justify-content:center 让溢出向两侧均分 → 年份下拉的 left 为负（左边缘被切且无法滚动看到）。
+   次因：.timer 固定 height:52px，320px 下文本折 3 行需 61px → 文字溢出圆角框。
+   断点取 520：480/481px 实测仍溢出（+3/+2），520 是实测干净的第一档，且与《08》Tetris 断点统一。 */
+.timer-display {
+    max-width: 100%;
+    box-sizing: border-box;
+    font-variant-numeric: tabular-nums; /* 秒级刷新时数字等宽，行宽不抖动 */
+}
+
+@media (max-width: 520px) {
+    .timer-display {
+        height: auto;          /* 解除固定 52px，折行后自动长高 */
+        min-height: 52px;
+        padding: 6px 16px;     /* 原为 0 30px，窄屏收窄左右内边距 */
+        margin: 8px auto;      /* 原为 20px */
+    }
+
+    .date-bar {
+        flex-wrap: wrap;       /* ★ 主修复：三个下拉换行，整行 440px → 单行 ≤ 236px */
+        row-gap: .5rem;
+    }
+}

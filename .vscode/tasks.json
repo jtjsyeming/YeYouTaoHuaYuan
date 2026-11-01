@@ -73,6 +73,31 @@
       }
     },
     {
+      // F5 前的准备：先清掉上次调试残留的进程（它们会占住 14074），再编译
+      "label": "prep-jtjsym",
+      "dependsOn": ["kill-stale-jtjsym", "build-jtjsym"],
+      "dependsOrder": "sequence",
+      "problemMatcher": []
+    },
+    {
+      // 结束仍在监听 14074 的残留 jtjsym 进程，避免 "address already in use"
+      "label": "kill-stale-jtjsym",
+      "type": "process",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "Get-NetTCPConnection -LocalPort 14074 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { try { $p = Get-Process -Id $_ -ErrorAction Stop; Stop-Process -Id $p.Id -Force -ErrorAction Stop; Write-Host ('已结束残留进程: ' + $p.ProcessName + ' (PID ' + $p.Id + ')') } catch { } }; exit 0"
+      ],
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "silent",
+        "close": true
+      }
+    },
+    {
       // 清理两个工程的输出
       "label": "clean-all",
       "type": "shell",

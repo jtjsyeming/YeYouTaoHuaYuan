@@ -22,5 +22,10 @@ launchSettings.json
 /jtjsym/jtjsym/[Pp]roperties/
 /jtjsym/[Pp]ublish/
 
+# tools/e2e（Playwright 回归套件）运行产物
+node_modules/
+playwright-report/
+test-results/
+
 # WorkBuddy workspace data
 .workbuddy/

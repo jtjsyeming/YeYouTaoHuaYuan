@@ -1,11 +1,13 @@
 @page "/loveTime"
 @implements IDisposable
 
+<PageTitle>爱情计时器</PageTitle>
+
 <h1>爱情计时器</h1>
 
-<div class="timer">我们相识已经过去了：@elapsedTimes["meet"].ElapsedTime</div>
-<div class="timer">我们相爱已经过去了：@elapsedTimes["love"].ElapsedTime</div>
-<div class="timer">我们步入婚姻已经过去了：@elapsedTimes["married"].ElapsedTime</div>
+<div class="timer timer-display">我们相识已经过去了：@elapsedTimes["meet"].ElapsedTime</div>
+<div class="timer timer-display">我们相爱已经过去了：@elapsedTimes["love"].ElapsedTime</div>
+<div class="timer timer-display">我们步入婚姻已经过去了：@elapsedTimes["married"].ElapsedTime</div>
 
 <h2>输入你的时间节点和想要计算的类型</h2>
 
