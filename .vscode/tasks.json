@@ -1,0 +1,83 @@
+{
+  "version": "2.0.0",
+  "tasks": [
+    {
+      // 构建 jtjsym 网站（Ctrl+Shift+B 的第一个选项）
+      "label": "build-jtjsym",
+      "type": "process",
+      "command": "dotnet",
+      "args": [
+        "build",
+        "${workspaceFolder}/jtjsym/jtjsym.sln",
+        "/property:GenerateFullPaths=true",
+        "/consoleloggerparameters:NoSummary"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/jtjsym"
+      },
+      "problemMatcher": "$msCompile",
+      "group": {
+        "kind": "build",
+        "isDefault": true
+      },
+      "presentation": {
+        "reveal": "silent",
+        "clear": true
+      }
+    },
+    {
+      // 构建 MineSweeper 桌面程序
+      "label": "build-minesweeper",
+      "type": "process",
+      "command": "dotnet",
+      "args": [
+        "build",
+        "${workspaceFolder}/MineSweeper/MineSweeper.csproj",
+        "/property:GenerateFullPaths=true",
+        "/consoleloggerparameters:NoSummary"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/MineSweeper"
+      },
+      "problemMatcher": "$msCompile",
+      "group": "build",
+      "presentation": {
+        "reveal": "silent",
+        "clear": true
+      }
+    },
+    {
+      // 不调试直接运行 jtjsym 网站；--no-launch-profile 跳过 launchSettings.json 里缺证书的 https 地址
+      "label": "run-jtjsym",
+      "type": "process",
+      "command": "dotnet",
+      "args": [
+        "run",
+        "--project",
+        "${workspaceFolder}/jtjsym/jtjsym/jtjsym.csproj",
+        "--no-launch-profile",
+        "--urls",
+        "http://localhost:14074"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/jtjsym/jtjsym",
+        "env": {
+          "ASPNETCORE_ENVIRONMENT": "Development"
+        }
+      },
+      "dependsOn": "build-jtjsym",
+      "problemMatcher": "$msCompile",
+      "presentation": {
+        "reveal": "always",
+        "clear": true
+      }
+    },
+    {
+      // 清理两个工程的输出
+      "label": "clean-all",
+      "type": "shell",
+      "command": "dotnet clean \"${workspaceFolder}/jtjsym/jtjsym.sln\" && dotnet clean \"${workspaceFolder}/MineSweeper/MineSweeper.csproj\"",
+      "problemMatcher": []
+    }
+  ]
+}

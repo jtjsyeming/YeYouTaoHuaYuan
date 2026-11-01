@@ -6,7 +6,11 @@ launchSettings.json
 *.sln.metaproj
 *.sln.metaproj.tmp
 .vs/
-.vscode/
+# .vscode 只忽略个人设置，运行/调试配置需要跟着仓库走
+.vscode/*
+!.vscode/launch.json
+!.vscode/tasks.json
+!.vscode/extensions.json
 *.cache
 *.code-workspace
 *.lutconfig
@@ -16,3 +20,6 @@ launchSettings.json
 [Oo]bj/
 /jtjsym/jtjsym/[Pp]roperties/
 /jtjsym/[Pp]ublish/
+
+# WorkBuddy workspace data
+.workbuddy/

@@ -1,0 +1,8 @@
+{
+  // 打开本项目时 VS Code 会提示安装这些扩展，装上后 C# / Razor 才有智能提示和断点能力
+  "recommendations": [
+    "ms-dotnettools.csharp",
+    "ms-dotnettools.csdevkit",
+    "ms-dotnettools.blazorwasm-companion"
+  ]
+}

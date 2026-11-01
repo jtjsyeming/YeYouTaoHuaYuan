@@ -1,0 +1,117 @@
+@page "/coding_place"
+@using System.Text
+
+<h1>编程挑战</h1>
+
+<FluentPage>
+    <FluentPageHeader>
+        <FluentTextBlock Class="problem-description">
+            @ProblemDescription
+        </FluentTextBlock>
+    </FluentPageHeader>
+
+    @* <FluentSection>
+        <FluentSectionHeader>
+            <FluentSectionHeaderTitle>我的代码</FluentSectionHeaderTitle>
+        </FluentSectionHeader>
+        <FluentCodeBlock Language="cpp" Code=@CodeAnswer></FluentCodeBlock>
+    </FluentSection>
+
+    <FluentSection>
+        <FluentSectionHeader>
+            <FluentSectionHeaderTitle>输入输出示例</FluentSectionHeaderTitle>
+        </FluentSectionHeader>
+        <FluentSection>
+            <FluentSectionHeader>
+                <FluentSectionHeaderTitle>输入</FluentSectionHeaderTitle>
+            </FluentSectionHeader>
+            <FluentTextBlock>@InputExample</FluentTextBlock>
+        </FluentSection>
+        <FluentSection>
+            <FluentSectionHeader>
+                <FluentSectionHeaderTitle>输出</FluentSectionHeaderTitle>
+            </FluentSectionHeader>
+            <FluentTextBlock>@OutputExample</FluentTextBlock>
+        </FluentSection>
+    </FluentSection> *@
+</FluentPage>
+
+@code {
+    // 在这里填充问题描述
+    private string ProblemDescription = @"
+        问题描述:
+        公司创新实验室正在研究如何最小化资源成本，最大化资源利用率。现在需要解决一个任务混部问题，具体如下：
+        给定一批任务，每个任务有以下属性：
+        • 开始时间（startTime）：任务开始运行的时间。
+        • 结束时间（endTime）：任务结束运行的时间。
+        • 并行度（parallelism）：任务运行时占用的服务器数量。
+        任务运行完成后会立即释放占用的服务器（结束时刻不占用服务器）。任务混部问题的目标是计算完成这批任务所需的最少服务器数量，从而最大化控制资源成本。
+        输入描述
+        输入包含多行：
+        1. 第一行输入一个整数taskNum，表示任务的总数。
+        2. 接下来taskNum行，每行包含三个整数，分别表示任务的开始时间（startTime）、结束时间（endTime）和并行度（parallelism）。
+        输出描述:
+        输出一个整数，表示完成这批任务所需的最少服务器数量。
+    ";
+
+    // 在这里填充你的代码答案
+    private string CodeAnswer = $@"
+        #include <iostream>
+        #include <vector>
+        #include <queue>
+        #include <algorithm>
+        using namespace std;
+        struct Task {{
+            int startTime;
+            int endTime;
+            int parallelism;
+        Task(int start, int end, int parallel) : startTime(start), endTime(end), parallelism(parallel) {{}}
+        // 用于按任务的开始时间排序
+            bool operator<(const Task& other) const {{
+                return startTime < other.startTime;
+            }}
+        }};
+        int minServers(vector<Task>& tasks) {{
+            // 按任务的开始时间排序
+            sort(tasks.begin(), tasks.end());
+        // 优先队列，存储每个服务器的释放时间
+            priority_queue<int, vector<int>, greater<int>> availableServers;
+        // 遍历每个任务
+            for (const auto& task : tasks) {{
+                // 检查是否有服务器可以复用
+                while (!availableServers.empty() && availableServers.top() <= task.startTime) {{
+                    availableServers.pop();
+                }}
+        // 更新服务器的释放时间
+                for (int i = 0; i < task.parallelism; ++i) {{
+                    availableServers.push(task.endTime);
+                }}
+            }}
+        // 优先队列的大小即为所需的最少服务器数量
+            return availableServers.size();
+        }}
+        int main() {{
+            int taskNum;
+            cin >> taskNum;
+        vector<Task> tasks;
+            for (int i = 0; i < taskNum; ++i) {{
+                int start, end, parallel;
+                cin >> start >> end >> parallel;
+                tasks.emplace_back(start, end, parallel);
+            }}
+        int result = minServers(tasks);
+            cout << result << endl;
+        return 0;
+        }}
+    ";
+
+    // 在这里填充输入示例
+    private string InputExample = @"
+        [1, 2, 3, 4]
+    ";
+
+    // 在这里填充输出示例
+    private string OutputExample = @"
+        10
+    ";
+}

@@ -43,8 +43,15 @@
 
     private bool isGameOver = false;
 
-    private void AfterMove()
+    private void AfterMove(int[,] boardBefore)
     {
+        // 标准规则：棋盘无变化（未位移、未合并）时不生成新块
+        if (!IsBoardChanged(boardBefore, board))
+        {
+            StateHasChanged();
+            return;
+        }
+
         AddRandomTile();
 
         if (IsGameOver())
@@ -53,6 +60,19 @@
         }
 
         StateHasChanged();
+    }
+
+    private static bool IsBoardChanged(int[,] before, int[,] after)
+    {
+        for (int row = 0; row < GridSize; row++)
+        {
+            for (int col = 0; col < GridSize; col++)
+            {
+                if (before[row, col] != after[row, col])
+                    return true;
+            }
+        }
+        return false;
     }
 
     private bool IsGameOver()
@@ -121,46 +141,50 @@
 
     private void MoveLeft()
     {
+        var before = (int[,])board.Clone();
         for (int row = 0; row < GridSize; row++)
         {
             var line = GetRow(row);
             var mergedLine = Merge(line);
             SetRow(row, mergedLine);
         }
-        AfterMove();
+        AfterMove(before);
     }
 
     private void MoveRight()
     {
+        var before = (int[,])board.Clone();
         for (int row = 0; row < GridSize; row++)
         {
             var line = GetRow(row).Reverse().ToArray();
             var mergedLine = Merge(line).Reverse().ToArray();
             SetRow(row, mergedLine);
         }
-        AfterMove();
+        AfterMove(before);
     }
 
     private void MoveUp()
     {
+        var before = (int[,])board.Clone();
         for (int col = 0; col < GridSize; col++)
         {
             var line = GetColumn(col);
             var mergedLine = Merge(line);
             SetColumn(col, mergedLine);
         }
-        AfterMove();
+        AfterMove(before);
     }
 
     private void MoveDown()
     {
+        var before = (int[,])board.Clone();
         for (int col = 0; col < GridSize; col++)
         {
             var line = GetColumn(col).Reverse().ToArray();
             var mergedLine = Merge(line).Reverse().ToArray();
             SetColumn(col, mergedLine);
         }
-        AfterMove();
+        AfterMove(before);
     }
 
     private int[] GetRow(int row)
@@ -201,26 +225,32 @@
 
     private int[] Merge(int[] line)
     {
-        var merged = new List<int>();
-        var skip = false;
-
-        for (int i = 0; i < line.Length; i++)
+        // Step1: 压缩 —— 取出所有非零块，保持相对顺序
+        var values = new List<int>();
+        foreach (var v in line)
         {
-            if (line[i] == 0) continue;
+            if (v != 0) values.Add(v);
+        }
 
-            if (!skip && i < line.Length - 1 && line[i] == line[i + 1])
+        // Step2: 从移动方向一侧起成对消费，等值即合并
+        var merged = new List<int>();
+        int i = 0;
+        while (i < values.Count)
+        {
+            if (i + 1 < values.Count && values[i] == values[i + 1])
             {
-                merged.Add(line[i] * 2);
-                Score += line[i] * 2;
-                skip = true;
+                merged.Add(values[i] * 2);
+                Score += values[i] * 2;
+                i += 2;   // 两个块同时消费 —— 不复制、不回看
             }
             else
             {
-                merged.Add(line[i]);
-                skip = false;
+                merged.Add(values[i]);
+                i += 1;
             }
         }
 
+        // Step3: 尾部补零
         while (merged.Count < GridSize)
         {
             merged.Add(0);

@@ -1,0 +1,54 @@
+{
+  // 调试配置：F5 打开下拉框，可分别选择要运行的项目
+  "version": "0.2.0",
+  "configurations": [
+    {
+      // ===== 1. jtjsym：Blazor Server 网站 =====
+      "name": "jtjsym 网站 (Blazor Server)",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build-jtjsym",
+      "program": "${workspaceFolder}/jtjsym/jtjsym/bin/Debug/net8.0/jtjsym.dll",
+      "args": [],
+      "cwd": "${workspaceFolder}/jtjsym/jtjsym",
+      "console": "internalConsole",
+      "stopAtEntry": false,
+      // 说明：本机缺少 HTTPS 开发证书（dotnet dev-certs），所以默认只用 http。
+      // 想用 https 的话先执行：dotnet dev-certs https --trust
+      // 然后把下面的 ASPNETCORE_URLS 改成 "https://localhost:14073;http://localhost:14074"
+      "env": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        "ASPNETCORE_URLS": "http://localhost:14074",
+        "DOTNET_ENVIRONMENT": "Development"
+      },
+      "serverReadyAction": {
+        "action": "openExternally",
+        // uriFormat 必须且只能包含一个 %s 占位符，改成 "%s" 才会打开上面实际监听的地址
+        "pattern": "\\bNow listening on:\\s+(https?://\\S+)",
+        "uriFormat": "%s"
+      },
+      "justMyCode": true
+    },
+    {
+      // ===== 2. MineSweeper：WinForms 桌面程序 =====
+      "name": "MineSweeper 扫雷 (WinForms)",
+      "type": "coreclr",
+      "request": "launch",
+      "preLaunchTask": "build-minesweeper",
+      "program": "${workspaceFolder}/MineSweeper/bin/Debug/net8.0-windows/MineSweeper.dll",
+      "args": [],
+      "cwd": "${workspaceFolder}/MineSweeper",
+      "console": "internalConsole",
+      "stopAtEntry": false,
+      "justMyCode": true
+    }
+  ],
+  // 想两个一起跑时，选这一项即可（终端/调试器会各开一个）
+  "compounds": [
+    {
+      "name": "同时启动：网站 + 扫雷",
+      "configurations": ["jtjsym 网站 (Blazor Server)", "MineSweeper 扫雷 (WinForms)"],
+      "stopAll": true
+    }
+  ]
+}
