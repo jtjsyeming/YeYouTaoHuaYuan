@@ -73,6 +73,8 @@ a, .btn-link {
     box-shadow: 0 4px 8px rgba(0, 0, 0, 0.5);
     margin-top: 20px; /* ¸ù¾ÝÐèÒªµ÷ÕûÉÏ±ß¾à */
     margin-bottom: 20px; /* ¸ù¾ÝÐèÒªµ÷ÕûÏÂ±ß¾à */
+    /* 瓷砖尺寸单一来源：50px 封顶，为 <305px 视口提供防线（主流机型无视觉变化） */
+    --tile-size: min(50px, calc((100vw - 120px) / 4));
 }
 
 .row {
@@ -82,15 +84,16 @@ a, .btn-link {
 }
 
 .tile {
-    width: 50px;
-    height: 50px;
+    width: var(--tile-size);
+    height: var(--tile-size);
     display: flex;
     justify-content: center;
     align-items: center;
     background-color: #eeeeee;
-    font-size: 20px;
+    font-size: calc(var(--tile-size) * 0.4);
     font-weight: bold;
     border: 1px solid #999;
+    box-sizing: border-box;
 }
 
 .controls {

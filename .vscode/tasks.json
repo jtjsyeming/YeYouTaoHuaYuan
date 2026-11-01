@@ -92,6 +92,28 @@
       "problemMatcher": []
     },
     {
+      // ★ 发布新版本：发布 + 同步到发布目录 + 同步到部署目录 + 自动按版本号打 zip 备份
+      //   版本号由 .vscode/publish-release.ps1 自动取备份目录里最大版本 +1
+      "label": "release-jtjsym",
+      "type": "process",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-File",
+        "${workspaceFolder}/.vscode/publish-release.ps1"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}"
+      },
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "clear": true
+      }
+    },
+    {
       // 步骤 1/2：Release + win-x64 + 框架依赖 + 单文件关闭，输出到暂存目录
       "label": "publish-jtjsym-dotnet",
       "type": "process",

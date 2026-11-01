@@ -24,7 +24,7 @@
                 <!-- 渲染当前方块 -->
                 @if (currentPiece != null)
                 {
-                        <div class="current-piece-overlay" style="top: @(y * 30)px; left: @(x * 30)px;">
+                        <div class="current-piece-overlay" style="top: calc(var(--cell-size) * @(y)); left: calc(var(--cell-size) * @(x));">
                         @for (int row = 0; row < currentPiece.Length; row++)
                         {
                                     <div class="piece-row">
@@ -173,6 +173,9 @@
         min-height: 100vh;
         background-color: #0a0a0a;
         gap: 15px;
+        /* 单一尺寸来源：30px 封顶，窄屏按视口等比收缩
+           预算 78px = px-4(48) + 容器 padding(20) + 画布边框(4) + 6px 余量（竖滚动条/取整） */
+        --cell-size: min(30px, calc((100vw - 78px) / 10));
     }
 
     /* 上部区域：画布 + 信息面板 */
@@ -205,8 +208,8 @@
     }
 
     .grid-cell {
-        width: 30px;
-        height: 30px;
+        width: var(--cell-size);
+        height: var(--cell-size);
         border: 1px solid;
         box-sizing: border-box;
     }
@@ -222,15 +225,16 @@
     }
 
     .piece-cell {
-        width: 30px;
-        height: 30px;
+        width: var(--cell-size);
+        height: var(--cell-size);
         border: 1px solid #333;
         box-sizing: border-box;
     }
 
     .piece-empty {
-        width: 30px;
-        height: 30px;
+        width: var(--cell-size);
+        height: var(--cell-size);
+        box-sizing: border-box;
     }
 
     /* 侧边信息面板 - 占1/4 */
@@ -241,6 +245,8 @@
         border-radius: 8px;
         padding: 12px;
         min-width: 110px;
+        /* 预览格随主网格缩放，18px 封顶（= 30 × 0.6） */
+        --preview-size: min(18px, calc(var(--cell-size) * 0.6));
     }
 
     .panel-content {
@@ -292,8 +298,8 @@
     }
 
     .preview-cell {
-        width: 18px;
-        height: 18px;
+        width: var(--preview-size);
+        height: var(--preview-size);
         border: 1px solid #444;
         display: inline-block;
         box-sizing: border-box;
@@ -411,6 +417,71 @@
     /* 向下按钮特殊样式 */
     .down-btn {
         background-color: #106EBE;
+    }
+
+    /* ==================== 响应式自适应 ==================== */
+
+    /* L1：≤900px 放开 80% 宽度限制。
+       .top-area 原为 80% + max-width 600px，横排硬性下限 424px（网格 304 + gap 10 + 面板 110），
+       侧栏占 250px 后 781~856px 必然溢出；桌面 ≥901px 保持 80%，视觉零变化
+       （641~780px 由 L2 兜底堆叠） */
+    @@media (max-width: 900px) {
+        .top-area {
+            width: 100%;
+        }
+    }
+
+    /* L2：纵向堆叠。触发条件有两段，缺一不可：
+       ① ≤520px —— 无侧栏，横排需 W ≥ 492px，取 520px 留余量（480~492px 横排仍差 12px，故不用 480px）
+       ② 641~780px —— 侧栏（250）+ article padding（32/24）+ 容器 padding（20）共占 326px，
+          横排硬性下限 424px 要求 W ≥ 750px（再留 15px 给竖滚动条 → 765px，取 780px）；
+          这段是侧栏断崖后的"窄窗真空区"，此时 width:100% 也压不动 flex 子项的 min-content
+          （304 画布 + 10 gap + 110 面板），必须堆叠 */
+    @@media (max-width: 520px), (min-width: 641px) and (max-width: 780px) {
+        .top-area {
+            width: 100%;
+            flex-direction: column;
+            align-items: center;
+            gap: 8px;
+        }
+
+        .game-area {
+            flex: none;   /* 竖排时 flex:3 无意义，且干扰高度计算 */
+            width: auto;
+        }
+
+        .side-panel {
+            flex: none;
+            box-sizing: border-box;                    /* 关键：否则外宽比网格多 28px */
+            width: calc(var(--cell-size) * 10 + 4px);  /* +4px 对齐画布 4px 边框 */
+            max-width: 100%;
+            min-width: 0;
+        }
+    }
+
+    /* L4：≤400px 按钮区缩一档。
+       原宽 90 + 20 + (55×3 + 8×2) = 291px，320px 视口可用仅 252px
+       新宽 74 + 12 + (46×3 + 6×2) = 236px */
+    @@media (max-width: 400px) {
+        .direction-pad {
+            gap: 12px;
+        }
+
+        .dir-buttons {
+            gap: 6px;
+        }
+
+        .rotate-btn {
+            width: 74px;
+            height: 46px;
+            font-size: 16px;
+        }
+
+        .direction-btn {
+            width: 46px;
+            height: 46px;
+            font-size: 20px;
+        }
     }
 </style>
 
