@@ -78,6 +78,64 @@
       "type": "shell",
       "command": "dotnet clean \"${workspaceFolder}/jtjsym/jtjsym.sln\" && dotnet clean \"${workspaceFolder}/MineSweeper/MineSweeper.csproj\"",
       "problemMatcher": []
+    },
+    {
+      // ★ 一键发布：先发到 .publish/staging，成功后再镜像同步到部署目录
+      //   顺序执行，任何一步失败都不会动到部署目录
+      "label": "publish-jtjsym",
+      "dependsOn": ["publish-jtjsym-dotnet", "publish-jtjsym-sync"],
+      "dependsOrder": "sequence",
+      "group": {
+        "kind": "build",
+        "isDefault": false
+      },
+      "problemMatcher": []
+    },
+    {
+      // 步骤 1/2：Release + win-x64 + 框架依赖 + 单文件关闭，输出到暂存目录
+      "label": "publish-jtjsym-dotnet",
+      "type": "process",
+      "command": "dotnet",
+      "args": [
+        "publish",
+        "${workspaceFolder}/jtjsym/jtjsym/jtjsym.csproj",
+        "-c",
+        "Release",
+        "-r",
+        "win-x64",
+        "--self-contained",
+        "false",
+        "-p:PublishSingleFile=false",
+        "-o",
+        "${workspaceFolder}/.publish/staging"
+      ],
+      "options": {
+        "cwd": "${workspaceFolder}/jtjsym"
+      },
+      "problemMatcher": "$msCompile",
+      "presentation": {
+        "reveal": "always",
+        "clear": true
+      }
+    },
+    {
+      // 步骤 2/2：/MIR 镜像同步——覆盖更新文件，并删除部署目录里已过期的旧 dll
+      // 想换部署目录，只改下面 -Command 里的 $dst 路径即可
+      "label": "publish-jtjsym-sync",
+      "type": "process",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "$src = Join-Path '${workspaceFolder}' '.publish\\staging'; $dst = 'E:\\300programing\\390Publish\\391jtjsym'; if (-not (Test-Path -LiteralPath $src)) { Write-Host '源目录不存在:' $src; exit 1 }; robocopy $src $dst /MIR /NFL /NDL /NJH /NP /R:2 /W:1; if ($LASTEXITCODE -ge 8) { exit 1 } else { exit 0 }"
+      ],
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "clear": true
+      }
     }
   ]
 }

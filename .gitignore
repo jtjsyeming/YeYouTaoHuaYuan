@@ -18,6 +18,7 @@ launchSettings.json
 # Build results
 [Bb]in/
 [Oo]bj/
+.publish/
 /jtjsym/jtjsym/[Pp]roperties/
 /jtjsym/[Pp]ublish/
 

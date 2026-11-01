@@ -1,4 +1,5 @@
 @page "/loveTime"
+@implements IDisposable
 
 <h1>爱情计时器</h1>
 
@@ -8,17 +9,12 @@
 
 <h2>输入你的时间节点和想要计算的类型</h2>
 
-
-@using System.Globalization
-@inject IJSRuntime JSRuntime
-
-<h3>爱情计时器</h3>
-
 <div class="date-bar">
     <!-- 年份 -->
     <FluentSelect TOption="string"
                   Label="年份："
                   @bind-Value="selectedYear"
+                  @bind-Value:after="OnYearMonthChanged"
                   class="custom-select"
                   Width="120px">
         @foreach (var y in years)
@@ -31,6 +27,7 @@
     <FluentSelect TOption="string"
                   Label="月份："
                   @bind-Value="selectedMonth"
+                  @bind-Value:after="OnYearMonthChanged"
                   class="custom-select"
                   Width="100px">
         @foreach (var m in months)
@@ -39,10 +36,12 @@
         }
     </FluentSelect>
 
-    <!-- 日期 -->
-    <FluentSelect TOption="string"
+    <!-- 日期：加 @key，年/月变化时强制重建，避免 FAST Web Component 选项列表不刷新 -->
+    <FluentSelect @key="@($"{selectedYear}-{selectedMonth}")"
+                  TOption="string"
                   Label="日期："
                   @bind-Value="selectedDay"
+                  @bind-Value:after="OnDayChanged"
                   class="custom-select"
                   Width="100px">
         @foreach (var d in days)
@@ -52,92 +51,249 @@
     </FluentSelect>
 </div>
 
-
 <FluentStack Horizontal="true"
              HorizontalGap="20"
              Wrap="true"
              Style="justify-content:center; padding: 10px;">
-    <FluentButton class="timer" OnClick="@(() => CalculateElapsedTime("meet"))">计算相识时间</FluentButton>
-    <FluentButton class="timer" OnClick="@(() => CalculateElapsedTime("love"))">计算恋爱时间</FluentButton>
-    <FluentButton class="timer" OnClick="@(() => CalculateElapsedTime("married"))">计算结婚时间</FluentButton>
+    <FluentButton class="timer" OnClick="@(() => ApplyCustomDate("meet"))">计算相识时间</FluentButton>
+    <FluentButton class="timer" OnClick="@(() => ApplyCustomDate("love"))">计算恋爱时间</FluentButton>
+    <FluentButton class="timer" OnClick="@(() => ApplyCustomDate("married"))">计算结婚时间</FluentButton>
 </FluentStack>
 
-@code {
-	private class ElapsedTimeInfo
-	{
-		public string ElapsedTime { get; set; } = string.Empty;
-		public string ElapsedTimeDay { get; set; } = string.Empty;
-		public string ElapsedTimeMonths { get; set; } = string.Empty;
-		public string ElapsedTimeYear { get; set; } = string.Empty;
-	}
+@* P1：自选日期会覆盖顶部对应那一行的锚点，提供一键还原内置纪念日 *@
+<div class="love-reset-bar">
+    <FluentButton Appearance="Appearance.Lightweight" OnClick="@(() => ResetAnchor("meet"))">恢复相识默认</FluentButton>
+    <FluentButton Appearance="Appearance.Lightweight" OnClick="@(() => ResetAnchor("love"))">恢复恋爱默认</FluentButton>
+    <FluentButton Appearance="Appearance.Lightweight" OnClick="@(() => ResetAnchor("married"))">恢复结婚默认</FluentButton>
+</div>
 
-	private Dictionary<string, ElapsedTimeInfo> elapsedTimes = new()
-	{
-		{ "meet", new ElapsedTimeInfo() },
-		{ "love", new ElapsedTimeInfo() },
-		{ "married", new ElapsedTimeInfo() }
-	};
-
-	private List<string> years = Enumerable.Range(1950, DateTime.Now.Year - 1949).Select(y => y.ToString()).ToList();
-	private List<string> months = Enumerable.Range(1, 12).Select(m => m.ToString()).ToList();
-	private List<string> days = Enumerable.Range(1, 31).Select(d => d.ToString()).ToList();
-
-	private string selectedYear = "1950";
-	private string selectedMonth = "1";
-	private string selectedDay = "1";
-
-	private readonly Dictionary<string, DateTime> timePoints = new()
-	{
-		{ "meet", new DateTime(2018, 4, 22) },
-		{ "love", new DateTime(2022, 2, 25) },
-		{ "married", new DateTime(2023, 8, 8) }
-	};
-
-	protected override void OnInitialized()
-	{
-		foreach (var timePoint in timePoints)
-		{
-			CalculateElapsedTime(timePoint.Value, timePoint.Key);
-		}
-	}
-
-	private void CalculateElapsedTime(DateTime pastDate, string type)
-	{
-		var elapsed = DateTime.Now - pastDate;
-		string formattedElapsedTime = $"{elapsed.Days} 天, {elapsed.Hours} 小时, {elapsed.Minutes} 分钟, {elapsed.Seconds} 秒";
-
-		var elapsedTimeInfo = elapsedTimes[type];
-		elapsedTimeInfo.ElapsedTime = formattedElapsedTime;
-
-		int totalYears = elapsed.Days / 365;
-		int totalMonths = (elapsed.Days % 365) / 30;
-		int totalDays = (elapsed.Days % 365) % 30;
-
-		elapsedTimeInfo.ElapsedTimeYear = totalYears.ToString();
-		elapsedTimeInfo.ElapsedTimeMonths = totalMonths.ToString();
-		elapsedTimeInfo.ElapsedTimeDay = totalDays.ToString();
-	}
-
-	private void CalculateElapsedTime(string type)
-	{
-		if (int.TryParse(selectedYear, out int year) &&
-			int.TryParse(selectedMonth, out int month) &&
-			int.TryParse(selectedDay, out int day))
-		{
-			DateTime selectedDate = new DateTime(year, month, day);
-			var elapsed = DateTime.Now - selectedDate;
-
-			int totalYears = elapsed.Days / 365;
-			int totalMonths = (elapsed.Days % 365) / 30;
-			int totalDays = (elapsed.Days % 365) % 30;
-
-			string formattedElapsedTime = $"{elapsed.Days} 天, {elapsed.Hours} 小时, {elapsed.Minutes} 分钟, {elapsed.Seconds} 秒";
-
-			var elapsedTimeInfo = elapsedTimes[type];
-			elapsedTimeInfo.ElapsedTime = formattedElapsedTime;
-			elapsedTimeInfo.ElapsedTimeYear = totalYears.ToString();
-			elapsedTimeInfo.ElapsedTimeMonths = totalMonths.ToString();
-			elapsedTimeInfo.ElapsedTimeDay = totalDays.ToString();
-		}
-	}
+@if (!string.IsNullOrEmpty(validationMessage))
+{
+    <div class="love-validation-tip">@validationMessage</div>
 }
+
+@code {
+    private sealed class ElapsedTimeInfo
+    {
+        public string ElapsedTime { get; set; } = string.Empty;
+        public string ElapsedTimeDay { get; set; } = string.Empty;
+        public string ElapsedTimeMonths { get; set; } = string.Empty;
+        public string ElapsedTimeYear { get; set; } = string.Empty;
+    }
+
+    private readonly Dictionary<string, ElapsedTimeInfo> elapsedTimes = new()
+    {
+        { "meet", new ElapsedTimeInfo() },
+        { "love", new ElapsedTimeInfo() },
+        { "married", new ElapsedTimeInfo() }
+    };
+
+    /// <summary>内置纪念日，常量语义，永不被改写。</summary>
+    private static readonly Dictionary<string, DateTime> timePoints = new()
+    {
+        { "meet", new DateTime(2018, 4, 22) },
+        { "love", new DateTime(2022, 2, 25) },
+        { "married", new DateTime(2023, 8, 8) }
+    };
+
+    /// <summary>各类型当前生效的锚点：默认 = 内置纪念日，用户自选后被替换。刷新 Tick 只读它。</summary>
+    private readonly Dictionary<string, DateTime> anchorDates = new(timePoints);
+
+    private readonly List<string> years =
+        Enumerable.Range(1950, DateTime.Now.Year - 1949).Select(y => y.ToString()).ToList();
+    private readonly List<string> months =
+        Enumerable.Range(1, 12).Select(m => m.ToString()).ToList();
+
+    private List<string> days = new();
+
+    private string selectedYear = "1950";
+    private string selectedMonth = "1";
+    private string selectedDay = "1";
+
+    private string? validationMessage;
+
+    private CancellationTokenSource? tickerCts;
+    private bool isDisposed;
+
+    protected override void OnInitialized()
+    {
+        RebuildDays();
+        RefreshAll();
+    }
+
+    protected override void OnAfterRender(bool firstRender)
+    {
+        // 仅交互实例会走到 firstRender=true，规避 ServerPrerendered 的预渲染实例
+        if (firstRender)
+        {
+            StartTicker();
+        }
+    }
+
+    // ---------- 秒级刷新 ----------
+
+    private void StartTicker()
+    {
+        if (isDisposed || tickerCts is not null) return;   // 防重复启动
+
+        tickerCts = new CancellationTokenSource();
+        _ = RunTickerAsync(tickerCts.Token);
+    }
+
+    private async Task RunTickerAsync(CancellationToken token)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+
+        try
+        {
+            while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
+            {
+                await InvokeAsync(() =>
+                {
+                    if (isDisposed) return;
+
+                    RefreshAll();
+                    StateHasChanged();      // InvokeAsync 不会自动渲染，必须显式调用
+                });
+            }
+        }
+        catch (OperationCanceledException)
+        {
+            // 正常退出
+        }
+        catch (Exception)
+        {
+            // 电路已断开或渲染器已释放，静默退出，避免异常逃逸到线程池
+        }
+    }
+
+    public void Dispose()
+    {
+        isDisposed = true;
+        tickerCts?.Cancel();
+        tickerCts?.Dispose();
+        tickerCts = null;
+    }
+
+    // ---------- 渲染 ----------
+
+    private void RefreshAll()
+    {
+        var now = DateTime.Now;     // 一次取时，三条线同源，秒数对齐
+
+        foreach (var type in anchorDates.Keys)
+        {
+            Render(anchorDates[type], type, now);
+        }
+    }
+
+    private void Render(DateTime anchor, string type, DateTime? now = null)
+    {
+        var elapsed = (now ?? DateTime.Now) - anchor;
+        if (elapsed < TimeSpan.Zero)
+        {
+            elapsed = TimeSpan.Zero;    // 双保险：不展示负值
+        }
+
+        var info = elapsedTimes[type];
+        info.ElapsedTime =
+            $"{elapsed.Days} 天, {elapsed.Hours} 小时, {elapsed.Minutes} 分钟, {elapsed.Seconds} 秒";
+
+        info.ElapsedTimeYear = (elapsed.Days / 365).ToString();
+        info.ElapsedTimeMonths = ((elapsed.Days % 365) / 30).ToString();
+        info.ElapsedTimeDay = ((elapsed.Days % 365) % 30).ToString();
+    }
+
+    // ---------- 日期联动 ----------
+
+    private void RebuildDays()
+    {
+        if (!int.TryParse(selectedYear, out var y) || !int.TryParse(selectedMonth, out var m))
+        {
+            return;
+        }
+
+        var count = DateTime.DaysInMonth(y, m);
+        days = Enumerable.Range(1, count).Select(d => d.ToString()).ToList();
+
+        // 越界收敛：1/31 → 切到 2 月 → 收敛为 2 月最后一天
+        if (!int.TryParse(selectedDay, out var d) || d < 1 || d > count)
+        {
+            selectedDay = days[^1];
+        }
+    }
+
+    private void OnYearMonthChanged()
+    {
+        validationMessage = null;
+        RebuildDays();     // 字段已在 @bind-Value 赋值阶段更新完毕
+    }
+
+    private void OnDayChanged()
+    {
+        validationMessage = null;   // 用户改了日，旧的报错信息应失效
+    }
+
+    // ---------- 计算 ----------
+
+    private void ApplyCustomDate(string type)
+    {
+        validationMessage = null;
+
+        // 1) 完整性
+        if (!(int.TryParse(selectedYear, out var year) &&
+              int.TryParse(selectedMonth, out var month) &&
+              int.TryParse(selectedDay, out var day)))
+        {
+            validationMessage = "请先选择完整的年、月、日。";
+            return;
+        }
+
+        // 2) 日期存在性（双保险：联动正常时不会走到这里）
+        DateTime selectedDate;
+        try
+        {
+            selectedDate = new DateTime(year, month, day);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            validationMessage = "所选日期不存在，请检查年、月、日。";
+            return;
+        }
+
+        // 3) 未来日期
+        if (selectedDate > DateTime.Today)
+        {
+            validationMessage = "纪念日不能晚于今天，请重新选择。";
+            return;
+        }
+
+        anchorDates[type] = selectedDate;
+        Render(selectedDate, type);
+        // 事件回调结束后 Blazor 自动重渲染，无需 StateHasChanged()
+    }
+
+    private void ResetAnchor(string type)
+    {
+        anchorDates[type] = timePoints[type];
+        validationMessage = null;
+        Render(timePoints[type], type);
+    }
+}
+
+<style>
+    .love-validation-tip {
+        margin-top: 8px;
+        text-align: center;
+        font-size: .9em;
+        color: #d83b01;
+    }
+
+    .love-reset-bar {
+        display: flex;
+        gap: .5rem;
+        justify-content: center;
+        flex-wrap: wrap;
+        margin-top: 4px;
+    }
+</style>
