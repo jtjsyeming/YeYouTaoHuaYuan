@@ -47,6 +47,7 @@ dotnet run --project ../../jtjsym/jtjsym --no-launch-profile --environment Devel
 | `npm run test:tris` | TRIS 全量（含 150s 自动玩 + 190s 难度项） | 7~8 分钟 |
 | `npm run test:code` / `test:nf` | CODE / NF（含 Firefox 兼容、Slow 3G） | 2~3 分钟 |
 | `npm run test:d02` | D02 键盘操作 + 2048 数值配色（D02-4 为 `fixme`） | 1.5 分钟 |
+| `npm run test:d14` | D14 移动端俄罗斯方块两栏布局（七档视口 + 桌面零变化回归） | 3~4 分钟 |
 | `npm run test:fast` | nav + lt + g2048 + code_nf（不含 tris 长时项） | 6 分钟 |
 | `npm run test:all` | 全部 | 17~20 分钟 |
 
@@ -65,6 +66,7 @@ dotnet run --project ../../jtjsym/jtjsym --no-launch-profile --environment Devel
 | `tests/tris.spec.mjs` | TRIS-01~TRIS-26 | `tris_core.mjs` + `tris_long.mjs` + `tris14.mjs` + `tris25.mjs` |
 | `tests/code_nf.spec.mjs` | CODE-01~03、NF-01~NF-08（含 NF-02b） | `code_nf.mjs` |
 | `tests/d11_d12.spec.mjs` | D-11-1~3、D-12-1~6 | 《09》§6 新写 |
+| `tests/d14_mobile_layout.spec.mjs` | D14-1~D14-9（+ 一条控制台错误辅助断言） | 《11》§5.1 新写 |
 | `tests/smoke.spec.mjs` | 《07》§11.3 的 28 条 P0 | 从上列各文件抽子集，不新增逻辑 |
 
 ## 5. 迁移约定（改脚本前先看）
