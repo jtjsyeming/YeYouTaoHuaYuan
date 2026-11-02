@@ -190,7 +190,7 @@ test.describe('G2048 2048 游戏', () => {
         hit = true;
         break;
       }
-      await page.locator('button:has-text("重玩")').first().click();
+      await page.locator('.replay-btn').first().click();
       await sleep(260);
     }
     if (!hit) check('G2048-22', false, `重玩 ${attempts} 次仍未找到「某方向无变化」的开局`);
@@ -199,7 +199,7 @@ test.describe('G2048 2048 游戏', () => {
   test('G2048-03 重玩 → 2 个初始块、分数 0、遮罩消失', async ({ page }) => {
     await open(page, '/game_2048', 1600);
     for (let i = 0; i < 3; i++) await clickDir(page, 'left');
-    await page.locator('button:has-text("重玩")').first().click();
+    await page.locator('.replay-btn').first().click();
     await sleep(500);
     const b = await readBoard(page);
     const s = await readScore(page);

@@ -72,7 +72,7 @@ export const countTiles = b => b.flat().filter(v => v !== 0).length;
 
 export const clickDir = async (page, dir) => {
   const sel = { up: '⬆️', left: '⬅️', down: '⬇️', right: '➡️' }[dir];
-  await page.locator(`.controls button:has-text("${sel}")`).click();
+  await page.locator(`.controls fluent-button:has-text("${sel}")`).click();
   await sleep(320);
 };
 

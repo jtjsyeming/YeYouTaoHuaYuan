@@ -23,8 +23,8 @@ test.describe('冒烟集（28 条 P0）', () => {
   test('NAV-01/NAV-02 首页与 5 项导航', async ({ page }) => {
     await open(page, '/');
     const h1 = (await page.textContent('h1').catch(() => '')) || '';
-    const h2 = (await page.textContent('main h2').catch(() => '')) || '';
-    check('NAV-01', h1.includes('欢迎来到夜游桃花源') && h2.includes('你好'), `h1="${h1.trim()}" h2="${h2.trim()}"`);
+    const cardCount = await page.locator('.home-card').count();
+    check('NAV-01', h1.includes('欢迎来到夜游桃花源') && cardCount === 5, `h1="${h1.trim()}" 入口卡片=${cardCount}`);
 
     const navMap = [
       ['jtjsym', '/'],
@@ -36,7 +36,7 @@ test.describe('冒烟集（28 条 P0）', () => {
     const bad = [];
     for (const [text, path] of navMap) {
       await open(page, '/');
-      await page.locator('nav a.nav-link', { hasText: text }).first().click();
+      await page.locator('nav a.fluent-nav-link', { hasText: text }).first().click();
       await sleep(1100);
       const url = new URL(page.url()).pathname;
       if (url !== path) bad.push(`${text}→${url}(期望${path})`);
@@ -191,7 +191,7 @@ test.describe('冒烟集（28 条 P0）', () => {
         );
         hit = true;
       } else {
-        await page.locator('button:has-text("重玩")').first().click();
+        await page.locator('.replay-btn').first().click();
         await sleep(260);
       }
     }

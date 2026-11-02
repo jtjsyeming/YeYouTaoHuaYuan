@@ -9,11 +9,11 @@ test.describe('NAV 站点框架', () => {
     await open(page, '/');
 
     const h1 = (await page.textContent('h1').catch(() => '')) || '';
-    const h2 = (await page.textContent('main h2').catch(() => '')) || '';
+    const cardCount = await page.locator('.home-card').count();
     check(
       'NAV-01',
-      h1.includes('欢迎来到夜游桃花源') && h2.includes('你好'),
-      `h1="${h1.trim()}" h2="${h2.trim()}"`,
+      h1.includes('欢迎来到夜游桃花源') && cardCount === 5,
+      `h1="${h1.trim()}" 入口卡片=${cardCount}（1 简介 + 4 链接，原 main h2「你好！」已随卡片化取消）`,
     );
 
     const navMap = [
@@ -26,7 +26,7 @@ test.describe('NAV 站点框架', () => {
     const navResults = [];
     for (const [text, expectPath] of navMap) {
       await open(page, '/');
-      await page.locator('nav a.nav-link', { hasText: text }).first().click();
+      await page.locator('nav a.fluent-nav-link', { hasText: text }).first().click();
       await sleep(1200);
       const url = new URL(page.url()).pathname;
       navResults.push(`${text}→${url}${url === expectPath ? '' : '✗期望' + expectPath}`);
@@ -34,19 +34,19 @@ test.describe('NAV 站点框架', () => {
     check('NAV-02', navResults.every(r => !r.includes('✗')), `5 项跳转：${navResults.join(' | ')}`);
 
     await open(page, '/tetris');
-    const activeText = await page.textContent('nav a.nav-link.active').catch(() => '');
+    const activeText = await page.textContent('nav a.fluent-nav-link.active').catch(() => '');
     const activeHref = await page.evaluate(() => {
-      const a = document.querySelector('nav a.nav-link.active');
+      const a = document.querySelector('nav a.fluent-nav-link.active');
       return a ? a.getAttribute('href') : null;
     });
     await open(page, '/');
     const rootHref = await page.evaluate(() => {
-      const a = document.querySelector('nav a.nav-link.active');
+      const a = document.querySelector('nav a.fluent-nav-link.active');
       return a ? a.getAttribute('href') : null;
     });
     check(
       'NAV-03',
-      (activeText || '').includes('俄罗斯方块') && activeHref === 'tetris' && rootHref === '',
+      (activeText || '').includes('俄罗斯方块') && activeHref === 'tetris' && rootHref === '/',
       `在 /tetris 高亮="${(activeText || '').trim()}"(href=${activeHref})；在 / 高亮 href="${rootHref}"`,
     );
   });
@@ -85,7 +85,7 @@ test.describe('NAV 站点框架', () => {
 
   test('NAV-07 各路由标题（页面自带 PageTitle，未设置的回退站点名）', async ({ page }) => {
     const expected = {
-      '/': 'jtjsym',
+      '/': '夜游桃花源',
       '/counter': '按下试试',
       '/loveTime': '爱情计时器',
       '/game_2048': '2048',
@@ -103,7 +103,7 @@ test.describe('NAV 站点框架', () => {
   test('NAV-08 隐藏页 /coding_place 可访问且导航无入口', async ({ page }) => {
     await open(page, '/coding_place');
     const h1 = ((await page.textContent('h1').catch(() => '')) || '').trim();
-    const navHasCoding = await page.locator('nav a.nav-link', { hasText: 'Coding' }).count();
+    const navHasCoding = await page.locator('nav a.fluent-nav-link', { hasText: 'Coding' }).count();
     check('NAV-08', h1.includes('编程挑战') && navHasCoding === 0, `h1="${h1}"，导航含 Coding 项=${navHasCoding}`);
   });
 
@@ -119,12 +119,7 @@ test.describe('NAV 站点框架', () => {
     );
   });
 
-  test('NAV-10 右上角 About 外链（模板残留 D-07）', async ({ page }) => {
-    await open(page, '/');
-    const href = await page.getAttribute('main .top-row a', 'href').catch(() => null);
-    const text = ((await page.textContent('main .top-row a').catch(() => '')) || '').trim();
-    check('NAV-10', href === 'https://docs.microsoft.com/aspnet/', `文字="${text}" href="${href}"`);
-  });
+  // NAV-10（右上角 About 外链）已随 D-15 B6 删除该外链而整条移除；「模板残留」改由 D-07 台账跟踪。
 });
 
 test.describe('FISH 电子木鱼', () => {

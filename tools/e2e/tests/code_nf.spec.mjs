@@ -52,7 +52,7 @@ test.describe('NF 非功能', () => {
 
     await open(page, '/game_2048');
     for (const d of ['⬅️', '⬆️', '➡️']) {
-      await page.locator(`.controls button:has-text("${d}")`).click();
+      await page.locator(`.controls fluent-button:has-text("${d}")`).click();
       await sleep(300);
     }
     const score = ((await page.textContent('p:has-text("分数")')) || '').trim();
@@ -83,7 +83,7 @@ test.describe('NF 非功能', () => {
 
     await open(mp, '/game_2048');
     const before = await mp.$$eval('.tile', ts => ts.filter(t => +t.textContent.trim() > 0).length);
-    await mp.locator('.controls button:has-text("⬅️")').tap();
+    await mp.locator('.controls fluent-button:has-text("⬅️")').tap();
     await sleep(400);
     const after = await mp.$$eval('.tile', ts => ts.filter(t => +t.textContent.trim() > 0).length);
     detail.push(`2048 非零块 ${before}→${after}`);
@@ -168,7 +168,7 @@ test.describe('NF 非功能', () => {
     const p3 = await context.newPage();
     await Promise.all([open(page, '/counter'), open(p2, '/game_2048'), open(p3, '/tetris')]);
     await page.locator('fluent-button.btn-primary').click();
-    await p2.locator('.controls button:has-text("⬅️")').click();
+    await p2.locator('.controls fluent-button:has-text("⬅️")').click();
     await p3.locator('.game-btn:has-text("旋转")').click();
     await sleep(900);
     const c = ((await page.textContent('p[role=status]')) || '').trim();

@@ -16,6 +16,7 @@
     "test:d11d12": "playwright test tests/d11_d12.spec.mjs",
     "test:d02": "playwright test tests/d02_keyboard_ui.spec.mjs",
     "test:d14": "playwright test tests/d14_mobile_layout.spec.mjs",
+    "test:d15": "playwright test tests/d15_home_fluent.spec.mjs",
     "test:fast": "playwright test tests/nav_fish.spec.mjs tests/lt.spec.mjs tests/g2048.spec.mjs tests/code_nf.spec.mjs tests/d11_d12.spec.mjs",
     "test:all": "playwright test"
   },

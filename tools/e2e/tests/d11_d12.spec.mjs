@@ -21,7 +21,7 @@ test.describe('D-11 浏览器标题', () => {
 
   test('D-11-2 六个路由标题与《09》§3.4 表一致（防回归）', async ({ page }) => {
     const expected = {
-      '/': 'jtjsym',
+      '/': '夜游桃花源',
       '/counter': '按下试试',
       '/loveTime': '爱情计时器',
       '/game_2048': '2048',
@@ -49,17 +49,17 @@ test.describe('D-11 浏览器标题', () => {
     for (const [path, title] of seq) {
       // 走客户端导航（点击左侧菜单），而不是整页跳转
       // 注意 NavLink 的 href 是相对路径（不含前导斜杠），见 NAV-03 实测
-      await page.locator(`nav a.nav-link[href="${path.slice(1)}"]`).first().click();
+      await page.locator(`nav a.fluent-nav-link[href="${path.slice(1)}"]`).first().click();
       await page.waitForTimeout(1200);
       const t = await page.title();
       log.push(`${path}→"${t}"`);
       if (t !== title || t === '') ok = false;
     }
-    await page.locator('nav a.nav-link[href=""]').first().click();
+    await page.locator('nav a.fluent-nav-link[href="/"]').first().click();
     await page.waitForTimeout(1200);
     const homeTitle = await page.title();
     log.push(`/→"${homeTitle}"`);
-    if (homeTitle !== 'jtjsym') ok = false;
+    if (homeTitle !== '夜游桃花源') ok = false;
     check('D-11-3', ok, `SPA 导航标题序列：${log.join(' , ')}`);
   });
 });

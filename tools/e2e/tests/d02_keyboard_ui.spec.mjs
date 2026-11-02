@@ -242,7 +242,7 @@ test.describe('D02 键盘操作与 2048 视觉统一', () => {
 
     await open(page, '/game_2048', 1600);
     // 用导航链接而非 goto：只有 SPA 导航才会触发"新页 register / 旧页 unregister"的竞态路径
-    await page.locator('nav a.nav-link', { hasText: '俄罗斯方块' }).first().click();
+    await page.locator('nav a.fluent-nav-link', { hasText: '俄罗斯方块' }).first().click();
     await sleep(1600);
 
     const t0 = await readTetris(page);
@@ -253,7 +253,7 @@ test.describe('D02 键盘操作与 2048 视觉统一', () => {
     const dTetris = Math.round((t0.overlayLeft - t1.overlayLeft) / cell);
     check('D02-9-进入Tetris', dTetris >= 1 || t1.overlayLeft === 0, `导航进 /tetris 后按 ←：left ${t0.overlayLeft} → ${t1.overlayLeft}（Δ=${dTetris} 格）`);
 
-    await page.locator('nav a.nav-link', { hasText: '2048' }).first().click();
+    await page.locator('nav a.fluent-nav-link', { hasText: '2048' }).first().click();
     await sleep(1600);
     const b0 = await readBoard(page);
     const s0 = await readScore(page);
@@ -340,10 +340,10 @@ test.describe('D02 键盘操作与 2048 视觉统一', () => {
       await page.keyboard.press(d);
       await sleep(200);
     }
-    await page.locator('.controls button:has-text("⬅️")').click();
+    await page.locator('.controls fluent-button:has-text("⬅️")').click();
     await sleep(200);
 
-    await page.locator('nav a.nav-link', { hasText: '俄罗斯方块' }).first().click();
+    await page.locator('nav a.fluent-nav-link', { hasText: '俄罗斯方块' }).first().click();
     await sleep(1600);
     for (const d of ['ArrowLeft', 'ArrowUp', 'ArrowRight']) {
       await page.keyboard.press(d);
