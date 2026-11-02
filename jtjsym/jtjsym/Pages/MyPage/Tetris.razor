@@ -1,4 +1,4 @@
-@page "/tetris"
+﻿@page "/tetris"
 @using Microsoft.FluentUI.AspNetCore.Components
 @using System.Timers
 @inject IJSRuntime JS
@@ -95,28 +95,28 @@
                 <div class="game-controls">
                     @if (!isPaused)
                     {
-                            <button class="game-btn control-btn pause-btn" 
-                                    @onclick="PauseGame"
-                                    disabled="@isGameOver">
+                            <FluentButton Class="game-btn control-btn pause-btn"
+                                          @onclick="PauseGame"
+                                          Disabled="@isGameOver">
                                 暂停游戏
-                            </button>
+                            </FluentButton>
                     }
                     else
                     {
-                            <button class="game-btn control-btn" style="background-color: #666; cursor: not-allowed;" disabled>
+                            <FluentButton Class="game-btn control-btn" Style="background-color: #666;" Disabled="true">
                                 已暂停
-                            </button>
-                            <button class="game-btn control-btn continue-btn" 
-                                    @onclick="ResumeGame"
-                                    disabled="@isGameOver">
+                            </FluentButton>
+                            <FluentButton Class="game-btn control-btn continue-btn"
+                                          @onclick="ResumeGame"
+                                          Disabled="@isGameOver">
                                 继续游戏
-                            </button>
+                            </FluentButton>
                     }
 
-                    <button class="game-btn control-btn restart-btn" 
-                            @onclick="RestartGame">
+                    <FluentButton Class="game-btn control-btn restart-btn"
+                                  @onclick="RestartGame">
                         重新开始
-                    </button>
+                    </FluentButton>
                 </div>
 
                 @if (isGameOver)
@@ -134,31 +134,31 @@
         <div class="control-buttons">
             <div class="direction-pad">
                 <!-- 旋转按钮 -->
-                <button class="game-btn rotate-btn" 
-                        @onclick="RotatePiece"
-                        disabled="@(isGameOver || isPaused)">
+                <FluentButton Class="game-btn rotate-btn"
+                              @onclick="RotatePiece"
+                              Disabled="@(isGameOver || isPaused)">
                     旋转
-                </button>
+                </FluentButton>
                 <!-- 方向键 -->
                 <div class="dir-buttons">
-                    <button class="game-btn direction-btn" 
-                            @onclick="() => MovePiece(-1, 0)"
-                            disabled="@(isGameOver || isPaused)">
+                    <FluentButton Class="game-btn direction-btn"
+                                  @onclick="() => MovePiece(-1, 0)"
+                                  Disabled="@(isGameOver || isPaused)">
                         ←
-                    </button>
-                    <button class="game-btn direction-btn down-btn" 
-                            @onpointerdown="OnDownButtonPress"
-                            @onpointerup="OnDownButtonRelease"
-                            @onpointerout="OnDownButtonRelease"
-                            @onpointerleave="OnDownButtonRelease"
-                            disabled="@(isGameOver || isPaused)">
+                    </FluentButton>
+                    <FluentButton Class="game-btn direction-btn down-btn"
+                                  @onpointerdown="OnDownButtonPress"
+                                  @onpointerup="OnDownButtonRelease"
+                                  @onpointerout="OnDownButtonRelease"
+                                  @onpointerleave="OnDownButtonRelease"
+                                  Disabled="@(isGameOver || isPaused)">
                         ↓
-                    </button>
-                    <button class="game-btn direction-btn" 
-                            @onclick="() => MovePiece(1, 0)"
-                            disabled="@(isGameOver || isPaused)">
+                    </FluentButton>
+                    <FluentButton Class="game-btn direction-btn"
+                                  @onclick="() => MovePiece(1, 0)"
+                                  Disabled="@(isGameOver || isPaused)">
                         →
-                    </button>
+                    </FluentButton>
                 </div>
             </div>
         </div>
@@ -385,19 +385,41 @@
         transition: filter 0.2s, transform 0.2s;
     }
 
-    .game-btn:hover:not(:disabled) {
+    /* 内部按钮：抹掉 FAST 的 padding/border，让宿主背景与圆角说话。
+       fluent-button 有 Shadow DOM（内部是 class="control" / part="control" 的 button，
+       自带 padding:0 10px / border:1px solid transparent），只改宿主的话
+       40px 宽的方向键内宽只剩 20px。::part(control) 是唯一可靠入口。 */
+    fluent-button.game-btn::part(control) {
+        background: transparent;
+        border: none;
+        border-radius: 6px;
+        padding: 0 4px;
+        font: inherit;
+        color: inherit;
+        width: 100%;
+        height: 100%;
+    }
+
+    /* :disabled 伪类不匹配自定义元素（fluent-button 不是表单元素，实测永不命中）
+       → 全部改属性选择器 */
+    .game-btn:hover:not([disabled]) {
         filter: brightness(1.1);
         transform: scale(1.05);
     }
 
-    .game-btn:active:not(:disabled) {
+    .game-btn:active:not([disabled]) {
         filter: brightness(0.9);
         transform: scale(0.95);
     }
 
-    .game-btn:disabled {
+    .game-btn[disabled] {
         opacity: 0.5;
         cursor: not-allowed;
+    }
+
+    /* 抵消 FAST 内部 .control 自带的 opacity:.3，保持禁用态 0.5 */
+    fluent-button.game-btn[disabled]::part(control) {
+        opacity: 1;
     }
 
     /* 旋转按钮 */

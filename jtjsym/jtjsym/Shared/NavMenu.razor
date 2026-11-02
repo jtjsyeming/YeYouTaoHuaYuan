@@ -1,3 +1,5 @@
+﻿@using Microsoft.FluentUI.AspNetCore.Components
+
 <div class="top-row ps-3 navbar navbar-dark">
     <div class="container-fluid">
         <a class="navbar-brand" href="" style="font-family: 'Arial', sans-serif;">夜游桃花源</a>
@@ -10,35 +12,25 @@
 <div class="@NavMenuCssClass" @onclick="ToggleNavMenu">
     <nav class="flex-column">
         <div class="nav-item px-3">
-            <NavLink class="nav-link" href="" Match="NavLinkMatch.All">
-                <span class="oi oi-home" aria-hidden="true"></span> jtjsym
-            </NavLink>
+            <FluentNavLink Href="/" Match="NavLinkMatch.All"
+                           Icon="@(new Icons.Regular.Size20.Home())">jtjsym</FluentNavLink>
         </div>
         <div class="nav-item px-3">
-            <NavLink class="nav-link" href="counter">
-                <span class="oi oi-pulse" aria-hidden="true"></span> 按下试试
-            </NavLink>
+            <FluentNavLink Href="counter"
+                           Icon="@(new Icons.Regular.Size20.NumberSymbol())">按下试试</FluentNavLink>
         </div>
         <div class="nav-item px-3">
-            <NavLink class="nav-link" href="loveTime">
-                <span class="oi oi-heart" aria-hidden="true"></span> 爱情计时器
-            </NavLink>
+            <FluentNavLink Href="loveTime"
+                           Icon="@(new Icons.Regular.Size20.Heart())">爱情计时器</FluentNavLink>
         </div>
         <div class="nav-item px-3">
-            <NavLink class="nav-link" href="game_2048">
-                <span class="oi oi-play-circle" aria-hidden="true"></span> 2048
-            </NavLink>
+            <FluentNavLink Href="game_2048"
+                           Icon="@(new Icons.Regular.Size20.SquareMultiple())">2048</FluentNavLink>
         </div>
         <div class="nav-item px-3">
-            <NavLink class="nav-link" href="tetris">
-                <span class="oi oi-code" aria-hidden="true"></span> 俄罗斯方块
-            </NavLink>
+            <FluentNavLink Href="tetris"
+                           Icon="@(new Icons.Regular.Size20.TetrisApp())">俄罗斯方块</FluentNavLink>
         </div>
-        @* <div class="nav-item px-3"> *@
-        @*     <NavLink class="nav-link" href="coding_place"> *@
-        @*         <span class="oi oi-code" aria-hidden="true"></span> Coding *@
-        @*     </NavLink> *@
-        @* </div> *@
     </nav>
 </div>
 

@@ -1,42 +1,16 @@
-@page "/coding_place"
+﻿@page "/coding_place"
+@using Microsoft.FluentUI.AspNetCore.Components
 @using System.Text
 
 <PageTitle>编程挑战</PageTitle>
 
 <h1>编程挑战</h1>
 
-<FluentPage>
-    <FluentPageHeader>
-        <FluentTextBlock Class="problem-description">
-            @ProblemDescription
-        </FluentTextBlock>
-    </FluentPageHeader>
+<FluentCard Style="max-width:880px;margin:0 auto;text-align:left">
+    <h2 style="margin-top:0">任务混部</h2>
+    <pre class="problem-description">@ProblemDescription</pre>
 
-    @* <FluentSection>
-        <FluentSectionHeader>
-            <FluentSectionHeaderTitle>我的代码</FluentSectionHeaderTitle>
-        </FluentSectionHeader>
-        <FluentCodeBlock Language="cpp" Code=@CodeAnswer></FluentCodeBlock>
-    </FluentSection>
-
-    <FluentSection>
-        <FluentSectionHeader>
-            <FluentSectionHeaderTitle>输入输出示例</FluentSectionHeaderTitle>
-        </FluentSectionHeader>
-        <FluentSection>
-            <FluentSectionHeader>
-                <FluentSectionHeaderTitle>输入</FluentSectionHeaderTitle>
-            </FluentSectionHeader>
-            <FluentTextBlock>@InputExample</FluentTextBlock>
-        </FluentSection>
-        <FluentSection>
-            <FluentSectionHeader>
-                <FluentSectionHeaderTitle>输出</FluentSectionHeaderTitle>
-            </FluentSectionHeader>
-            <FluentTextBlock>@OutputExample</FluentTextBlock>
-        </FluentSection>
-    </FluentSection> *@
-</FluentPage>
+</FluentCard>
 
 @code {
     // 在这里填充问题描述
@@ -107,13 +81,7 @@
         }}
     ";
 
-    // 在这里填充输入示例
-    private string InputExample = @"
-        [1, 2, 3, 4]
-    ";
 
-    // 在这里填充输出示例
-    private string OutputExample = @"
-        10
-    ";
+
+
 }

@@ -1,19 +1,64 @@
 ﻿@page "/"
+@using Microsoft.FluentUI.AspNetCore.Components
 
-<PageTitle>jtjsym</PageTitle>
+<PageTitle>夜游桃花源</PageTitle>
 
-<header>
-    <!-- 头部内容 -->
+<header class="home-header">
     <h1>欢迎来到夜游桃花源</h1>
+    <p class="home-subtitle">木鱼、计时器、两款小游戏——用来打发时间的小站。</p>
 </header>
-<main>
-    <!-- 页面的主要内容 -->
-    <h2>你好！</h2>
+
+<main class="home-main">
+    <section class="home-card home-card--intro" aria-label="站点简介">
+        <FluentCard Style="width:100%;height:100%">
+            <div class="card-body">
+                <h2 class="card-title">关于这里</h2>
+                <p class="card-desc">个人小站，所有内容都在浏览器里跑，不存任何数据。</p>
+            </div>
+        </FluentCard>
+    </section>
+
+    <NavLink class="home-card" href="counter">
+        <FluentCard Style="width:100%;height:100%">
+            <div class="card-body">
+                <FluentIcon Value="@(new Icons.Regular.Size32.TapSingle())" />
+                <h3 class="card-title">按下试试</h3>
+                <p class="card-desc">电子木鱼，点一下，功德 +1。</p>
+            </div>
+        </FluentCard>
+    </NavLink>
+
+    <NavLink class="home-card" href="loveTime">
+        <FluentCard Style="width:100%;height:100%">
+            <div class="card-body">
+                <FluentIcon Value="@(new Icons.Regular.Size32.Heart())" />
+                <h3 class="card-title">爱情计时器</h3>
+                <p class="card-desc">相识、相爱、相守，精确到秒。</p>
+            </div>
+        </FluentCard>
+    </NavLink>
+
+    <NavLink class="home-card" href="game_2048">
+        <FluentCard Style="width:100%;height:100%">
+            <div class="card-body">
+                <FluentIcon Value="@(new Icons.Regular.Size32.SquareMultiple())" />
+                <h3 class="card-title">2048</h3>
+                <p class="card-desc">方向键 + 屏幕按钮，合到 2048。</p>
+            </div>
+        </FluentCard>
+    </NavLink>
+
+    <NavLink class="home-card" href="tetris">
+        <FluentCard Style="width:100%;height:100%">
+            <div class="card-body">
+                <FluentIcon Value="@(new Icons.Regular.Size32.TetrisApp())" />
+                <h3 class="card-title">俄罗斯方块</h3>
+                <p class="card-desc">消行、升级，手机竖屏也能玩。</p>
+            </div>
+        </FluentCard>
+    </NavLink>
 </main>
 
-
-<footer>
-    <div style="position: fixed; bottom: 0; width: 100%; text-align: center; background-color: rgba(0,0,0,0.5); color: white; padding: 10px 0;">
-        <a href="https://beian.mps.gov.cn/#/" target="_blank" style="color: white;">陕ICP备2024056488号</a>
-    </div>
+<footer class="site-footer">
+    <a href="https://beian.mps.gov.cn/#/" target="_blank" rel="noopener">陕ICP备2024056488号</a>
 </footer>

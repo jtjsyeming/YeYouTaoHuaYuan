@@ -1,4 +1,5 @@
 ﻿@page "/game_2048"
+@using Microsoft.FluentUI.AspNetCore.Components
 @inject NavigationManager Navigation
 @inject IJSRuntime JS
 @implements IAsyncDisposable
@@ -20,22 +21,22 @@
 </div>
 
 <div class="controls">
-    <button @onclick="MoveUp">⬆️</button>
-    <div>
-        <button @onclick="MoveLeft">⬅️</button>
-        <button @onclick="MoveDown">⬇️</button>
-        <button @onclick="MoveRight">➡️</button>
+    <FluentButton Class="dir-btn dir-up" @onclick="MoveUp" Disabled="@isGameOver">⬆️</FluentButton>
+    <div class="dir-row">
+        <FluentButton Class="dir-btn" @onclick="MoveLeft" Disabled="@isGameOver">⬅️</FluentButton>
+        <FluentButton Class="dir-btn" @onclick="MoveDown" Disabled="@isGameOver">⬇️</FluentButton>
+        <FluentButton Class="dir-btn" @onclick="MoveRight" Disabled="@isGameOver">➡️</FluentButton>
     </div>
 </div>
 
 <p>分数：@Score</p>
-<p><button @onclick="RestartGame">重玩</button></p>
+<p><FluentButton Class="replay-btn" @onclick="RestartGame">重玩</FluentButton></p>
 
 @if (isGameOver)
 {
     <div class="game-over">
         <h2>游戏结束</h2>
-        <button @onclick="RestartGame">重玩</button>
+        <FluentButton Class="overlay-replay-btn" Appearance="Appearance.Accent" @onclick="RestartGame">重玩</FluentButton>
     </div>
 }
 
