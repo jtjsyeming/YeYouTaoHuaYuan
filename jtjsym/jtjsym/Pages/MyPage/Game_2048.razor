@@ -42,6 +42,7 @@
 
 @code {
     private const int GridSize = 4;
+    private const int FourSpawnPercent = 10;   // 标准 2048：90% 出 2、10% 出 4
     private int[,] board = new int[GridSize, GridSize];
     private Random random = new Random();
     private int Score = 0;
@@ -153,7 +154,8 @@
         if (emptyTiles.Count > 0)
         {
             var (row, col) = emptyTiles[random.Next(emptyTiles.Count)];
-            board[row, col] = random.Next(1, 3) * 2; // Adds 2 or 4
+            // Next(100) ∈ [0,100)，< 90 覆盖 90 个值 → 2 的概率恰 90%，其余 10 个值 → 4
+            board[row, col] = random.Next(100) < 100 - FourSpawnPercent ? 2 : 4;
         }
     }
 
