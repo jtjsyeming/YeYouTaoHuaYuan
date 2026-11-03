@@ -68,6 +68,14 @@ export const readScore = async page => {
   return parseInt(/(?:分数|Score)[:：]\s*(\d+)/.exec(txt)?.[1] ?? '-1');
 };
 
+/** 最高分文案 "最高分：N"；元素不存在（其他页面）返回 null，便于复用 */
+export const readBest = async page => {
+  const loc = page.locator('p.best-score');
+  if ((await loc.count()) === 0) return null;
+  const txt = (await loc.first().textContent()) ?? '';
+  return parseInt(/最高分[:：]\s*(\d+)/.exec(txt)?.[1] ?? '-1');
+};
+
 export const countTiles = b => b.flat().filter(v => v !== 0).length;
 
 export const clickDir = async (page, dir) => {

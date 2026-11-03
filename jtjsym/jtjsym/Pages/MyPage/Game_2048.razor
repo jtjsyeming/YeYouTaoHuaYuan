@@ -30,6 +30,7 @@
 </div>
 
 <p>分数：@Score</p>
+<p class="best-score">最高分：@BestScore</p>
 <p><FluentButton Class="replay-btn" @onclick="RestartGame">重玩</FluentButton></p>
 
 @if (isGameOver)
@@ -46,6 +47,11 @@
     private int[,] board = new int[GridSize, GridSize];
     private Random random = new Random();
     private int Score = 0;
+
+    // 最高分（D-16）：存 localStorage，键名带 jtjsym. 命名空间，供后续 Tetris 等复用同一约定
+    private const string BestKey = "jtjsym.g2048.best";
+    private int BestScore = 0;
+    private bool isBestLoaded = false;     // 只在第一次交互渲染时读一次
 
     private bool isGameOver = false;
 
@@ -71,6 +77,7 @@
             return;
         }
 
+        UpdateBestScore();   // Score 已在 Merge 内累加完毕，此处判断破纪录（按钮与键盘共用）
         AddRandomTile();
 
         if (IsGameOver())
@@ -283,12 +290,51 @@
         return merged.ToArray();
     }
 
+    // ───────────────────────── 最高分持久化（D-16）─────────────────────────
+
+    /// <summary>破纪录即异步落盘；未破纪录不产生任何 interop 开销（绝大多数走子走这条返回）</summary>
+    private void UpdateBestScore()
+    {
+        if (Score <= BestScore) return;    // 只增不减：重玩后 Score=0 自然不会覆盖
+        BestScore = Score;
+        _ = WriteBestAsync();
+    }
+
+    private async Task WriteBestAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("localStorage.setItem", BestKey, BestScore);
+        }
+        catch (JSException) { }               // 存储被禁：本次会话内仍有效
+        catch (JSDisconnectedException) { }   // 关页/断线
+        catch (ObjectDisposedException) { }   // 电路已释放
+    }
+
     // ───────────────────────── 键盘操作（D-02）─────────────────────────
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         // 仅交互实例会走到 firstRender=true，规避 ServerPrerendered 的预渲染实例
-        if (!firstRender || keyModule is not null) return;
+        if (!firstRender) return;
+
+        // ① 读最高分：与键盘模块解耦，键盘将来怎么改都不影响它
+        if (!isBestLoaded)
+        {
+            isBestLoaded = true;               // 先置位：读失败也不重试（避免每次渲染都打 interop）
+            try
+            {
+                var raw = await JS.InvokeAsync<string?>("localStorage.getItem", BestKey);
+                if (int.TryParse(raw, out var v) && v > 0) BestScore = v;
+            }
+            catch (JSException) { }            // 隐私模式/存储被禁：BestScore 保持 0，游戏零降级
+            catch (JSDisconnectedException) { }
+
+            StateHasChanged();                 // 预渲染首帧是 0，这一帧补成真实值
+        }
+
+        // ② 键盘注册（原逻辑，保持不变）
+        if (keyModule is not null) return;
 
         keyRef = DotNetObjectReference.Create(this);
         keyModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/gamekeyboard.js");
