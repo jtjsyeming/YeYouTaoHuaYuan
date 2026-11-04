@@ -6,8 +6,14 @@
 <h1>爱情计时器</h1>
 
 <div class="timer timer-display">我们相识已经过去了：@elapsedTimes["meet"].ElapsedTime</div>
+@* 副行只带 timer-calendar：绝不能加 timer 类（LT-01 断言 div.timer 恰为 3 个） *@
+<div class="timer-calendar">@elapsedTimes["meet"].CalendarText</div>
+
 <div class="timer timer-display">我们相爱已经过去了：@elapsedTimes["love"].ElapsedTime</div>
+<div class="timer-calendar">@elapsedTimes["love"].CalendarText</div>
+
 <div class="timer timer-display">我们步入婚姻已经过去了：@elapsedTimes["married"].ElapsedTime</div>
+<div class="timer-calendar">@elapsedTimes["married"].CalendarText</div>
 
 <h2>输入你的时间节点和想要计算的类型</h2>
 
@@ -77,10 +83,8 @@
 @code {
     private sealed class ElapsedTimeInfo
     {
-        public string ElapsedTime { get; set; } = string.Empty;
-        public string ElapsedTimeDay { get; set; } = string.Empty;
-        public string ElapsedTimeMonths { get; set; } = string.Empty;
-        public string ElapsedTimeYear { get; set; } = string.Empty;
+        public string ElapsedTime { get; set; } = string.Empty;    // 主行：天/时/分/秒
+        public string CalendarText { get; set; } = string.Empty;   // 副行：日历口径的年月天
     }
 
     private readonly Dictionary<string, ElapsedTimeInfo> elapsedTimes = new()
@@ -191,7 +195,8 @@
 
     private void Render(DateTime anchor, string type, DateTime? now = null)
     {
-        var elapsed = (now ?? DateTime.Now) - anchor;
+        var n = now ?? DateTime.Now;      // 只取一次时：主行与日历副行必须同源，避免跨零点差 1 天
+        var elapsed = n - anchor;
         if (elapsed < TimeSpan.Zero)
         {
             elapsed = TimeSpan.Zero;    // 双保险：不展示负值
@@ -201,9 +206,41 @@
         info.ElapsedTime =
             $"{elapsed.Days} 天, {elapsed.Hours} 小时, {elapsed.Minutes} 分钟, {elapsed.Seconds} 秒";
 
-        info.ElapsedTimeYear = (elapsed.Days / 365).ToString();
-        info.ElapsedTimeMonths = ((elapsed.Days % 365) / 30).ToString();
-        info.ElapsedTimeDay = ((elapsed.Days % 365) % 30).ToString();
+        // 日历换算用未 clamp 的 (anchor, n)：anchor 恒为零点、n 含时分秒，now < anchor 时方法内兜底
+        var (y, m, d) = CalendarElapsed(anchor, n);
+        info.CalendarText = FormatCalendar(y, m, d);
+    }
+
+    /// <summary>按日历扣减：先满年、再满月、余数为天。now &lt; anchor 全 0。</summary>
+    private static (int Years, int Months, int Days) CalendarElapsed(DateTime anchor, DateTime now)
+    {
+        if (now < anchor) return (0, 0, 0);
+
+        int y = now.Year - anchor.Year;
+        var t = anchor.AddYears(y);
+        if (t > now) { y--; t = anchor.AddYears(y); }           // 周年未到，回退一年
+
+        int m = (now.Year - t.Year) * 12 + now.Month - t.Month;
+        var t2 = t.AddMonths(m);
+        if (t2 > now) { m--; t2 = t.AddMonths(m); }             // 月纪念日未到，回退一月
+
+        return (y, m, (now - t2).Days);
+    }
+
+    /// <summary>跳过所有零段；全零特殊处理；满年整年说法。</summary>
+    private static string FormatCalendar(int y, int m, int d)
+    {
+        if (y == 0 && m == 0 && d == 0) return "不到 1 天";
+
+        var parts = new List<string>(3);
+        if (y > 0) parts.Add($"{y} 年");
+        if (m > 0) parts.Add($"{m} 个月");
+        if (d > 0) parts.Add($"{d} 天");
+
+        // 满年且零月零天 → "N 年整"（周年当天的自然说法）
+        if (y > 0 && m == 0 && d == 0) parts[^1] = $"{y} 年整";
+
+        return string.Join(" ", parts);
     }
 
     // ---------- 日期联动 ----------
@@ -284,6 +321,23 @@
 }
 
 <style>
+    /* 副行：与上一条主行构成一个视觉块（桌面端主行下边距 20px → −14 ≈ 6px 间隔） */
+    .timer-calendar {
+        text-align: center;
+        font-size: .85em;
+        color: #e48bfa;        /* 必须显式写：副行是 .timer 的兄弟节点，`inherit` 只会拿到祖先 div 的褐色 #886D68（与 .timer 的 #e48bfa 一致） */
+        opacity: .65;
+        line-height: 1.4;
+        margin: -14px 0 12px;
+    }
+
+    /* 该断点 .timer-display 的 margin 是 8px */
+    @@media (max-width: 520px) {
+        .timer-calendar {
+            margin: -4px 0 10px;
+        }
+    }
+
     .love-validation-tip {
         margin-top: 8px;
         text-align: center;
