@@ -20,6 +20,7 @@
     "test:d01": "playwright test tests/d01_spawn.spec.mjs",
     "test:d16": "playwright test tests/d16_best_score.spec.mjs",
     "test:d03": "playwright test tests/d03_calendar.spec.mjs",
+    "test:d17": "playwright test tests/d17_session.spec.mjs",
     "test:fast": "playwright test tests/nav_fish.spec.mjs tests/lt.spec.mjs tests/g2048.spec.mjs tests/code_nf.spec.mjs tests/d11_d12.spec.mjs",
     "test:all": "playwright test"
   },

@@ -78,6 +78,14 @@ export const readBest = async page => {
 
 export const countTiles = b => b.flat().filter(v => v !== 0).length;
 
+// ─── D-17：2048 对局进度（sessionStorage）───
+export const SESSION_KEY = 'jtjsym.g2048.session';
+
+/** 读会话存档原文（不存在返回 null）。
+ *  ⚠ 预置坏档请用 page.evaluate 直写后 reload，**不要**用 addInitScript —— 它每次导航（含 reload）都会重跑，
+ *    会把你刚想验证的"恢复后的新档"又冲成坏档。 */
+export const readSession = page => page.evaluate(k => sessionStorage.getItem(k), SESSION_KEY);
+
 export const clickDir = async (page, dir) => {
   const sel = { up: '⬆️', left: '⬅️', down: '⬇️', right: '➡️' }[dir];
   await page.locator(`.controls fluent-button:has-text("${sel}")`).click();

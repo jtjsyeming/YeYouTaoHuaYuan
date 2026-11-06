@@ -64,7 +64,7 @@ test.describe('D16 2048 最高分', () => {
     await expect.poll(() => stored(page), { timeout: 5000 }).toBe(String(best));  // 等 fire-and-forget 落盘
   });
 
-  test('G2048-27 刷新：分数归零、最高分保持', async ({ page }) => {
+  test('G2048-27 刷新：进度保持、最高分保持（D-17 起分数不再归零）', async ({ page }) => {
     await open(page, '/game_2048', 1600);            // 不预置：让值完全来自本次写入
     await playUntil(page, async () => (await readScore(page)) > 0);
     const best = await readBest(page);
@@ -73,7 +73,7 @@ test.describe('D16 2048 最高分', () => {
 
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => !!window.Blazor, null, { timeout: 15000 }).catch(() => {});
-    await expect.poll(() => readScore(page), { timeout: 7000 }).toBe(0);
+    await expect.poll(() => readScore(page), { timeout: 7000 }).toBe(score);   // 原为 toBe(0)
     await expect.poll(() => readBest(page), { timeout: 7000 }).toBe(best);
   });
 
