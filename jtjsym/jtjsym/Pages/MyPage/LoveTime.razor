@@ -105,8 +105,8 @@
     /// <summary>各类型当前生效的锚点：默认 = 内置纪念日，用户自选后被替换。刷新 Tick 只读它。</summary>
     private readonly Dictionary<string, DateTime> anchorDates = new(timePoints);
 
-    private readonly List<string> years =
-        Enumerable.Range(1950, DateTime.Now.Year - 1949).Select(y => y.ToString()).ToList();
+    private List<string> years = new();     // P-014：由 EnsureYearsFresh 构建（跨年自愈），不再一次性生成
+    private int yearsBuiltFor;              // 0 → 首次 RefreshAll 必建一次，避免"字段初始化跨年对不齐"
     private readonly List<string> months =
         Enumerable.Range(1, 12).Select(m => m.ToString()).ToList();
 
@@ -183,9 +183,12 @@
 
     // ---------- 渲染 ----------
 
+    /// <summary>三行同源的唯一汇聚点：事件回调（计算/恢复默认）与秒刷都必须走这里。
+    /// 只刷一行会让另两行停在上一 tick（P-010，实测 [34,33,33]）。</summary>
     private void RefreshAll()
     {
-        var now = DateTime.Now;     // 一次取时，三条线同源，秒数对齐
+        var now = DateTime.Now;     // 一次取时：三行主行/副行与年份列表同源
+        EnsureYearsFresh(now.Year);
 
         foreach (var type in anchorDates.Keys)
         {
@@ -193,10 +196,18 @@
         }
     }
 
-    private void Render(DateTime anchor, string type, DateTime? now = null)
+    /// <summary>P-014：跨年自愈。仅当年份真的变了才重建（引用替换 → Blazor 只追加一项，已选值不受影响）。</summary>
+    private void EnsureYearsFresh(int currentYear)
     {
-        var n = now ?? DateTime.Now;      // 只取一次时：主行与日历副行必须同源，避免跨零点差 1 天
-        var elapsed = n - anchor;
+        if (currentYear == yearsBuiltFor) return;      // 短路是必需的，不是优化：避免每秒重建列表 + diff 77 个 Option
+        yearsBuiltFor = currentYear;
+        years = Enumerable.Range(1950, currentYear - 1949).Select(v => v.ToString()).ToList();
+    }
+
+    /// <summary>now 必传：取时点必须唯一，否则"主行与副行同源"这条硬约束会退化成约定。</summary>
+    private void Render(DateTime anchor, string type, DateTime now)
+    {
+        var elapsed = now - anchor;
         if (elapsed < TimeSpan.Zero)
         {
             elapsed = TimeSpan.Zero;    // 双保险：不展示负值
@@ -206,8 +217,8 @@
         info.ElapsedTime =
             $"{elapsed.Days} 天, {elapsed.Hours} 小时, {elapsed.Minutes} 分钟, {elapsed.Seconds} 秒";
 
-        // 日历换算用未 clamp 的 (anchor, n)：anchor 恒为零点、n 含时分秒，now < anchor 时方法内兜底
-        var (y, m, d) = CalendarElapsed(anchor, n);
+        // 日历换算用未 clamp 的 (anchor, now)：anchor 恒为零点、now 含时分秒，now < anchor 时方法内兜底
+        var (y, m, d) = CalendarElapsed(anchor, now);
         info.CalendarText = FormatCalendar(y, m, d);
     }
 
@@ -308,7 +319,7 @@
         }
 
         anchorDates[type] = selectedDate;
-        Render(selectedDate, type);
+        RefreshAll();     // 三行同源重算：只刷一行会让另两行停在上一 tick（P-010）
         // 事件回调结束后 Blazor 自动重渲染，无需 StateHasChanged()
     }
 
@@ -316,7 +327,7 @@
     {
         anchorDates[type] = timePoints[type];
         validationMessage = null;
-        Render(timePoints[type], type);
+        RefreshAll();
     }
 }
 
