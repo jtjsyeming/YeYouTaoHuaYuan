@@ -1,5 +1,6 @@
 @page "/loveTime"
-@implements IDisposable
+@inject IJSRuntime JS
+@implements IAsyncDisposable
 
 <PageTitle>爱情计时器</PageTitle>
 
@@ -121,19 +122,59 @@
     private CancellationTokenSource? tickerCts;
     private bool isDisposed;
 
+    // ---------- D-08：后台标签暂停秒刷 ----------
+    // isHidden 由 JS 回调线程写、ticker 循环（线程池）读，故必须 volatile。
+    private volatile bool isHidden;
+    private IJSObjectReference? visModule;
+    private DotNetObjectReference<LoveTime>? visRef;
+    private int visHandlerId;
+
     protected override void OnInitialized()
     {
         RebuildDays();
         RefreshAll();
     }
 
-    protected override void OnAfterRender(bool firstRender)
+    protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         // 仅交互实例会走到 firstRender=true，规避 ServerPrerendered 的预渲染实例
-        if (firstRender)
+        if (!firstRender || visModule is not null) return;
+
+        // ① 先启 ticker：相位从"页面开始交互的那一瞬"起算，LT-31 的相位对齐依赖它。
+        //    顺序不可颠倒 —— 若先 await import 再启，φ 会跟着 import 的往返时间漂移。
+        StartTicker();
+
+        // ② 再注册可见性监听（失败不影响计时：ticker 已在跑，后台暂停退化为不生效）
+        visRef = DotNetObjectReference.Create(this);
+
+        try
         {
-            StartTicker();
+            visModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/lovetimer.js");
         }
+        catch (JSDisconnectedException) { visRef.Dispose(); visRef = null; return; }
+        catch (ObjectDisposedException) { visRef.Dispose(); visRef = null; return; }
+        catch (JSException) { visRef.Dispose(); visRef = null; return; }
+
+        // 复检：import 期间组件可能已被销毁（DisposeAsync 当时 visModule 还是 null，什么都没卸）
+        if (isDisposed)
+        {
+            try { await visModule.DisposeAsync(); }
+            catch (JSDisconnectedException) { }
+            catch (ObjectDisposedException) { }
+            catch (JSException) { }
+            visModule = null;
+            visRef.Dispose();
+            visRef = null;
+            return;
+        }
+
+        try
+        {
+            visHandlerId = await visModule.InvokeAsync<int>("register", visRef);
+        }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+        catch (JSException) { }
     }
 
     // ---------- 秒级刷新 ----------
@@ -154,6 +195,10 @@
         {
             while (await timer.WaitForNextTickAsync(token).ConfigureAwait(false))
             {
+                // D-08：标签在后台时只空转，不计算、不渲染 —— 即不产生 SignalR 帧。
+                // 放在 InvokeAsync 之前是关键：进了渲染上下文就必然会推一帧。
+                if (isHidden) continue;
+
                 await InvokeAsync(() =>
                 {
                     if (isDisposed) return;
@@ -175,10 +220,68 @@
 
     public void Dispose()
     {
+        // D-19 陷阱：实现 IAsyncDisposable 后渲染器只调 DisposeAsync，
+        // 这个方法会静默变成死代码 —— 由 DisposeAsync 首行显式调用，故保留。
         isDisposed = true;
         tickerCts?.Cancel();
         tickerCts?.Dispose();
         tickerCts = null;
+    }
+
+    // ---------- D-08：可见性回调 ----------
+
+    /// <summary>
+    /// JS 侧 visibilitychange 的唯一入口（wwwroot/js/lovetimer.js）。
+    /// 注意：这里读的是 visibilityState 而不是 hidden —— e2e 的注入法只覆盖前者。
+    /// 该回调由渲染器调度到同步上下文，故可直接 RefreshAll/StateHasChanged。
+    /// </summary>
+    [JSInvokable]
+    public Task OnVisibilityChanged(string state)
+    {
+        isHidden = string.Equals(state, "hidden", StringComparison.OrdinalIgnoreCase);
+
+        // 硬约束：回到前台必须"先补刷一次、再让 ticker 继续"。
+        // 年份自愈（EnsureYearsFresh）依附于刷新 ——《现状》:113 的预警即此（P-014 依赖闭合）。
+        if (!isHidden && !isDisposed)
+        {
+            RefreshAll();
+            StateHasChanged();      // [JSInvokable] 不会自动渲染
+        }
+
+        return Task.CompletedTask;
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        Dispose();   // 必须首行：先置 isDisposed、停 ticker，再走两次 await；
+                     // 放在末尾时两个 await 之间 isDisposed 仍是 false，ticker 照常推帧。
+
+        if (visModule is not null)
+        {
+            // 两发 interop 各自 try：若 unregister 抛出就跳过 DisposeAsync，
+            // JS 侧对象引用表会漏一项（《21》C-25 实测）。
+            // 也注意别把 visHandlerId 提前清零 —— unregister 传 0 会短路，监听卸不掉。
+            try
+            {
+                await visModule.InvokeVoidAsync("unregister", visHandlerId);
+            }
+            catch (JSDisconnectedException) { /* 断线/关页，无需清理 */ }
+            catch (ObjectDisposedException) { /* 电路已释放 */ }
+            catch (JSException) { }
+
+            try
+            {
+                await visModule.DisposeAsync();
+            }
+            catch (JSDisconnectedException) { }
+            catch (ObjectDisposedException) { }
+            catch (JSException) { }
+
+            visModule = null;
+        }
+
+        visRef?.Dispose();
+        visRef = null;
     }
 
     // ---------- 渲染 ----------
@@ -336,7 +439,7 @@
     .timer-calendar {
         text-align: center;
         font-size: .85em;
-        color: #e48bfa;        /* 必须显式写：副行是 .timer 的兄弟节点，`inherit` 只会拿到祖先 div 的褐色 #886D68（与 .timer 的 #e48bfa 一致） */
+        color: #e48bfa;        /* 显式写：与 .timer 的 #e48bfa 对齐；`inherit` 会拿到 body 的 #886D68，不是想要的副行色 */
         opacity: .65;
         line-height: 1.4;
         margin: -14px 0 12px;
