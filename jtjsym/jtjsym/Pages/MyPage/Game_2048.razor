@@ -1,8 +1,8 @@
 ﻿@page "/game_2048"
 @using Microsoft.FluentUI.AspNetCore.Components
+@using System.Numerics
 @using System.Text.Json
 @using System.Text.Json.Serialization
-@inject NavigationManager Navigation
 @inject IJSRuntime JS
 @implements IAsyncDisposable
 
@@ -10,7 +10,7 @@
 
 <h1>2048</h1>
 
-<div class="game-container">
+<div class="@(isRestoring ? "game-container session-loading" : "game-container")">
     @for (int row = 0; row < GridSize; row++)
     {
         <div class="row">
@@ -22,30 +22,36 @@
     }
 </div>
 
+@if (isRestoring)
+{
+    <p class="session-tip">正在恢复对局…</p>
+}
+
 <div class="controls">
-    <FluentButton Class="dir-btn dir-up" @onclick="MoveUp" Disabled="@isGameOver">⬆️</FluentButton>
+    <FluentButton Class="dir-btn dir-up" @onclick="MoveUp" Disabled="@(isGameOver || isRestoring)">⬆️</FluentButton>
     <div class="dir-row">
-        <FluentButton Class="dir-btn" @onclick="MoveLeft" Disabled="@isGameOver">⬅️</FluentButton>
-        <FluentButton Class="dir-btn" @onclick="MoveDown" Disabled="@isGameOver">⬇️</FluentButton>
-        <FluentButton Class="dir-btn" @onclick="MoveRight" Disabled="@isGameOver">➡️</FluentButton>
+        <FluentButton Class="dir-btn" @onclick="MoveLeft" Disabled="@(isGameOver || isRestoring)">⬅️</FluentButton>
+        <FluentButton Class="dir-btn" @onclick="MoveDown" Disabled="@(isGameOver || isRestoring)">⬇️</FluentButton>
+        <FluentButton Class="dir-btn" @onclick="MoveRight" Disabled="@(isGameOver || isRestoring)">➡️</FluentButton>
     </div>
 </div>
 
 <p>分数：@Score</p>
 <p class="best-score">最高分：@BestScore</p>
-<p><FluentButton Class="replay-btn" @onclick="RestartGame">重玩</FluentButton></p>
+<p><FluentButton Class="replay-btn" @onclick="OnReplayClicked" Disabled="@(isGameOver || isRestoring)">重玩</FluentButton></p>
 
 @if (isGameOver)
 {
     <div class="game-over">
         <h2>游戏结束</h2>
-        <FluentButton Class="overlay-replay-btn" Appearance="Appearance.Accent" @onclick="RestartGame">重玩</FluentButton>
+        <FluentButton Class="overlay-replay-btn" Appearance="Appearance.Accent" @onclick="OnReplayClicked" Disabled="@isRestoring">重玩</FluentButton>
     </div>
 }
 
 @code {
     private const int GridSize = 4;
     private const int FourSpawnPercent = 10;   // 标准 2048：90% 出 2、10% 出 4
+    private const int MaxTileValue = 1 << 17;  // 131072：4×4 棋盘的 2 的幂上界（改 GridSize 必须同步改）
     private int[,] board = new int[GridSize, GridSize];
     private Random random = new Random();
     private int Score = 0;
@@ -60,11 +66,21 @@
     // 对局进度会话保持（D-17）：存 sessionStorage（标签页会话级，关标签即清），与 best 的 localStorage 分工
     private const string SessionKey = "jtjsym.g2048.session";
 
-    /// <summary>语义：恢复流程开始前为 false。它同时承担两件事 ——
+    /// <summary>写闸门（D-17）：恢复流程开始前为 false。它同时承担两件事 ——
     /// ① 写闸门：预渲染/初始化那次 RestartGame 一律不写（否则用新开局冲掉存档）；
     /// ② 一次性判据：恢复只跑一次。
-    /// 注意：不能靠 catch 兜底 —— 预渲染里 JS 调用抛的是 InvalidOperationException，不是 JSException。</summary>
+    /// 注意：它在恢复<b>开始</b>就放行，**不是** UI 门闸（那是 isRestoring，边界在恢复结束）；两者不可合并。
+    /// 也不能靠 catch 兜底 —— 预渲染里 JS 调用抛的是 InvalidOperationException，不是 JSException。</summary>
     private bool isSessionReady;
+
+    /// <summary>UI 门闸（P-006/P-009）：初值 <b>true</b>，恢复结束（无论成败）才置 false。
+    /// 预渲染实例不会走到 OnAfterRenderAsync，故其 HTML 恒带 session-loading —— 这是 P-009 的缓解点。
+    /// 真正的拦截靠各入口的代码守卫（Disabled / pointer-events 都挡不住程序化 click）；
+    /// 与 isSessionReady 边界不同（一个在恢复开始、一个在恢复结束），**不可合并**。</summary>
+    private bool isRestoring = true;
+
+    /// <summary>组件已释放（切页/断线）：await 之后的 StateHasChanged 会抛 ObjectDisposedException</summary>
+    private bool disposed;
 
     /// <summary>存档 DTO。Cells 可为 null —— 缺字段的合法 JSON 会走到这条分支，必须靠模式匹配挡掉而非 NRE。
     /// 用 { get; set; } 而非 init：反射反序列化零悬念（本项目无 source generator）。</summary>
@@ -73,6 +89,32 @@
         [JsonPropertyName("v")]     public int V { get; set; }
         [JsonPropertyName("cells")] public int[]? Cells { get; set; }
         [JsonPropertyName("score")] public int Score { get; set; }
+    }
+
+    /// <summary>存档内容校验（P-002/004/005）。结构闸已在调用点用过嵌套属性模式，故 <paramref name="cells"/> 必非 null。
+    /// 三条判据：① 每个非零块是 [2, 131072] 内的 2 的幂；② 至少有一块（全零盘拒 → P-004 根治）；
+    /// ③ 分数不超过由盘面可证的合并上界 → 伪高分在这一条被拒，P-003 的入口随之关闭。
+    /// <para>上界推导（前提：标准 2048 规则，spawn 只出 2 或 4，无道具/加成）：把每个块看成一棵合并树，
+    /// 叶子是 spawn 出的 2/4，内部结点值即该次合并的得分增量。全部 spawn 为 2 时值为 v 的树共有 log₂v − 1
+    /// 层内部结点、各层贡献之和恰为 v，故该树对总分贡献 v·(log₂v − 1)；4 点 spawn 只会跳过一次合并、使实际分更小。
+    /// 各终局块的树互不相交 ⇒ score ≤ Σ v·(log₂v − 1)。完美终局盘反算得 3,932,164，与文献理论最大分 3,932,156
+    /// 差 8（最末那个 4 由 spawn 产生时不贡献分数），公式自洽。
+    /// 改规则或改 GridSize 时必须同步重算，否则 G2048-42（真实对局回放）会先红。</para></summary>
+    private static bool IsValidArchive(int[] cells, int score)
+    {
+        if (score < 0) return false;
+
+        var hasTile = false;
+        long scoreCap = 0;                              // 理论最大 3,932,164：用 long 免掉将来改棋盘的隐患
+        foreach (var v in cells)
+        {
+            if (v == 0) continue;
+            if (v < 2 || v > MaxTileValue || (v & (v - 1)) != 0) return false;   // 越界 / 非 2 的幂
+            hasTile = true;
+            scoreCap += (long)v * (BitOperations.Log2((uint)v) - 1);            // v == 2 时贡献 0
+        }
+
+        return hasTile && score <= scoreCap;
     }
 
     // 键盘：window 级 JS 监听的模块句柄与回调引用（详见 wwwroot/js/gamekeyboard.js）
@@ -88,7 +130,11 @@
         _       => "tile-super"
     };
 
-    private void AfterMove(int[,] boardBefore)
+    /// <summary>一步棋的收尾。<b>落盘改为 await</b>（P-007）：StateHasChanged 排在 setItem 完成之后，
+    /// 于是得到"渲染即已落盘"的不变式 —— 用户在页面上看到这一步，这一步就已经在存档里。
+    /// 注意：这**不改变** setItem 的派发时刻（fire-and-forget 在第一个 await 前就派出去了），
+    /// 所以"点完立刻刷新"的丢步率不会下降，那是 Blazor Server 的架构边界（事件可能还没到服务端）。</summary>
+    private async Task AfterMove(int[,] boardBefore)
     {
         // 标准规则：棋盘无变化（未位移、未合并）时不生成新块
         if (!IsBoardChanged(boardBefore, board))
@@ -105,7 +151,8 @@
             isGameOver = true;
         }
 
-        _ = SaveSessionAsync();   // void 方法内 fire-and-forget（同 WriteBestAsync）；快照在 await 前完成
+        await SaveSessionAsync();
+        if (disposed) return;   // 电路已释放：StateHasChanged 会抛 ObjectDisposedException
         StateHasChanged();
     }
 
@@ -151,6 +198,15 @@
 
     protected override void OnInitialized()
     {
+        RestartGame();   // 初始化入口：不进守卫，也不代表任何用户意图
+    }
+
+    /// <summary>重玩的**唯一用户入口**（主按钮 + 遮罩按钮共用）。恢复窗口内的点击一律忽略：
+    /// 按钮此时是禁用视觉态，程序化点击（FT-08 的 element.click()）也必须被挡住，故守卫放在这里。
+    /// 注意：不能改成在 RestartGame 里判 isRestoring —— OnInitialized 也调它，一判就再也恢复不出残局。</summary>
+    private void OnReplayClicked()
+    {
+        if (isRestoring) return;
         RestartGame();
     }
 
@@ -189,9 +245,9 @@
         }
     }
 
-    private void MoveLeft()
+    private async Task MoveLeft()
     {
-        if (isGameOver) return;   // 结束后按钮与方向键共用同一守卫
+        if (isGameOver || isRestoring) return;   // 结束后按钮与方向键共用同一守卫；恢复窗口内一律无效
         var before = (int[,])board.Clone();
         for (int row = 0; row < GridSize; row++)
         {
@@ -199,12 +255,12 @@
             var mergedLine = Merge(line);
             SetRow(row, mergedLine);
         }
-        AfterMove(before);
+        await AfterMove(before);
     }
 
-    private void MoveRight()
+    private async Task MoveRight()
     {
-        if (isGameOver) return;
+        if (isGameOver || isRestoring) return;
         var before = (int[,])board.Clone();
         for (int row = 0; row < GridSize; row++)
         {
@@ -212,12 +268,12 @@
             var mergedLine = Merge(line).Reverse().ToArray();
             SetRow(row, mergedLine);
         }
-        AfterMove(before);
+        await AfterMove(before);
     }
 
-    private void MoveUp()
+    private async Task MoveUp()
     {
-        if (isGameOver) return;
+        if (isGameOver || isRestoring) return;
         var before = (int[,])board.Clone();
         for (int col = 0; col < GridSize; col++)
         {
@@ -225,12 +281,12 @@
             var mergedLine = Merge(line);
             SetColumn(col, mergedLine);
         }
-        AfterMove(before);
+        await AfterMove(before);
     }
 
-    private void MoveDown()
+    private async Task MoveDown()
     {
-        if (isGameOver) return;
+        if (isGameOver || isRestoring) return;
         var before = (int[,])board.Clone();
         for (int col = 0; col < GridSize; col++)
         {
@@ -238,7 +294,7 @@
             var mergedLine = Merge(line).Reverse().ToArray();
             SetColumn(col, mergedLine);
         }
-        AfterMove(before);
+        await AfterMove(before);
     }
 
     private int[] GetRow(int row)
@@ -379,8 +435,8 @@
             StateHasChanged();                 // 预渲染首帧是 0，这一帧补成真实值
         }
 
-        // ② 恢复对局（D-17）。必须排在 ① 之后 —— 否则 BestScore 仍是 0，
-        //    恢复出的分数会被 UpdateBestScore 当成破纪录，把 localStorage 里真实的纪录改小
+        // ② 恢复对局（D-17）。代码顺序排在 ① 之后只是可读性（先有纪录、再恢复对局）；
+        //    两者**已无正确性依赖** —— 恢复分支不再写 best（P-003），best 的唯一更新点是 AfterMove()。
         if (!isSessionReady)
         {
             isSessionReady = true;             // 先开闸：即使下面全失败，也不能永久不写
@@ -389,24 +445,44 @@
                 var json = await JS.InvokeAsync<string?>("sessionStorage.getItem", SessionKey);
                 var st = json is null ? null : JsonSerializer.Deserialize<SessionState>(json);
 
-                // 嵌套属性模式：Cells 为 null 时**匹配失败**，不会 NRE
+                // 结构闸：嵌套属性模式 —— Cells 为 null（如 {"v":1}）时**匹配失败**而非 NRE。
+                // 这里绝不能写成 `st is not { V: 1 } || st.Cells.Length != …`：NRE 不在下面的 catch 列表里，
+                // 冒泡出 OnAfterRenderAsync 会被 Blazor Server 判为未处理异常 → 直接断开 circuit。
                 if (st is { V: 1, Cells.Length: GridSize * GridSize })
                 {
-                    var cells = st.Cells!;
-                    for (int i = 0; i < cells.Length; i++)
-                        board[i / GridSize, i % GridSize] = cells[i];
+                    if (!IsValidArchive(st.Cells!, st.Score))
+                    {
+                        // 内容闸：非法档（P-002 值域/分数、P-004 空盘、P-005 非 2 幂）清掉，避免每次进页面重复拒绝；
+                        // 棋盘保持 OnInitialized 的新局
+                        await JS.InvokeVoidAsync("sessionStorage.removeItem", SessionKey);
+                    }
+                    else
+                    {
+                        var cells = st.Cells!;     // 长度模式已通过 ⇒ 非 null
+                        for (int i = 0; i < cells.Length; i++)
+                            board[i / GridSize, i % GridSize] = cells[i];
 
-                    Score = st.Score;
-                    isGameOver = IsGameOver(); // 重算，不信任存档；死局自然出遮罩
-                    UpdateBestScore();         // 存档分若高于本地纪录（best 被清过），补一次
-                    StateHasChanged();         // 预渲染首帧是新局，这一帧必须刷成恢复态
+                        Score = st.Score;
+                        isGameOver = IsGameOver(); // 重算，不信任存档；死局自然出遮罩
+                        // 此处**不再**调用 UpdateBestScore()（P-003）：存档分不得抬升永久纪录。
+                        // 单靠这一句删除并不够 —— 若 Score 里留着 999999，玩家走一步仍会经 AfterMove 写入，
+                        // 故伪造分必须在闸一就被拒（分数可证上界）。
+                        StateHasChanged();         // 预渲染首帧是新局，这一帧必须刷成恢复态
+                    }
                 }
-                // 无存档 / 版本不符 / 长度不符 / 损坏 → 保持 OnInitialized 的初始新局，静默
+                // 无存档 / 版本不符 / 长度不符 / 损坏 → 保持 OnInitialized 的初始新局，静默（D-17 语义不变）
             }
             catch (JSException) { }
             catch (JsonException) { }          // 半截 JSON
             catch (JSDisconnectedException) { }
             catch (ObjectDisposedException) { }
+            finally
+            {
+                // UI 门闸在恢复**结束**才解除（与写闸门 isSessionReady 的边界不同）。
+                // 必须放在 finally：任何一条失败路径都不能把页面永久卡在"正在恢复"。
+                isRestoring = false;
+                if (!disposed) StateHasChanged();
+            }
         }
 
         // ③ 键盘注册（原逻辑，保持不变）
@@ -414,6 +490,21 @@
 
         keyRef = DotNetObjectReference.Create(this);
         keyModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/gamekeyboard.js");
+
+        // 复检：import 期间组件可能已被销毁，而那时 DisposeAsync 看到 keyModule 还是 null，
+        // 什么都没卸。若此时继续 register，register() 首句 removeListeners() 会拆掉新页刚装上的监听
+        // 并把 currentId 换成自己的 —— activeRef 指向一个已 Dispose 的 DotNetObjectReference。
+        // 注意：只能收窄窗口，不能证明消除；D02-9 守的是最终归属。
+        if (disposed)
+        {
+            try { await keyModule.DisposeAsync(); }
+            catch (JSDisconnectedException) { } catch (ObjectDisposedException) { } catch (JSException) { }
+            keyModule = null;
+            keyRef.Dispose();
+            keyRef = null;
+            return;
+        }
+
         // 2048：一次按键 = 一步，忽略连发（按住 ← 连发会连吃新块、分数乱涨）
         keyRegId = await keyModule.InvokeAsync<int>("register", keyRef,
             new { repeatKeys = Array.Empty<string>() });
@@ -422,36 +513,47 @@
     /// <summary>
     /// 注意：[JSInvokable] 不会自动重渲染（与 @onclick 不同）。
     /// 四个 MoveX() 经 AfterMove 内部各自 StateHasChanged()，故这里不再额外触发，避免双帧渲染。
+    /// <para>lambda 必须写成 <c>async () => …</c> 并逐个 await：MoveXxx 改成 async Task 后，
+    /// 无返回值的 lambda 会被重载解析绑到 <c>InvokeAsync(Action)</c>，Task 被丢弃，
+    /// await 形同虚设（不报错、不警告），落盘又退回 fire-and-forget。</para>
     /// </summary>
     [JSInvokable]
-    public async Task OnKeyDown(string key)
+    public Task OnKeyDown(string key) => InvokeAsync(async () =>
     {
-        await InvokeAsync(() =>
+        switch (key)
         {
-            switch (key)
-            {
-                case "ArrowLeft":  MoveLeft();  break;
-                case "ArrowRight": MoveRight(); break;
-                case "ArrowUp":    MoveUp();    break;
-                case "ArrowDown":  MoveDown();  break;
-            }
-        });
-    }
+            case "ArrowLeft":  await MoveLeft();  break;
+            case "ArrowRight": await MoveRight(); break;
+            case "ArrowUp":    await MoveUp();    break;
+            case "ArrowDown":  await MoveDown();  break;
+        }
+    });
 
     [JSInvokable]
     public Task OnKeyUp(string key) => Task.CompletedTask;   // 2048 无 keyup 需求，接口占位
 
     public async ValueTask DisposeAsync()
     {
+        disposed = true;   // 先置位：此后任何 await 回来的 AfterMove/恢复分支都不再渲染
         if (keyModule is not null)
         {
+            // 两发 interop 各自 try：若 unregister 抛出，不能连带跳过 DisposeAsync ——
+            // 否则 keyModule 被置 null，JS 侧对象引用表会漏一项
             try
             {
                 await keyModule.InvokeVoidAsync("unregister", keyRegId);
-                await keyModule.DisposeAsync();
             }
             catch (JSDisconnectedException) { /* 断线/关页，无需清理 */ }
             catch (ObjectDisposedException) { /* 电路已释放 */ }
+            catch (JSException) { /* 防御性：本方法的两发 interop 都不该抛 JSException，与 SaveSessionAsync 等其余三处的四件套保持同口径 */ }
+
+            try
+            {
+                await keyModule.DisposeAsync();
+            }
+            catch (JSDisconnectedException) { }
+            catch (ObjectDisposedException) { }
+            catch (JSException) { }
             keyModule = null;
         }
         keyRef?.Dispose();
