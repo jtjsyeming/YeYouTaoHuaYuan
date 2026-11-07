@@ -31,6 +31,7 @@ const ONLY = arg('--only', '').split(',').map(s => s.trim()).filter(Boolean);
 const JSON_OUT = arg('--json', '');
 
 const sleep = ms => new Promise(r => setTimeout(r, ms));
+const readSrc = p => fs.readFileSync(path.join(ROOT, p), 'utf8');
 const KEY = 'jtjsym.g2048.session';
 const BEST = 'jtjsym.g2048.best';
 
@@ -633,7 +634,16 @@ ft('FT-16', '静态', '工程静态事实巡检（编码 / 死代码 / 文档一
       && !/PauseGame\(\)[\s\S]{0,220}?difficultyTimer\?\.Stop\(\)/.test(tetris),
     loveTimeYearsBuiltAtInitOnly: /Enumerable\.Range\(1950, DateTime\.Now\.Year - 1949\)/.test(lovetime),
     globalDivColorRule: /div\s*\{\s*[^}]*color:\s*#886D68/.test(css),
-    httpsRedirectOutsideDevGuard: /app\.UseHttpsRedirection\(\)/.test(read('jtjsym/jtjsym/Program.cs')),
+    // 旧判据只检测「文件里有没有这一行」，H-012 修复后该行仍在（只是移进了 dev guard），
+    // 字段名因此产生假阳性。改为真正判断它是否落在 if (!IsDevelopment) 块之外。
+    httpsRedirectPresent: /app\.UseHttpsRedirection\(\)/.test(read('jtjsym/jtjsym/Program.cs')),
+    httpsRedirectOutsideDevGuard: (() => {
+      const p = read('jtjsym/jtjsym/Program.cs');
+      const i = p.indexOf('app.UseHttpsRedirection()');
+      const b = p.indexOf('if (!app.Environment.IsDevelopment())');
+      const close = p.indexOf('\n}', b);
+      return i >= 0 && (b < 0 || i < b || i > close);
+    })(),
   };
   return { pass: true, kind: 'info', expect: '仅登记事实', actual: facts };
 });
@@ -991,6 +1001,262 @@ ft('FT-29', 'R', '内容闸值域上界：131072 接受 / 262144 拒绝 / 非 2 
     pass: rows.every(r => r.accepted === r.expectedAccept),
     expect: 'MaxTileValue = 1<<17：等于上界的最大块应可恢复，超过上界与非 2 幂应退化为新局',
     actual: { rows, errors: errs.slice(0, 3) },
+  };
+});
+
+// ═══════════════ D 组：23~27 号 H 系列修复后的独立探测（2026-11-07 第 2 轮） ═══════════════
+// 原则：不复制修复文档 §4 的门禁，只打「修复本身引入的新边界」与「门禁没覆盖的路径」。
+
+ft('FT-30', 'H', 'D-08 边界：页面初始即在后台打开时 register 是否同步当前可见性', async browser => {
+  const run = async (hidden) => {
+    let frames = 0;
+    const { ctx, page, errs } = await fresh(browser, { width: 1400, height: 1000 },
+      hidden ? () => { Object.defineProperty(document, 'visibilityState', { get: () => 'hidden', configurable: true }); } : null);
+    page.on('websocket', ws => ws.on('framereceived', () => { frames++; }));
+    await open(page, '/loveTime', 1800);
+    const rows = [];
+    for (let i = 0; i < 4; i++) {
+      rows.push(await page.evaluate(() => document.querySelector('div.timer')?.textContent.trim() ?? null));
+      await sleep(1200);
+    }
+    const state = await page.evaluate(() => document.visibilityState);
+    await ctx.close();
+    return { state, rows, changed: new Set(rows.filter(Boolean)).size > 1, wsFrames: frames, errors: errs.slice(0, 3) };
+  };
+  const hidden = await run(true), visible = await run(false);
+  return {
+    pass: hidden.changed === false && visible.changed === true,
+    expect: '初始即 hidden 的标签应同样暂停秒刷（不推 SignalR 帧）；visible 对照组必须仍在刷新',
+    actual: { hidden, visible,
+      rootCause: 'lovetimer.js 的 register() 只在 visibilitychange 事件里通知 .NET，注册时不读 document.visibilityState；初始已在后台则无事件可派发，组件 isHidden 恒为 false' },
+  };
+});
+
+ft('FT-31', 'H', 'D-08 正向：后台→前台应先补刷一次再恢复秒刷（不等下一个 tick）', async browser => {
+  const { ctx, page, errs } = await fresh(browser);
+  await open(page, '/loveTime', 1600);
+  const line = () => page.evaluate(() => document.querySelector('div.timer')?.textContent.trim() ?? null);
+  const setVis = state => page.evaluate(s => {
+    if (s === null) {
+      const d = Object.getOwnPropertyDescriptor(Document.prototype, 'visibilityState');
+      Object.defineProperty(document, 'visibilityState', d);
+    } else Object.defineProperty(document, 'visibilityState', { get: () => s, configurable: true });
+    document.dispatchEvent(new Event('visibilitychange'));
+  }, state);
+  const before = await line();
+  await setVis('hidden');
+  await sleep(3200);
+  const during = await line();
+  await setVis(null);
+  await sleep(200);                 // 只够 interop 往返，远小于 1s tick —— 若没补刷这里仍是旧值
+  const immediate = await line();
+  await sleep(1300);
+  const after = await line();
+  const years = await page.evaluate(() => {
+    const opts = [...document.querySelectorAll('fluent-option')].map(o => o.textContent.trim()).filter(t => /^\d{4}$/.test(t));
+    return { count: opts.length, first: opts[0] ?? null, last: opts[opts.length - 1] ?? null };
+  });
+  await ctx.close();
+  return {
+    pass: during === before && immediate !== during && after !== immediate,
+    expect: 'hidden 期间主行冻结；恢复后立刻（<1 tick）补刷到当前时间；随后秒刷继续',
+    actual: { before, during, immediate, after, years, errors: errs.slice(0, 3) },
+    kind: 'observe',
+  };
+});
+
+ft('FT-32', 'H', 'H-008 抽离等价性：独立 2048 实现回放多步走子的分数与盘面签名', async browser => {
+  const { ctx, page, errs } = await fresh(browser);
+  const cells = Array(16).fill(0);
+  [2, 4, 8, 16, 2, 4].forEach((v, i) => { cells[i] = v; });
+  await seedAndReload(page, grid(cells, 0));
+  let s = await readState(page), b = boardOf(s);
+  const rows = [];
+  for (const dir of ['left', 'down', 'right', 'up', 'left', 'down']) {
+    const exp = sim(b, dir);
+    if (JSON.stringify(exp.board) === JSON.stringify(b)) { rows.push({ dir, skipped: true }); continue; }
+    await clickDir(page, dir, 380);
+    const s1 = await readState(page), got = boardOf(s1);
+    const diff = [];
+    for (let r = 0; r < 4; r++) for (let c = 0; c < 4; c++)
+      if (got[r][c] !== exp.board[r][c]) diff.push({ r, c, expected: exp.board[r][c], actual: got[r][c] });
+    const gainActual = scoreOf(s1) - scoreOf(s);
+    const spawnOK = diff.length === 1 && exp.board[diff[0].r][diff[0].c] === 0 && [2, 4].includes(diff[0].actual);
+    rows.push({ dir, gainExpected: exp.gain, gainActual, spawnOK, diff });
+    b = got; s = s1;
+  }
+  const core = readSrc('jtjsym/jtjsym/Services/Game2048Core.cs');
+  await ctx.close();
+  const checked = rows.filter(r => !r.skipped);
+  return {
+    pass: checked.length >= 4 && checked.every(r => r.spawnOK && r.gainActual === r.gainExpected) && errs.length === 0,
+    expect: '抽离到 Services/Game2048Core 后，每步的合并结果 = 独立实现 + 恰好 1 个 spawn，且得分增量严格相等',
+    actual: { rows, checked: checked.length, errors: errs.slice(0, 3),
+      note: 'Core.Merge 的补零用 line.Length（原组件用 GridSize=4）；当前所有调用都传 4 格故等价，若将来传入异长线，SetRow/SetColumn 会拿到异长数组' },
+  };
+});
+
+ft('FT-33', 'H', 'H-006 横屏四档视口：棋盘/侧栏/操作区完整可见且无横向溢出', async browser => {
+  const rows = [];
+  for (const vp of [{ width: 844, height: 390 }, { width: 812, height: 375 },
+                    { width: 740, height: 360 }, { width: 667, height: 375 }]) {
+    const { ctx, page, errs } = await fresh(browser, vp);
+    await open(page, '/tetris', 900);
+    await page.waitForSelector('.game-canvas', { timeout: 8000 }).catch(() => {});
+    const m = await page.evaluate(() => {
+      const q = s => document.querySelector(s)?.getBoundingClientRect();
+      // 棋盘是 div 网格（.game-canvas），不是 <canvas>；--cell-size 定义在 .tetris-container 上
+      const cv = q('.game-canvas'), sp = q('.side-panel'), ct = q('.game-controls');
+      const cell = document.querySelector('.grid-cell');
+      return { vh: innerHeight, vw: innerWidth,
+        canvasBottom: cv ? Math.round(cv.bottom) : null,
+        panelBottom: sp ? Math.round(sp.bottom) : null,
+        controlsBottom: ct ? Math.round(ct.bottom) : null,
+        canvasWidth: cv ? Math.round(cv.width) : null,
+        cellSize: cell ? getComputedStyle(cell).width : null,
+        boardCells: document.querySelectorAll('.grid-cell').length,
+        scrollW: document.documentElement.scrollWidth, clientW: document.documentElement.clientWidth,
+        scrollH: document.documentElement.scrollHeight };
+    });
+    rows.push({ vp: `${vp.width}x${vp.height}`, ...m, errors: errs.slice(0, 2) });
+    await ctx.close();
+  }
+  const hardBad = rows.filter(r => r.canvasBottom === null || r.panelBottom === null || r.canvasBottom > r.vh || r.panelBottom > r.vh);
+  const softBad = rows.filter(r => r.controlsBottom !== null && r.controlsBottom > r.vh + 10);
+  const widthBad = rows.filter(r => r.scrollW > r.clientW);
+  return {
+    pass: hardBad.length === 0 && softBad.length === 0 && widthBad.length === 0,
+    expect: '四档横屏：棋盘与侧栏底部不超视口、操作区溢出 ≤10px、无横向溢出',
+    actual: { rows, hardBad: hardBad.map(r => r.vp), softBad: softBad.map(r => r.vp),
+      widthBad: widthBad.map(r => r.vp),
+      note: '《23》v2.0 自述 844×390 下格子降到 ~12.4px、横向留白，属已接受的取舍；这里记录实测值' },
+    kind: 'observe',
+  };
+});
+
+ft('FT-34', 'H', 'H-004/005/010 样式域清理：选择器清零、编码、全局色规则与文本色抽查', async browser => {
+  const css = readSrc('jtjsym/jtjsym/wwwroot/css/site.css');
+  const counter = readSrc('jtjsym/jtjsym/Pages/MyPage/Counter.razor');
+  const specs = ['nav_fish', 'code_nf', 'smoke', 'd15_home_fluent']
+    .map(n => readSrc(`tools/e2e/tests/${n}.spec.mjs`)).join('\n');
+  const editor = readSrc('.editorconfig');
+  const facts = {
+    btnPrimaryInCounter: (counter.match(/\.btn-primary/g) || []).length,
+    btnPrimaryInSiteCss: (css.match(/\.btn-primary/g) || []).length,
+    btnPrimaryInSpecs: (specs.match(/\.btn-primary/g) || []).length,
+    muyuBtnInCounter: (counter.match(/\.muyu-btn/g) || []).length,
+    muyuBtnClassInMarkup: /class="muyu-btn"/.test(counter),
+    muyuBtnActivePresent: /\.muyu-btn:active/.test(counter),
+    globalDivColorRule: /div\s*\{[^}]*color\s*:/.test(css),
+    garbledLines: css.split('\n').filter(l => /[\u00c0-\u00ff]{3,}/.test(l)).length,
+    editorconfigInlineHash: editor.split('\n').filter(l => /^\s*[\w.*]+\s*=\s*[^#]*#/.test(l)).length,
+  };
+  const colors = [];
+  for (const route of ['/', '/counter', '/loveTime', '/game_2048', '/tetris', '/coding_place']) {
+    const { ctx, page } = await fresh(browser);
+    await open(page, route, 700);
+    colors.push(await page.evaluate(() => {
+      const body = getComputedStyle(document.body).color;
+      const nodes = [...document.querySelectorAll('body *')]
+        .filter(e => [...e.childNodes].some(n => n.nodeType === 3 && n.textContent.trim()));
+      const uniq = [...new Set(nodes.slice(0, 120).map(e => getComputedStyle(e).color))];
+      return { route: location.pathname, bodyColor: body, textNodes: nodes.length, distinctColors: uniq.length,
+        sample: uniq.slice(0, 6) };
+    }));
+    await ctx.close();
+  }
+  const clean = facts.btnPrimaryInCounter === 0 && facts.btnPrimaryInSiteCss === 0
+    && facts.btnPrimaryInSpecs === 0 && facts.muyuBtnInCounter >= 2 && facts.muyuBtnClassInMarkup && facts.muyuBtnActivePresent
+    && !facts.globalDivColorRule && facts.garbledLines === 0 && facts.editorconfigInlineHash === 0;
+  return {
+    pass: clean,
+    expect: '.btn-primary 全仓清零且 :active 改名到位；site.css 无乱码注释、无全局 div{color}；.editorconfig 无非法行内 # 注释',
+    actual: { facts, colors, note: '无改前基线，颜色只做分布抽查（6 路由），不做逐节点 diff' },
+  };
+});
+
+ft('FT-35', 'H', 'H-009 参考答案折叠区：默认收起、答案特征、预渲染 HTML 是否已含答案', async browser => {
+  const html = await (await fetch(BASE + '/coding_place')).text();
+  const { ctx, page, errs } = await fresh(browser);
+  await open(page, '/coding_place', 800);
+  const dom = await page.evaluate(() => {
+    const d = document.querySelector('details.code-answer');
+    const pre = d?.querySelector('.code-answer-pre');
+    return { exists: !!d, openDefault: d?.open ?? null,
+      summary: d?.querySelector('summary')?.textContent.trim() ?? null,
+      answerLength: pre?.textContent.length ?? 0,
+      hasInclude: /#include/.test(pre?.textContent || ''), hasStructTask: /struct\s+Task/.test(pre?.textContent || ''),
+      htmlInputs: document.querySelectorAll('input,textarea').length };
+  });
+  const code = readSrc('jtjsym/jtjsym/Pages/MyPage/CodingPlace.razor');
+  const readonlyFields = (code.match(/private readonly string/g) || []).length;
+  await ctx.close();
+  return {
+    pass: dom.exists && dom.openDefault === false && dom.hasInclude && readonlyFields >= 2,
+    expect: '折叠区默认收起、summary 存在、答案含 #include；题面与答案两个 C# 字段声明为 readonly',
+    actual: { dom, readonlyFields, answerInPrerenderedHtml: /#include/.test(html),
+      note: '答案文本在预渲染 HTML 与 DOM 中已存在，折叠只是视觉收起；查看源代码/F12 可绕过（技术要点，不判缺陷）',
+      errors: errs.slice(0, 3) },
+    kind: 'info',
+  };
+});
+
+ft('FT-36', 'H', 'H-001 暂停期难度守卫 + H-012 HTTPS 重定向归位（静态守卫）', async () => {
+  const t = readSrc('jtjsym/jtjsym/Pages/MyPage/Tetris.razor');
+  const p = readSrc('jtjsym/jtjsym/Program.cs');
+  const slice = (s, from, len) => { const i = s.indexOf(from); return i < 0 ? '' : s.slice(i, i + len); };
+  const devBlock = slice(p, 'if (!app.Environment.IsDevelopment())', 700);
+  const facts = {
+    pauseStopsDifficulty: /difficultyTimer\?\.Stop\(\)/.test(slice(t, 'void PauseGame', 700)),
+    resumeStartsDifficulty: /difficultyTimer\?\.Start\(\)/.test(slice(t, 'void ResumeGame', 700)),
+    increaseGuardHasPaused: /isPaused/.test(slice(t, 'private void IncreaseDifficulty', 400)),
+    httpsInsideDevGuard: /UseHttpsRedirection\(\)/.test(devBlock),
+    httpsOutsideDevGuard: (() => {
+      const i = p.indexOf('UseHttpsRedirection()'); const b = p.indexOf('if (!app.Environment.IsDevelopment())');
+      return i >= 0 && (b < 0 || i < b);
+    })(),
+    tris26TimeoutRaised: /test\.setTimeout\(\s*240_000/.test(readSrc('tools/e2e/tests/tris.spec.mjs')),
+  };
+  return {
+    pass: facts.pauseStopsDifficulty && facts.resumeStartsDifficulty && facts.increaseGuardHasPaused
+      && facts.httpsInsideDevGuard && !facts.httpsOutsideDevGuard && facts.tris26TimeoutRaised,
+    expect: 'PauseGame 停难度计时器、ResumeGame 重启、IncreaseDifficulty 有 isPaused 守卫；UseHttpsRedirection 仅非开发环境启用；TRIS-26 解锁时同步抬超时',
+    actual: { facts, runtimeNote: '14077 启动日志未再出现 "Failed to determine the https port"，H-012 的直接可观测证据' },
+  };
+});
+
+ft('FT-37', 'H', 'H-002/007/011 工程治理巡检：备案链接、CI YAML 覆盖、skip/fixme 与 test:all', async () => {
+  const idx = readSrc('jtjsym/jtjsym/Pages/Index.razor');
+  const yml = readSrc('.github/workflows/tests.yml');
+  const pkg = JSON.parse(readSrc('tools/e2e/package.json'));
+  const specDir = path.join(ROOT, 'tools/e2e/tests');
+  const specs = fs.readdirSync(specDir).filter(f => f.endsWith('.spec.mjs'))
+    .map(f => ({ file: f, src: fs.readFileSync(path.join(specDir, f), 'utf8') }));
+  const all = specs.map(s => s.src).join('\n');
+  const prGrep = /run:\s*npx playwright test --project=chromium --grep "([^"]+)"/.exec(yml)?.[1] ?? '';
+  const facts = {
+    beianMiit: /beian\.miit\.gov\.cn/.test(idx),
+    beianOld: /beian\.mps\.gov\.cn|www\.beian\.gov\.cn/.test(idx),
+    ciJobs: (yml.match(/^  \w+:\s*$/gm) || []).length,
+    ciHasUnitJob: /^  unit:/m.test(yml), ciHasE2eJob: /^  e2e:/m.test(yml),
+    ciNoBaseUrlEnv: !/env:\s*\n\s*BASE_URL/.test(yml),
+    ciHasDevelopmentEnv: /--environment Development/.test(readSrc('tools/e2e/playwright.config.mjs')),
+    prGrep, d08CoveredByPrGreen: /D08/.test(prGrep),
+    testAllIncludesUnit: /npm run test:unit/.test(pkg.scripts['test:all'] || '')
+      && /dotnet test/.test(pkg.scripts['test:unit'] || ''),
+    testD08Script: pkg.scripts['test:d08'] || null,
+    fixmeCount: (all.match(/test\.fixme\s*\(/g) || []).length,
+    conditionalSkipCount: (all.match(/test\.skip\s*\(/g) || []).length,
+    specFiles: specs.length,
+    unitTestProjectExists: fs.existsSync(path.join(ROOT, 'jtjsym/jtjsym.Tests/Game2048CoreTests.cs')),
+  };
+  return {
+    pass: facts.beianMiit && !facts.beianOld && facts.ciHasUnitJob && facts.ciHasE2eJob
+      && facts.testAllIncludesUnit && facts.unitTestProjectExists,
+    expect: '备案链接指向工信部；CI 有 unit+e2e 两 job；test:all 串上 dotnet test；单测项目已入仓',
+    actual: { facts,
+      note: facts.d08CoveredByPrGreen ? '' : 'CI PR/push 的 --grep 不含 D08-，新增的 3 条 H-003 门禁用例在 PR 上永远不跑，只有夜间/手动全量才覆盖' },
+    kind: 'info',
   };
 });
 
