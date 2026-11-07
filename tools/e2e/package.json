@@ -21,6 +21,9 @@
     "test:d16": "playwright test tests/d16_best_score.spec.mjs",
     "test:d03": "playwright test tests/d03_calendar.spec.mjs",
     "test:d17": "playwright test tests/d17_session.spec.mjs",
+    "test:d18": "playwright test tests/d18_archive_guard.spec.mjs",
+    "test:d19": "playwright test tests/d19_restore_gate.spec.mjs",
+    "test:d20": "playwright test tests/d20_lt_consistency.spec.mjs",
     "test:fast": "playwright test tests/nav_fish.spec.mjs tests/lt.spec.mjs tests/g2048.spec.mjs tests/code_nf.spec.mjs tests/d11_d12.spec.mjs",
     "test:all": "playwright test"
   },
