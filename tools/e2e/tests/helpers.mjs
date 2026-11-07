@@ -86,6 +86,28 @@ export const SESSION_KEY = 'jtjsym.g2048.session';
  *    会把你刚想验证的"恢复后的新档"又冲成坏档。 */
 export const readSession = page => page.evaluate(k => sessionStorage.getItem(k), SESSION_KEY);
 
+// ─── 满盘态注入（《26》阶段①：不抽离 Core 也能构造确定性残局）───
+/** 直写合法存档 + reload，并等"正在恢复"态消失（`isRestoring` 是 UI 门闸，解除即恢复结束）。
+ *  ⚠ 必须 evaluate 直写后 reload，**不要** addInitScript（每次导航都会重跑，会冲掉刚恢复的新档）。
+ *  恢复路径对存档做结构闸 + 内容闸后 `isGameOver = IsGameOver()`（重算、不信任存档），
+ *  且 AddRandomTile **不在恢复路径里** ⇒ 注入合法满盘档 = 确定性的满盘画面。 */
+export async function seedArchive(page, payload) {
+  await page.evaluate(([k, v]) => sessionStorage.setItem(k, v), [SESSION_KEY, JSON.stringify(payload)]);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => !!window.Blazor, null, { timeout: 15000 }).catch(() => {});
+  await page
+    .waitForFunction(() => !document.querySelector('.game-container.session-loading'), null, { timeout: 15000 })
+    .catch(() => {});
+  await sleep(300);
+}
+
+/** 16 格扁平数组 → 存档载荷。内容闸两条硬约束：① 每块 ∈ [2, 131072] 且为 2 的幂；
+ *  ② score ≤ Σ v·(log₂v − 1)（纯 2/4 棋盘 cap = 16）。默认 score: 0 最稳。 */
+export const archiveOf = (cells, score = 0) => ({ v: 1, cells, score });
+
+/** 合法死局：16 格全满、无相邻同值。8 个 4 ⇒ cap = 32，故注入 score 只能 ≤ 32。 */
+export const DEAD_CELLS = [2, 4, 2, 4, 4, 2, 4, 2, 2, 4, 2, 4, 4, 2, 4, 2];
+
 export const clickDir = async (page, dir) => {
   const sel = { up: '⬆️', left: '⬅️', down: '⬇️', right: '➡️' }[dir];
   await page.locator(`.controls fluent-button:has-text("${sel}")`).click();

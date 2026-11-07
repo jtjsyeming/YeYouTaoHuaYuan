@@ -1,0 +1,93 @@
+# 首个 workflow（《26》H-007）：回归不再只靠手动 `npm run test:all`。
+#
+# 分层策略（私有库 2000 分钟/月的预算，本地全量实测 19~21 分钟，ubuntu 2 核估 30~45 分钟）：
+#   - pull_request / push → **chromium 关键回归子集**（≈8 分钟）。PR 要快；TRIS-14(320s)、TRIS-26(240s)
+#     两座"固定的山"不出现在 `TRIS-0` 前缀里，天然被排除；
+#   - schedule（UTC 22:00 = 北京 06:00）→ **双浏览器全量**，这才是"手动全量"的替代品；
+#   - workflow_dispatch → 手动触发全量。
+#
+# 三条**不要动**的约束（改动前先读 playwright.config.mjs 里的注释）：
+#   1. 不要加 `env: BASE_URL` —— config 是 `process.env.BASE_URL ?? 'http://localhost:14074'`，
+#      空串**不是** nullish，会给 baseURL 塞空串 → 全站 100% 红（v1.0 设计稿的硬错）；
+#   2. 不要单独 `dotnet build -c Release` —— webServer 的 `dotnet run` 自己会建（Debug），
+#      Release 那步纯属浪费，而且与 webServer 实际加载的产物不是同一份；
+#   3. 不要去掉 webServer 的 `--environment Development` —— 缺了它 Fluent 静态资源 404，
+#      所有尺寸/溢出断言都会得到假结果（假绿）。
+#
+# 首次真跑前无法本地自证的两条（登记在《26》§4.3 第 5、7 条）：CI 首跑绿、故意坏断言能红。
+
+name: tests
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  schedule:
+    - cron: '0 22 * * *'      # UTC 22:00 = 北京 06:00
+  workflow_dispatch:
+
+# 同一分支的后台任务互相顶掉：连续 push 时只保留最后一次，省分钟数
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    # 纯函数单测（《26》阶段④）：秒级，给最快的一道反馈，不依赖浏览器与站点
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+      - name: dotnet test（Game2048Core）
+        run: dotnet test jtjsym/jtjsym.Tests/jtjsym.Tests.csproj --nologo --logger "console;verbosity=normal"
+
+  e2e:
+    runs-on: ubuntu-latest
+    timeout-minutes: 90
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: 8.0.x
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: tools/e2e/package-lock.json
+
+      - name: npm ci
+        working-directory: tools/e2e
+        run: npm ci
+
+      # PR/push 只装 chromium；夜间与手动全量才装 firefox（firefox project 只 match code_nf 的 NF 兼容组）
+      - name: 安装浏览器
+        working-directory: tools/e2e
+        run: >-
+          npx playwright install --with-deps chromium
+          ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'firefox' || '' }}
+
+      # PR/push：chromium 关键回归子集。**必须带 --project=chromium**，否则 firefox 项目也会被选中
+      - name: e2e（PR/push：chromium 子集）
+        if: github.event_name == 'pull_request' || github.event_name == 'push'
+        working-directory: tools/e2e
+        run: npx playwright test --project=chromium --grep "NAV-|FISH-|G2048-|LT-|TRIS-0|D14-"
+
+      # 夜间/手动：双浏览器全量（Firefox 是 P-017 的常态观测窗口）
+      - name: e2e（夜间/手动：全量）
+        if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+        working-directory: tools/e2e
+        run: npx playwright test
+
+      - name: 上传 Playwright 报告
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: tools/e2e/playwright-report
+          retention-days: 14
+          if-no-files-found: ignore

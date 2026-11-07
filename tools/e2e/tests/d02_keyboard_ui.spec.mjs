@@ -9,18 +9,24 @@
 //      KeyboardEvent{ repeat: true }，才真正打到 gamekeyboard.js 的 repeat 分支。
 import { test } from '@playwright/test';
 import {
+  archiveOf,
   check,
   clickGameBtn,
+  DEAD_CELLS,
   open,
   readBoard,
   readScore,
   readTetris,
+  seedArchive,
   simulate,
   sleep,
   trackErrors,
 } from './helpers.mjs';
 
 const KEY = { left: 'ArrowLeft', right: 'ArrowRight', up: 'ArrowUp', down: 'ArrowDown' };
+
+/** 非零块数（与 helpers.countTiles 同口径；本文件只需一处，故不额外改 import 顺序） */
+const countTiles0 = b => b.flat().filter(v => v !== 0).length;
 
 /** 比对"按键前 b0/s0 → 按键后 b1/s1"是否符合标准 2048 语义（与 G2048-02/22 同一判据） */
 function judgeMove(id, label, dir, b0, s0, b1, s1) {
@@ -128,9 +134,31 @@ test.describe('D02 键盘操作与 2048 视觉统一', () => {
     check('D02-3', y === 0, `按 5 次 ↓ 后 scrollY=${y}（preventDefault 只拦方向键）`);
   });
 
-  test.fixme('D02-4 结束态守卫（需可构造满盘）', async () => {
-    // 与 G2048-04/05 同源阻塞：页面无可注入状态的入口，只能靠随机玩到结束（耗时且不确定）。
-    // 解法见《07》§12：抽离 Game2048Core 后由 xUnit 直接构造满盘。
+  test('D02-4 结束态键盘失效（注入合法死局档构造）', async ({ page }) => {
+    // 构造手法见 helpers.seedArchive：合法满盘档注入后由页面重算 isGameOver，确定性进结束态，
+    // 不再依赖"随机玩到结束"。（G2048-39 已覆盖遮罩/四向禁用，本条只守"键盘路径同样被挡"。）
+    await open(page, '/game_2048', 1600);
+    await seedArchive(page, archiveOf(DEAD_CELLS, 24));   // 8 个 4 ⇒ cap = 32
+
+    const b0 = await readBoard(page);
+    const s0 = await readScore(page);
+    check(
+      'D02-4-前置',
+      (await page.locator('.game-over').count()) === 1 && countTiles0(b0) === 16,
+      `死局档必须先进结束态（满 ${countTiles0(b0)} 块、遮罩=${await page.locator('.game-over').count()}），否则"键盘失效"无从谈起`,
+    );
+
+    for (const key of ['ArrowLeft', 'ArrowUp', 'ArrowRight', 'ArrowDown']) {
+      await page.keyboard.press(key);
+      await sleep(220);
+    }
+    const b1 = await readBoard(page);
+    const s1 = await readScore(page);
+    check(
+      'D02-4',
+      JSON.stringify(b1) === JSON.stringify(b0) && s1 === s0,
+      `四方向按键后盘面${JSON.stringify(b1) === JSON.stringify(b0) ? '不变' : '变了'}、分数 ${s0}→${s1}（OnKeyDown → MoveXxx 的 isGameOver 守卫必须挡住）`,
+    );
   });
 
   test('D02-5 Tetris 键盘 ←/→ 各移 1 格', async ({ page }) => {
