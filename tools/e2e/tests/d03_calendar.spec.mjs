@@ -1,10 +1,10 @@
 // D-03：爱情计时器日历精确换算（年/月/天）
 // 手法同 G2048-STEP：Node 侧独立实现同一套规则（AddYears/AddMonths 的 clamp），
 // 对多个锚点反算期望文案，再与页面副行逐条比对 —— 这样闰日/月末这些边界才真正被覆盖。
+// 已知残余（不影响门禁）：页面在点击瞬间用 DateTime.Now 算、期望值在 sleep(450) 之后现算，
+// 故 23:59:59.6 附近执行可能因跨零点误报 1 天；DST 时区（本机为 CST 无 DST）切换日同理。
 import { test } from '@playwright/test';
 import { check, checkEq, open, pickSelect, sleep, viewportMetrics } from './helpers.mjs';
-
-const MOBILE = { width: 375, height: 667 };
 
 // ── 独立实现（不调 .NET，按文档 §2.1/§3.2 的规则重写）──
 const clampAddMonths = (d, n) => {
@@ -16,6 +16,12 @@ const clampAddMonths = (d, n) => {
 };
 const clampAddYears = (d, n) => clampAddMonths(d, n * 12);
 
+/**
+ * 期望值必须与产品同口径：LoveTime.razor:227 的 (now - t2).Days 是 TimeSpan 的**向零截断**（正数即 floor），
+ * 而 Test/functiontest.mjs:125 的独立实现也是 floor。
+ * 禁止改回 Math.round —— now 含时分秒，本地 12:00 之后 round 必然进位，会让 LT-26/27/28 上午绿、下午红（P-001）。
+ * 冻结时刻自检见 LT-28 末尾的「口径」check。
+ */
 function ymd(anchor, now) {
   const a = new Date(anchor.getFullYear(), anchor.getMonth(), anchor.getDate());
   if (now < a) return { y: 0, m: 0, d: 0 };
@@ -25,7 +31,7 @@ function ymd(anchor, now) {
   let m = (now.getFullYear() - t.getFullYear()) * 12 + now.getMonth() - t.getMonth();
   let t2 = clampAddMonths(t, m);
   if (t2 > now) { m -= 1; t2 = clampAddMonths(t, m); }
-  return { y, m, d: Math.round((now - t2) / 86400000) };
+  return { y, m, d: Math.floor((now - t2) / 86400000) };
 }
 
 function expectText({ y, m, d }) {
@@ -97,6 +103,13 @@ test.describe('D03 爱情计时器日历年月天', () => {
     const got = (await subLines(page).nth(0).textContent())?.trim() ?? '';
     const want = expectText(ymd(new Date(2018, 3, 22), new Date()));
     checkEq('LT-28', got, want, `内置 2018-04-22 应为「${want}」（与主行首段天数同源）`);
+
+    // 口径自检（P-001 回归护栏）：同一锚点、同一天的两个时刻，天数必须相等。
+    // 若有人把 floor 改回 round，19:00 会得 +1 天 → 这条立刻红，不需要等到下午才发现。
+    const anchor = new Date(2018, 3, 22);
+    const morning = ymd(anchor, new Date(2026, 10, 6, 9, 0, 0)).d;
+    const evening = ymd(anchor, new Date(2026, 10, 6, 19, 0, 0)).d;
+    check('LT-28-口径', morning === evening, `同一天 09:00 与 19:00 的天数必须相等：${morning} vs ${evening}（相等=截断口径，差 1=有人改回了 round）`);
   });
 
   test('LT-29 秒级刷新下副行恒定（年月天不随秒抖动）', async ({ page }) => {
@@ -107,15 +120,24 @@ test.describe('D03 爱情计时器日历年月天', () => {
     checkEq('LT-29', b, a, `3 秒后副行仍为「${a}」`);
   });
 
-  test('LT-30 375px：副行不引入横向溢出，且主行仍不裁切', async ({ browser }) => {
-    const ctx = await browser.newContext({ viewport: MOBILE, isMobile: true, hasTouch: true });
-    const page = await ctx.newPage();
-    await open(page, '/loveTime', 1400);
-    const m = await viewportMetrics(page);
-    const clip = await page.evaluate(() =>
-      [...document.querySelectorAll('.timer-display')].map(el => el.scrollHeight <= el.clientHeight + 1).every(Boolean),
-    );
-    check('LT-30', m.scrollW <= m.clientW && clip, `375px：${m.scrollW}/${m.clientW}；三行主行不裁切=${clip}`);
-    await ctx.close();
+  test('LT-30 375px / 320px：副行不引入横向溢出，主行与副行均不裁切', async ({ browser }) => {
+    const rows = [];
+    for (const vp of [{ width: 375, height: 667 }, { width: 320, height: 568 }]) {
+      const ctx = await browser.newContext({ viewport: vp, isMobile: true, hasTouch: true });
+      const page = await ctx.newPage();
+      await open(page, '/loveTime', 1400);
+      const m = await viewportMetrics(page);
+      const clip = await page.evaluate(() => ({
+        main: [...document.querySelectorAll('.timer-display')].map(el => el.scrollHeight <= el.clientHeight + 1).every(Boolean),
+        cal: [...document.querySelectorAll('.timer-calendar')]
+          .map(el => el.scrollHeight <= el.clientHeight + 1 && el.scrollWidth <= el.clientWidth + 1).every(Boolean),
+        calCount: document.querySelectorAll('.timer-calendar').length,
+      }));
+      rows.push({ w: vp.width, sw: m.scrollW, cw: m.clientW, ...clip });
+      await ctx.close();
+    }
+    const bad = rows.filter(r => r.sw > r.cw || !r.main || !r.cal || r.calCount !== 3);
+    check('LT-30', bad.length === 0,
+      `${rows.map(r => `${r.w}px:${r.sw}/${r.cw} 主行=${r.main} 副行=${r.cal}(${r.calCount})`).join(' / ')}`);
   });
 });
