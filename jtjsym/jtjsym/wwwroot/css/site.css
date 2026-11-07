@@ -76,6 +76,23 @@ a, .btn-link {
     --tile-size: min(50px, calc((100vw - 120px) / 4));
 }
 
+/* 恢复窗口（P-009）：纯视觉 —— 让首帧看起来像"加载中"而不是"可以玩的假新局"。
+   注意：拦截职责不在这里（容器内没有任何可点元素，pointer-events 对它无意义），
+   真正的拦截是 Game_2048 各入口的 isRestoring 代码守卫。 */
+.game-container.session-loading {
+    opacity: .55;
+    pointer-events: none;
+    transition: opacity .15s ease;
+}
+
+/* 恢复提示行：用 @if 整块出现/消失，不常驻占位（常驻会给 2048 页面永久加一行高度） */
+.session-tip {
+    text-align: center;
+    color: #886D68;
+    font-size: 14px;
+    margin: 4px 0 0;
+}
+
 .row {
     display: flex;
     justify-content: center; /* Ê¹Ã¿ÐÐµÄ´É×©Ë®Æ½¾ÓÖÐ */
