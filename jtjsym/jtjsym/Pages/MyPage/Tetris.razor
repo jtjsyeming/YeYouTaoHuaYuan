@@ -6,6 +6,8 @@
 
 <PageTitle>俄罗斯方块</PageTitle>
 
+<h1 class="tetris-title">俄罗斯方块</h1>
+
 <div class="tetris-container">
     <!-- 上部区域：画布 + 右侧信息面板 -->
     <div class="top-area">
@@ -166,13 +168,24 @@
 </div>
 
 <style>
+    /* 页面主标题：高度必须确定（行高 24 + 下边距 6 = 30px），因为下方容器的 min-height 要按它扣减。
+       桌面与 ≤520px 两处 min-height 的 30px 必须与这里同步；改错时 D14-2 会在 7 档手机视口同时变红。
+       不用 rfs 流式字号：默认 h1 外高在 320→1280 之间从 40.2 漂到 56，calc() 里跟不上。 */
+    .tetris-title {
+        font-size: 20px;
+        line-height: 24px;
+        margin: 0 0 6px;
+        padding: 0;
+        text-align: center;
+    }
+
     /* 整体容器 */
     .tetris-container {
         display: flex;
         flex-direction: column;
         align-items: center;
         padding: 10px;
-        min-height: 100vh;
+        min-height: calc(100vh - 30px);  /* 30 = 标题行高 24 + 下边距 6 */
         background-color: #0a0a0a;
         gap: 15px;
         /* 单一尺寸来源：30px 封顶，窄屏按视口等比收缩
@@ -497,7 +510,7 @@
             column-gap: 8px;
             row-gap: 8px;                     /* 覆盖容器原有 gap:15px，右栏更紧凑 */
             margin: 0 -24px;                  /* 满宽：抵消 article 的 px-4，把 48px 让给棋盘 */
-            min-height: calc(100dvh - 74px);  /* 74 = 导航 56 + .content padding-top 17.6 */
+            min-height: calc(100dvh - 74px - 30px);  /* 74 = 导航 56 + .content padding-top 17.6；30 = 标题行高 24 + 下边距 6 */
             --side-col: 132px;
             /* 170 = 容器 padding 20 + 画布边框 4 + 右栏 132 + 列间距 8 + 余量 6 */
             --cell-size: min(30px, calc((100vw - 170px) / 10));
@@ -1050,6 +1063,20 @@
 
         keyRef = DotNetObjectReference.Create(this);
         keyModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/gamekeyboard.js");
+
+        // 复检：import 期间组件可能已被销毁（DisposeAsync 当时 keyModule 还是 null，什么都没卸）。
+        // 继续 register 会由 register() 首句 removeListeners() 拆掉新页的监听并抢走 currentId。
+        // 只能收窄窗口，不能证明消除；D02-9 守的是最终归属。
+        if (isDisposed)
+        {
+            try { await keyModule.DisposeAsync(); }
+            catch (JSDisconnectedException) { } catch (ObjectDisposedException) { } catch (JSException) { }
+            keyModule = null;
+            keyRef.Dispose();
+            keyRef = null;
+            return;
+        }
+
         // Tetris：←/→ 允许按住连发（快速贴边需要）；↑ 旋转、↓ 软降不连发
         // （↓ 的连续下落由 softDropTimer 驱动，与浏览器 repeat 无关）
         keyRegId = await keyModule.InvokeAsync<int>("register", keyRef,
@@ -1084,20 +1111,32 @@
 
     public async ValueTask DisposeAsync()
     {
+        Dispose();   // ★ 必须在首行：先置 isDisposed + 停 3 个 Timer（与 2048 的 disposed = true 对称）。
+                     //   留在末尾时，两个 await 之间 isDisposed 仍是 false，Timer 照常回调 DropPiece/
+                     //   SoftDropPiece/IncreaseDifficulty，连接已死时可能拖到秒级。
+                     //   注意：不要顺手把 keyRegId = 0 也提到前面 —— unregister 传入旧 id 会短路，监听卸不掉。
         if (keyModule is not null)
         {
+            // 两发 interop 各自 try：若 unregister 抛出，不能连带跳过 DisposeAsync ——
+            // 否则 keyModule 被置 null，JS 侧对象引用表会漏一项
             try
             {
                 await keyModule.InvokeVoidAsync("unregister", keyRegId);
-                await keyModule.DisposeAsync();
             }
             catch (JSDisconnectedException) { /* 断线/关页，无需清理 */ }
             catch (ObjectDisposedException) { /* 电路已释放 */ }
+            catch (JSException) { /* 防御性：本方法的两发 interop 都不该抛 JSException，与同文件其余 interop 的四件套保持同口径 */ }
+
+            try
+            {
+                await keyModule.DisposeAsync();
+            }
+            catch (JSDisconnectedException) { }
+            catch (ObjectDisposedException) { }
+            catch (JSException) { }
             keyModule = null;
         }
         keyRef?.Dispose();
         keyRef = null;
-
-        Dispose();   // ★ 关键：既有同步释放逻辑（isDisposed=true + StopTimers）现在才第一次真正被调用
     }
 }
