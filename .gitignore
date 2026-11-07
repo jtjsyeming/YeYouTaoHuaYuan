@@ -22,6 +22,9 @@ launchSettings.json
 /jtjsym/jtjsym/[Pp]roperties/
 /jtjsym/[Pp]ublish/
 
+# 本地构建/自研测试产物（buildcheck 脚本输出，如 ft-*.json 结果快照）
+.buildcheck/
+
 # tools/e2e（Playwright 回归套件）运行产物
 node_modules/
 playwright-report/
