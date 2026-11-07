@@ -15,9 +15,10 @@ if (!app.Environment.IsDevelopment())
     app.UseExceptionHandler("/Error");
     // The default HSTS value is 30 days. You may want to change this for production scenarios, see https://aka.ms/aspnetcore-hsts.
     app.UseHsts();
+    // 只在非开发环境跳 https：本地 `--no-launch-profile --urls http://…` 没有 https 端口可推断，
+    // 放在判断外只会让 HttpsRedirectionMiddleware 每次请求刷 `Failed to determine the https port`（H-012）
+    app.UseHttpsRedirection();
 }
-
-app.UseHttpsRedirection();
 
 app.UseStaticFiles();
 

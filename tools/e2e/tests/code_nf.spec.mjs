@@ -9,7 +9,9 @@ test.describe('CODE 编程挑战', () => {
     await open(page, '/coding_place', 1500);
     const h1 = ((await page.textContent('h1').catch(() => '')) || '').trim();
     const article = (await page.textContent('article').catch(() => '')) || '';
-    const hasCpp = /#include|using namespace|int main\s*\(/.test(article);
+    // H-009 之后 C++ 参考答案进了折叠区，article.textContent 必然含代码 → 只看题面元素本身
+    const problem = (await page.textContent('pre.problem-description').catch(() => '')) || '';
+    const hasCpp = /#include|using namespace|int main\s*\(/.test(problem);
     const unknownTags = await page.evaluate(() => ({
       page: document.querySelectorAll('FluentPage').length,
       header: document.querySelectorAll('FluentPageHeader').length,
@@ -20,10 +22,74 @@ test.describe('CODE 编程挑战', () => {
     check('CODE-01', resp && resp.status() === 200 && h1.includes('编程挑战') && article.trim().length > 50, `status=${resp && resp.status()} h1="${h1}" 正文长度=${article.trim().length}`);
     check(
       'CODE-02',
-      !hasCpp && article.trim().length > 50,
-      `正文含 C++ 代码特征=${hasCpp}；未知标签统计=${JSON.stringify(unknownTags)}（D-06：3 个 Fluent 标签退化为未知元素，文字仍渲染）`,
+      !hasCpp && problem.trim().length > 50 && article.trim().length > problem.trim().length,
+      `题面含 C++ 代码特征=${hasCpp}（只看 pre.problem-description）；题面长度=${problem.trim().length}、article 长度=${article.trim().length}；未知标签统计=${JSON.stringify(unknownTags)}（C-09：3 个 Fluent 标签退化为未知元素，文字仍渲染）`,
     );
     check('CODE-03', ovf.scrollW <= ovf.clientW + 1, `scrollWidth=${ovf.scrollW} clientWidth=${ovf.clientW}`);
+  });
+
+  test('CODE-04/CODE-05 参考答案折叠区（H-009）', async ({ page }) => {
+    const resp = await page.goto('/coding_place', { waitUntil: 'domcontentloaded' });
+    await open(page, '/coding_place', 1200);
+
+    const d = await page.evaluate(() => {
+      const el = document.querySelector('details.code-answer');
+      const s = el && el.querySelector('summary');
+      return {
+        hasDetails: !!el,
+        summaryText: s ? s.textContent.trim() : '',
+        open: el ? el.open : null,
+        preCount: document.querySelectorAll('.code-answer-pre').length,
+      };
+    });
+    check(
+      'CODE-04',
+      !!(resp && resp.status() === 200) &&
+        d.hasDetails &&
+        d.summaryText.includes('参考答案') &&
+        d.open === false &&
+        d.preCount === 1,
+      `details=${d.hasDetails} summary="${d.summaryText}" 默认 open=${d.open}（须为 false，答案不默认曝光） pre 数=${d.preCount}`,
+    );
+
+    // 原生 <details> 不依赖 JS：直接置 open 即等价于点开（避免点 summary 时受布局位置影响）
+    await page.evaluate(() => {
+      const el = document.querySelector('details.code-answer');
+      if (el) el.open = true;
+    });
+    await sleep(200);
+    const pre = await page.evaluate(() => {
+      const el = document.querySelector('.code-answer-pre');
+      if (!el) return null;
+      const cs = getComputedStyle(el);
+      const r = el.getBoundingClientRect();
+      return {
+        text: el.textContent,
+        bg: cs.backgroundColor,
+        color: cs.color,
+        align: cs.textAlign,
+        overflowX: cs.overflowX,
+        font: cs.fontFamily,
+        w: Math.round(r.width),
+        scrollW: el.scrollWidth,
+      };
+    });
+    const txt = pre ? pre.text : '';
+    check(
+      'CODE-05',
+      !!pre &&
+        txt.includes('#include') &&
+        txt.includes('struct Task') &&
+        txt.includes('minServers') &&
+        pre.bg === 'rgb(246, 248, 250)' &&
+        pre.color === 'rgb(36, 41, 47)' &&
+        pre.align === 'left' &&
+        pre.overflowX === 'auto' &&
+        /mono/i.test(pre.font),
+      pre
+        ? `展开后 ${txt.length} 字符（含 #include / struct Task / minServers）；bg=${pre.bg} color=${pre.color} text-align=${pre.align} overflow-x=${pre.overflowX} font=${pre.font} 宽 ${pre.w} / 内容宽 ${pre.scrollW}`
+        : '.code-answer-pre 不存在',
+    );
   });
 });
 
@@ -46,7 +112,7 @@ test.describe('NF 非功能', () => {
     }
 
     await open(page, '/counter');
-    await page.locator('fluent-button.btn-primary').click();
+    await page.locator('fluent-button.muyu-btn').click();
     await sleep(400);
     const fish = ((await page.textContent('p[role=status]')) || '').trim();
 
@@ -76,7 +142,7 @@ test.describe('NF 非功能', () => {
     const detail = [];
 
     await open(mp, '/counter');
-    await mp.locator('fluent-button.btn-primary').tap();
+    await mp.locator('fluent-button.muyu-btn').tap();
     await sleep(400);
     const fish = ((await mp.textContent('p[role=status]')) || '').trim();
     detail.push(`木鱼 tap→${fish}`);
@@ -169,7 +235,7 @@ test.describe('NF 非功能', () => {
     const p2 = await context.newPage();
     const p3 = await context.newPage();
     await Promise.all([open(page, '/counter'), open(p2, '/game_2048'), open(p3, '/tetris')]);
-    await page.locator('fluent-button.btn-primary').click();
+    await page.locator('fluent-button.muyu-btn').click();
     await p2.locator('.controls fluent-button:has-text("⬅️")').click();
     await p3.locator('.game-btn:has-text("旋转")').click();
     await sleep(900);
@@ -210,10 +276,12 @@ test.describe('NF 非功能', () => {
     check('NF-10', true, `断线后按一次 ← 新增错误 ${delta} 条（基线：2；仅记录，不判红）`);
   });
 
-  test('NF-05/07/08 部署与长时会话（需生产环境）', async () => {
+  test('NF-05/07/08 部署与长时会话（发布前验收项）', async () => {
+    // 这三条**不是**"欠账的自动化"，而是只在发布前执行一次的验收项 —— 维护口径见《07》§9.3「发布前手工清单」。
     test.fixme(
       true,
-      'NF-05（http→https 301）、NF-07（闲置 30 分钟重连）、NF-08（部署站点静态资源 200）均需 IIS/生产环境，本地开发环境无法给出确定性结论，列入发布前验收。',
+      '发布前验收项：NF-05（http→https 301）、NF-07（闲置 30 分钟重连）、NF-08（部署站点静态资源 200）均需 IIS/生产环境；' +
+        '本地开发环境拿不到确定性结论，故永久不在自动化门禁内。执行时按《07》§9.3 清单逐项手验并记入发布记录。',
     );
   });
 });

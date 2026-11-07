@@ -55,7 +55,7 @@ test.describe('D15 首页卡片化与 Fluent 统一', () => {
 
     const href = await page.getAttribute('footer a', 'href').catch(() => '');
     const target = await page.getAttribute('footer a', 'target').catch(() => '');
-    check('D15-6', href === 'https://beian.mps.gov.cn/#/' && target === '_blank', `href="${href}" target="${target}"`);
+    check('D15-6', href === 'https://beian.miit.gov.cn/' && target === '_blank', `href="${href}" target="${target}"`);
   });
 
   test('D15-7/D15-8 375px 单列不溢出、1280px 多列同排', async ({ page }) => {

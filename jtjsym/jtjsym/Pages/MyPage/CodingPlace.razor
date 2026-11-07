@@ -10,11 +10,16 @@
     <h2 style="margin-top:0">任务混部</h2>
     <pre class="problem-description">@ProblemDescription</pre>
 
+    <details class="code-answer">
+        <summary>参考答案（点击展开）</summary>
+        <pre class="code-answer-pre">@CodeAnswer.Trim()</pre>
+    </details>
+
 </FluentCard>
 
 @code {
     // 在这里填充问题描述
-    private string ProblemDescription = @"
+    private readonly string ProblemDescription = @"
         问题描述:
         公司创新实验室正在研究如何最小化资源成本，最大化资源利用率。现在需要解决一个任务混部问题，具体如下：
         给定一批任务，每个任务有以下属性：
@@ -31,7 +36,7 @@
     ";
 
     // 在这里填充你的代码答案
-    private string CodeAnswer = $@"
+    private readonly string CodeAnswer = $@"
         #include <iostream>
         #include <vector>
         #include <queue>
@@ -80,8 +85,23 @@
         return 0;
         }}
     ";
-
-
-
-
 }
+
+<style>
+    /* H-009：题面的 pre 元素没有任何 CSS（实测 color rgb(33,33,33)、背景透明、无 padding），
+       折叠区样式必须自带；类名带 code-answer 前缀，避免与全站通用类冲突（H-004 的教训）。 */
+    .code-answer { margin-top: 16px; }
+    .code-answer > summary { cursor: pointer; font-weight: 600; color: #1b6ec2; }
+    .code-answer-pre {
+        background: #f6f8fa;
+        border: 1px solid #e1e4e8;
+        border-radius: 6px;
+        padding: 12px;
+        overflow-x: auto;
+        font-family: SFMono-Regular, Menlo, Consolas, monospace;
+        font-size: 13px;
+        line-height: 1.45;
+        color: #24292f;      /* 显式给色：不写会继承 body 的 #886D68（H-010 之后 body 才有 color） */
+        text-align: left;    /* 同上：body{text-align:center} 会继承进 pre */
+    }
+</style>
