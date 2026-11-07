@@ -277,7 +277,9 @@ test.describe('TRIS 俄罗斯方块', () => {
       const st = await readTetris(page);
       check('TRIS-21', !st.gameOver && st.score === '0' && st.difficulty === '1', `重开后 结束=${st.gameOver} 分数=${st.score} 难度=${st.difficulty}`);
     } else {
-      test.skip(true, 'TRIS-21 需进入结束态前置，本轮未构造成功');
+      // 失败必须判红，**不能**退回 test.skip —— 否则这就是一条"永远绿不了的隐藏 skip"（《26》H-011：
+      // 运行期条件 skip 只在构造失败时出现，从未进过台账）。构造不可靠要作为缺陷暴露出来。
+      check('TRIS-21', false, `构造不可靠：堆 ${r.blocks} 块 / ${r.elapsed}s 仍未进入结束态（stackToGameOver 预算 120s）`);
     }
   });
 
@@ -339,18 +341,17 @@ test.describe('TRIS 俄罗斯方块', () => {
     );
   });
 
-  test('TRIS-26 暂停期间难度不应上升（D-04）', async ({ page }) => {
-    test.fixme(
-      true,
-      'D-04 未修复：PauseGame() 只停 gameTimer、未停 difficultyTimer，暂停 3 分钟后难度会 +1。' +
-        '用例断言的是"暂停冻结"契约，修复前必然失败；证据见 2026-11-01 全量测试执行记录（TRIS-26 实测难度 1→2）。',
-    );
+  // H-001 已修（《23》）：PauseGame 同时冻结 difficultyTimer，IncreaseDifficulty 首行加 isPaused/isGameOver 守卫。
+  // 必须显式放宽超时：用例内 sleep(185000)，全局 timeout 只有 60s，只去 fixme 会先撞超时变红（与 D-04 无关）。
+  test('TRIS-26 暂停期间难度不应上升（H-001 / D-04）', async ({ page }) => {
+    test.setTimeout(240_000);
     await open(page, '/tetris', 1800);
     await clickGameBtn(page, '暂停游戏', 600);
     const s0 = await readTetris(page);
     await sleep(185000);
     const s1 = await readTetris(page);
-    checkEq('TRIS-26', s1.difficulty, s0.difficulty, '暂停 3 分钟后难度等级不应变化');
+    // 只断言等级：speed 与 difficultyLevel 只在 IncreaseDifficulty() 内同步变更，等级不变即速度不变。
+    checkEq('TRIS-26', s1.difficulty, s0.difficulty, '暂停 3 分钟后难度等级不应变化（难度计时器随暂停冻结）');
   });
 
   test('TRIS-ERR 全程无未处理浏览器异常', async ({ page }) => {

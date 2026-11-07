@@ -200,6 +200,68 @@ test.describe('D-14 移动端俄罗斯方块右侧布局', () => {
     );
   });
 
+  test('D14-10 横屏四档：棋盘与面板完整可见、操作区不超 10px、横向不回归', async ({ page }) => {
+    test.setTimeout(180_000);
+    // 硬断言只到「棋盘 + 面板完整可见」（用户痛点：方块落到底部看不见 / 暂停按钮滚不到）；
+    // 操作区给 10px 余量：740×360 这一档的硬约束是侧栏面板高度，格子再缩也无收益（《23》§3.2 实测）。
+    // 不用 scrollHeight <= innerHeight 当判据 —— 1200×400 这类桌面矮窗另有 17.6px 的 .content padding，
+    // 该判据会把「min-height 配平」问题误判成「cell 公式错」。
+    const LANDSCAPES = [
+      { w: 844, h: 390 },
+      { w: 812, h: 375 },
+      { w: 740, h: 360 },
+      { w: 667, h: 375 },
+    ];
+    const rows = [];
+    const badHard = [];
+    const badSoft = [];
+    const badW = [];
+
+    for (const { w, h } of LANDSCAPES) {
+      await page.setViewportSize({ width: w, height: h });
+      await open(page, '/tetris', 1500);
+      const m = await readLayout(page);
+      const tag = `${w}×${h}`;
+      rows.push(`${tag}: cell=${m.cell} 画布底=${m.canvas.bottom} 面板底=${m.panel.bottom} 控件底=${m.controls.bottom} 视口=${m.vh}`);
+
+      if (m.canvas.bottom > m.vh + 0.5) badHard.push(`${tag} 画布底 ${m.canvas.bottom}>${m.vh}`);
+      if (m.panel.bottom > m.vh + 0.5) badHard.push(`${tag} 面板底 ${m.panel.bottom}>${m.vh}`);
+      if (m.controls.bottom > m.vh + 10) badSoft.push(`${tag} 控件底 ${m.controls.bottom}>${m.vh}+10`);
+      if (m.scrollW > m.clientW) badW.push(`${tag} ${m.scrollW}>${m.clientW}`);
+    }
+
+    check('D14-10', badHard.length === 0, `棋盘/面板越出视口=${badHard.join('；') || '无'}｜${rows.join(' / ')}`);
+    check('D14-10b', badSoft.length === 0, `操作区溢出超过 10px=${badSoft.join('；') || '无'}｜${rows.join(' / ')}`);
+    check('D14-10c', badW.length === 0, `横向溢出=${badW.join('；') || '无'}`);
+  });
+
+  test('D14-10d 桌面三档回归：格子仍 30px、纵向溢出归零', async ({ page }) => {
+    test.setTimeout(120_000);
+    // 挂 D14-10 名下（不新占用例号）：③(100dvh−142px)/20 只在矮视口生效；
+    // ④(100dvh−30px−1.1rem) 让「零纵向滚动」第一次真正为 0（原先恒溢 17.6px，P-023）。
+    const DESKTOPS = [
+      { w: 1400, h: 1000 },
+      { w: 1280, h: 800 },
+      { w: 1024, h: 768 },
+    ];
+    const cells = {};
+    const over = {};
+    for (const { w, h } of DESKTOPS) {
+      await page.setViewportSize({ width: w, height: h });
+      await open(page, '/tetris', 1400);
+      const m = await readLayout(page);
+      cells[w] = m.cell;
+      over[w] = m.scrollH - m.clientH;
+    }
+    const badCell = Object.entries(cells).filter(([, v]) => Math.abs(v - 30) > 0.01);
+    const badH = Object.entries(over).filter(([, v]) => v > 0);
+    check(
+      'D14-10d',
+      badCell.length === 0 && badH.length === 0,
+      `格子=${Object.entries(cells).map(([k, v]) => `${k}:${v}`).join(' ')}（应全为 30）；纵向溢出=${Object.entries(over).map(([k, v]) => `${k}:${v}px`).join(' ') || '无'}（应全为 0）`,
+    );
+  });
+
   test('D14-辅助 手机两栏布局下无控制台错误', async ({ page }) => {
     const errs = trackErrors(page);
     await page.setViewportSize({ width: 375, height: 667 });
