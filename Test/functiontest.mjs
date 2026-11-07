@@ -220,7 +220,10 @@ ft('FT-04', 'D-17', '非法存档值进入合并：产生非 2 幂与 int 溢出
 ft('FT-05', 'D-17', '正向：死局盘面恢复后由 IsGameOver() 重算遮罩与禁用态', async browser => {
   const { ctx, page, errs } = await fresh(browser);
   const dead = [2, 4, 2, 4, 4, 2, 4, 2, 2, 4, 2, 4, 4, 2, 4, 2];
-  await seedAndReload(page, grid(dead, 1234));
+  // 18 号文档 §5.3：原 fixture 是 grid(dead, 1234)，但 16 块 2/4 的盘面 cap = 8 个 4 × 4 = 32，
+  // 1234 分在这个盘面上不可能存在（内容非法），闸一上线后会被拒 → FT-05 假红。
+  // 24 ≤ 32 才是"内容合法"的档，这样测到的才是"恢复 + 重算遮罩"，而不是"被拒绝后开新局"。
+  await seedAndReload(page, grid(dead, 24));
   const s = await readState(page), st = await readStore(page);
   await ctx.close();
   return {
@@ -230,32 +233,53 @@ ft('FT-05', 'D-17', '正向：死局盘面恢复后由 IsGameOver() 重算遮罩
   };
 });
 
-ft('FT-06', 'D-17', '语义边界：window.open / 复制标签继承 sessionStorage', async browser => {
+ft('FT-06', 'D-17', '语义边界：window.open / 复制标签克隆 sessionStorage', async browser => {
   const { ctx, page, errs } = await fresh(browser);
   await open(page, '/game_2048', 1400);
   for (let i = 0; i < 6; i++) await clickDir(page, ['left', 'down', 'right', 'up'][i % 4], 220);
   const a = await readState(page), sa = await readStore(page);
+  // 隔离探针①：popup 打开前先在 A 写一个键 —— 规范规定 window.open 克隆开启者的会话存储，
+  // 所以 popup 侧应当读到这个值；而克隆之后两边的写入必须互不可见（这才是与 localStorage 的真实差别）。
+  await page.evaluate(() => sessionStorage.setItem('ft06.k', 'A-before'));
   const [popup] = await Promise.all([
     page.waitForEvent('popup', { timeout: 10000 }).catch(() => null),
     page.evaluate(() => window.open('/game_2048', '_blank')),
   ]);
   let b = null, sb = null;
+  const iso = {};
   if (popup) {
     await popup.waitForLoadState('domcontentloaded').catch(() => {});
     await popup.waitForFunction(() => !!window.Blazor, null, { timeout: 15000 }).catch(() => {});
     await sleep(1300);
     b = await readState(popup); sb = await readStore(popup);
+    // 探针②：popup 读 A 的键（应为克隆快照 A-before）、写自己独有的键再回读
+    Object.assign(iso, await popup.evaluate(() => {
+      const popupSawA = sessionStorage.getItem('ft06.k');
+      sessionStorage.setItem('ft06.k2', 'B-only');
+      return { popupSawA, ownRoundTrip: sessionStorage.getItem('ft06.k2') === 'B-only' };
+    }).catch(() => ({ popupSawA: 'ERR', ownRoundTrip: false })));
+    // 探针③：此后 A 改写同一个键 → popup 仍应停在克隆时的 A-before；A 也不应看到 popup 的键
+    await page.evaluate(() => sessionStorage.setItem('ft06.k', 'A-after'));
+    iso.popupSeesLaterAWrite = await popup.evaluate(() => sessionStorage.getItem('ft06.k')).catch(() => 'ERR');
+    iso.aSeesPopupKey = await page.evaluate(() => sessionStorage.getItem('ft06.k2')).catch(() => 'ERR');
   }
   // 全新 browsing context（对照）
   const p3 = await ctx.newPage();
   await open(p3, '/game_2048', 1100);
   const c = await readState(p3), sc = await readStore(p3);
   await ctx.close();
+  // 判据随文档口径变更：规范行为就是"克隆"，因此"继承"才是应当成立的那一侧；
+  // 并且要额外证明"继承之后各写各的"——这才是 sessionStorage 与 localStorage 的真实差别。
+  const inherited = !!(sb && sa.session && sb.session === sa.session);
+  const isolated =
+    iso.popupSawA === 'A-before' && iso.ownRoundTrip === true &&
+    iso.aSeesPopupKey === null && iso.popupSeesLaterAWrite === 'A-before';
   return {
-    pass: !popup || !!(b && sa.session && sb.session !== sa.session),
-    expect: '按《现状/更新记录》宣称「两个标签各玩一局互不干扰」，新开的标签不应继承 A 的残局',
+    pass: !!popup && inherited && isolated,
+    expect: 'window.open/复制标签会克隆 sessionStorage（规范行为）：新标签从同一残局开局，且此后两标签的写入互不影响',
     actual: { a: { blocks: nonEmpty(a), score: a.score, session: sa.session },
-      popup: b && { blocks: nonEmpty(b), score: b.score, session: sb.session, inherited: sb.session === sa.session },
+      popup: b && { blocks: nonEmpty(b), score: b.score, session: sb.session, inherited },
+      isolate: iso,
       freshContext: { blocks: nonEmpty(c), score: c.score, session: sc.session }, errors: errs.slice(0, 3) },
     kind: 'observe',
   };
@@ -299,8 +323,12 @@ ft('FT-07', 'D-17', 'fire-and-forget 落盘：走子后立刻刷新是否丢失�
   const afterDom = await run(true, 8);
   await ctx.close();
   return {
-    pass: instant.lost === 0 && afterDom.lost === 0,
-    expect: '最后一步有效移动的盘面/分数应在刷新后完整保持（D-17 的核心承诺）',
+    // 《19》判据口径变更（必须留痕）：门禁只看 afterDom。
+    // 理由：instant（点完立即 reload）在任何客户端方案下都可能丢 —— 事件未必已到服务端、
+    //      到了服务端 interop 也未必执行完，这是 Blazor Server 的架构边界（状态在服务端、interop 必然异步）。
+    //      拿它当门禁会在物理极限上随机红（与 P-001 同型）。instant 的丢步率原样保留在 actual 里供报告引用。
+    pass: afterDom.lost === 0,
+    expect: '等 DOM 出现该步结果后再刷新 → 100% 保持（"渲染即已落盘"不变式）；零等待刷新仅作观测，不判红',
     actual: { instantReload: instant, afterDomUpdateReload: afterDom, errors: errs.slice(0, 3) },
   };
 });
@@ -339,22 +367,44 @@ ft('FT-08', 'D-17', '恢复窗口竞态探测：首帧点「重玩」是否被�
     await sleep(1200);
     const s = await readState(page), st = await readStore(page);
     const probe = await page.evaluate(() => ({ clicked: window.__ftClicked, trail: window.__ftTrail }));
+    const arch = st.session ? JSON.parse(st.session) : null;
+    // 判据核心：存档与画面必须一致。点进来的瞬间重玩若被随后的恢复撤销，就会出现
+    // "内存是旧残局、存档是新局"的分裂 —— 这正是 P-006 的可判别痕迹（分数轨迹看不出来：
+    // 预渲染首帧本来就是"分数：0"，恢复成功也同样是 0→40）。
+    const consistent = !!arch && arch.cells.join(',') === s.tiles.map(t => parseInt(t, 10) || 0).join(',')
+      && String(arch.score) === String(scoreOf(s));
     results.push({ i, score: s.score, blocks: nonEmpty(s), values: [...new Set(s.tiles.filter(Boolean))],
       clicked: probe.clicked, scoreTrail: probe.trail,
-      archiveScore: st.session ? JSON.parse(st.session).score : null });
+      archiveScore: arch ? arch.score : null, consistent });
   }
   await ctx.close();
-  const effective = results.filter(r => r.scoreTrail.includes('分数：0'));
   return {
-    pass: true, kind: 'info',
-    expect: '仅登记事实：首帧点击是否真正生效、分数轨迹是否被旧档回写；窗口极窄，未复现不等于不存在',
-    actual: { results, clicksThatReachedServer: effective.length, errors: errs.slice(0, 3),
-      note: 'isSessionReady 在读取存档前已置 true，RestartGame 会写档；恢复分支读到旧值时理论上可覆盖用户操作' },
+    // 《19》判据升级（原来是 kind:'info' + pass:true，永远只打印 INFO，不可能"转 PASS"）：
+    // element.click() 绕得过 disabled / pointer-events，正好用来验证代码守卫（isRestoring）。
+    // 守卫生效时：点击被忽略 → 恢复照常 → 画面=存档 → consistent；
+    // 守卫失效时：RestartGame 先写新档、恢复再用旧值覆盖画面 → 两者分裂 → 必红（修复前实测 5/5）。
+    pass: results.every(r => r.clicked && r.consistent),
+    expect: '恢复窗口内点「重玩」不得造成"画面与存档分裂"：存档与会话存储必须逐格一致',
+    actual: { results, clicksAttempted: results.filter(r => r.clicked).length,
+      inconsistent: results.filter(r => !r.consistent).length, errors: errs.slice(0, 3),
+      note: '守卫在 OnReplayClicked（用户入口）；RestartGame 仍被 OnInitialized 调用，故不能把守卫下沉' },
   };
 });
 
 ft('FT-09', 'D-17', 'ServerPrerendered 首屏闪烁：预渲染新局 → 恢复残局', async browser => {
-  const { ctx, page, errs } = await fresh(browser);
+  // 《19》判据改写：pass 从 !changed 换成"首帧是否带加载态"。
+  // 理由：ServerPrerendered 下"不跳变"不可能达成（预渲染实例读不到 sessionStorage），
+  //       加了半透明也不改变文本 → 旧判据恒 OBSV、永远不可能变好。能达成的只有"跳变前是加载态"。
+  const { ctx, page, errs } = await fresh(browser, { width: 1400, height: 1000 }, () => {
+    window.__preHasLoading = null;   // 每次导航（含 reload）都由 addInitScript 重置后重新记录
+    const snap = () => {
+      if (window.__preHasLoading === null) {
+        window.__preHasLoading = !!document.querySelector('.game-container.session-loading');
+      }
+    };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', snap, { once: true });
+    else snap();
+  });
   const cells = Array(16).fill(0);
   [0, 3, 6, 9, 12, 15].forEach((i, k) => { cells[i] = 2 << k; });
   await seedAndReload(page, grid(cells, 88));
@@ -364,21 +414,24 @@ ft('FT-09', 'D-17', 'ServerPrerendered 首屏闪烁：预渲染新局 → 恢复
   const preScore = /分数：\s*(\d+)/.exec(html)?.[1] ?? null;
   const preBest = /最高分：\s*(\d+)/.exec(html)?.[1] ?? null;
   const preTiles = (html.match(/class="tile [^"]*">\d+/g) || []).length;
+  const preHtmlLoading = /class="[^"]*\bsession-loading\b/.test(html);
   await page.goto('/game_2048', { waitUntil: 'domcontentloaded' });
   const first = await readState(page);
+  const preHasLoading = await page.evaluate(() => window.__preHasLoading);
   await page.waitForFunction(() => !!window.Blazor, null, { timeout: 15000 }).catch(() => {});
   await sleep(1100);
   const settled = await readState(page);
   await ctx.close();
   const changed = JSON.stringify(first.tiles) !== JSON.stringify(settled.tiles) || first.score !== settled.score;
   return {
-    pass: !changed,
-    expect: '首屏应直接呈现恢复后的残局，不出现「新局 → 残局」的可见跳变',
-    actual: { prerenderHtml: { score: preScore, best: preBest, numericTiles: preTiles },
+    pass: preHasLoading === true && preHtmlLoading,
+    expect: '首帧（DOMContentLoaded）必须处于加载态：容器带 session-loading，而不是看起来像能玩的假新局',
+    actual: { preHasLoading, preHtmlLoading,
+      prerenderHtml: { score: preScore, best: preBest, numericTiles: preTiles },
       firstPaint: { score: first.score, best: first.best, blocks: nonEmpty(first) },
       afterRestore: { score: settled.score, best: settled.best, blocks: nonEmpty(settled) },
       restoredBefore: { score: restored.score }, changed, errors: errs.slice(0, 3) },
-    kind: 'observe',
+    kind: 'observe',   // P-009 只能缓解（预渲染实例拿不到 sessionStorage），故不进 FAIL 门禁
   };
 });
 
@@ -405,26 +458,49 @@ ft('FT-10', 'D-17', '正向降级：浏览器存储 setItem 被禁时游戏仍�
 });
 
 // ═══════════════ B 组：D-03 日历年月天副行（新功能，重点） ═══════════════
-ft('FT-11', 'D-03', '自选/恢复按钮后三行秒数的瞬时一致性', async browser => {
+ft('FT-11', 'D-03', '自选/恢复按钮后三行秒数的瞬时一致性（相位对齐）', async browser => {
   const { ctx, page, errs } = await fresh(browser);
-  await open(page, '/loveTime', 1600);
+  const MIN_PHI = 250;
   const secs = () => page.evaluate(() => [...document.querySelectorAll('div.timer')].map(t => {
     const m = /(\d+)\s*秒/.exec(t.textContent); return m ? +m[1] : null;
   }));
-  let mismatch = 0; const samples = [];
-  for (let i = 0; i < 12; i++) {
-    await page.locator('.love-reset-bar fluent-button').nth(i % 3).click();
-    const s = await secs();
-    if (new Set(s).size > 1) mismatch++;
-    samples.push(s);
-    await sleep(110);
+
+  // ① 取一次 φ ≥ MIN_PHI 的加载
+  let phi = null;
+  for (let i = 0; i < 6; i++) {
+    await open(page, '/loveTime', 2200);
+    const t = await page.evaluate(() => new Promise(resolve => {
+      const el = document.querySelectorAll('div.timer')[0];
+      const obs = new MutationObserver(() => { obs.disconnect(); resolve(Date.now()); });
+      obs.observe(el, { childList: true, characterData: true, subtree: true });
+      setTimeout(() => { obs.disconnect(); resolve(null); }, 5000);
+    }));
+    if (t !== null && t % 1000 >= MIN_PHI) { phi = t % 1000; break; }
+  }
+  if (phi === null) {
+    await ctx.close();
+    return { pass: false, expect: '三行秒数必须同时进入新秒', actual: { error: '6 次加载均未取到 φ ≥ 250ms 的相位' }, kind: 'pass' };
+  }
+
+  // ② 等到"下一个整秒边界 + 40ms"，点击，并在下一次 tick 之前轮询
+  const nowMs = await page.evaluate(() => Date.now());
+  const boundary = Math.floor(nowMs / 1000) * 1000 + 1000;
+  await sleep(Math.max(0, boundary + 40 - nowMs));
+  await page.evaluate(() => document.querySelectorAll('.love-reset-bar fluent-button')[0].click());
+
+  const deadline = boundary + phi - 40;
+  let last = null, bad = null;
+  while (Date.now() < deadline) {
+    last = await secs();
+    if (new Set(last).size > 1) { bad = last; break; }
+    await sleep(20);
   }
   await ctx.close();
   return {
-    pass: mismatch === 0,
-    expect: '点击后三行主计时的秒数应一致（RefreshAll 一次取 DateTime.Now 的语义应扩展到事件回调）',
-    actual: { mismatch, total: 12, samples, errors: errs.slice(0, 3) },
-    kind: 'observe',
+    pass: bad === null,
+    expect: '整秒边界后点击：三行秒数必须同时进入新秒（未修复时被点行为 k、另两行为 k-1）',
+    actual: { phi, mismatch: bad, lastSeen: last, errors: errs.slice(0, 3) },
+    kind: 'pass',
   };
 });
 
@@ -470,7 +546,7 @@ ft('FT-17', 'D-03', '既有 D-03 用例期望算法的时刻依赖（Math.round 
   const texts = await page.evaluate(() => [...document.querySelectorAll('.timer-calendar')].map(e => e.textContent.trim()));
   const now = new Date();
   const anchors = [new Date(2018, 3, 22), new Date(2022, 1, 25), new Date(2023, 7, 8)];
-  // 复刻 tools/e2e/tests/d03_calendar.spec.mjs:28 的 Math.round 口径
+  // 复刻 P-001 修复【前】的 round 口径（d03_calendar.spec.mjs 已改 floor，此处故意保留旧口径做历史对照）
   const roundText = a => {
     const r = calendarElapsed(a, now);
     const d = Math.round((now.getTime() - addMonths(addYears(a, r[0]), r[1]).getTime()) / 86400000);
@@ -560,6 +636,362 @@ ft('FT-16', '静态', '工程静态事实巡检（编码 / 死代码 / 文档一
     httpsRedirectOutsideDevGuard: /app\.UseHttpsRedirection\(\)/.test(read('jtjsym/jtjsym/Program.cs')),
   };
   return { pass: true, kind: 'info', expect: '仅登记事实', actual: facts };
+});
+
+// ═══════════════ E 组：2026-11-07 修复后复测（本轮新增） ═══════════════
+// 定位：17~22 号修复文档的「测试计划」只作线索，**不复用其判据**。
+//       针对本轮新引入的 IsValidArchive / isRestoring / await 落盘 / RefreshAll / 标题布局，
+//       构造边界输入，专找两类问题：① 修复误伤正常路径；② 修复只收紧未根治。
+const capOf = cells => cells.reduce((s, v) => v >= 2 ? s + v * (Math.log2(v) - 1) : s, 0);
+const sigOf = s => s.tiles.map(t => parseInt(t, 10) || 0).join(',');
+const archOf = st => { try { return st.session ? JSON.parse(st.session) : null; } catch { return null; } };
+const firstEffectiveDir = b => ['left', 'down', 'right', 'up']
+  .find(d => JSON.stringify(sim(b, d).board) !== JSON.stringify(b)) || null;
+
+ft('FT-18', 'R', '内容闸残余面：可证上界以内的伪高分仍被接受并污染永久最高分', async browser => {
+  const { ctx, page, errs } = await fresh(browser);
+  const cells = Array(16).fill(0);
+  cells[0] = 2048; cells[5] = 1024; cells[10] = 512;
+  const cap = capOf(cells);
+  // 标准 2048 每次合并得分 = 合并结果，恒为 4 的倍数、spawn 不计分 ⇒ 总分必为 4 的倍数。
+  // cap-2 既在闸的上界内，又明确不可能由任何真实对局达到（cap-8 反而可能对应两个 spawn 4，不能用作伪分）。
+  const fake = cap - 2;
+  await open(page, '/game_2048', 900);
+  await page.evaluate(b => localStorage.removeItem(b), BEST);
+  await seedAndReload(page, grid(cells, fake));
+  const restored = await readState(page), st1 = await readStore(page);
+  const dir = firstEffectiveDir(boardOf(restored));
+  if (dir) await clickDir(page, dir, 500);
+  const st2 = await readStore(page);
+  await page.evaluate(() => sessionStorage.clear());   // 关掉"会话"，模拟明天再来
+  await open(page, '/game_2048', 900);
+  const freshBest = bestOf(await readState(page));
+  await ctx.close();
+  const accepted = scoreOf(restored) === fake;
+  const polluted = freshBest >= fake;
+  return {
+    // 期望：伪分被拒，或至少不得抬升 localStorage 的永久纪录
+    pass: !accepted || !polluted,
+    expect: '内容闸应拒绝 cap 以内、但非 4 倍数（标准 2048 不可能达到）的伪分；即便接受，也不得写进 localStorage 最高分',
+    actual: { cap, fake, fakeIsMultipleOf4: fake % 4 === 0, accepted, restoredScore: restored.score,
+      archiveAfterRestore: archOf(st1),
+      direction: dir, bestAfterOneMove: st2.best, bestInFreshSession: freshBest, polluted,
+      errors: errs.slice(0, 3) },
+  };
+});
+
+ft('FT-19', 'R', '正向：真实对局产生的存档不被内容闸误杀', async browser => {
+  const { ctx, page, errs } = await fresh(browser);
+  await open(page, '/game_2048', 1300);
+  const steps = [];
+  for (let i = 0; i < 12; i++) {
+    const s = await readState(page);
+    if (s.over) break;
+    const d = firstEffectiveDir(boardOf(s));
+    if (!d) break;
+    await clickDir(page, d, 300);
+    steps.push(d);
+  }
+  const live = await readState(page), liveStore = await readStore(page);
+  const arch = archOf(liveStore);
+  const { ctx: c2, page: p2, errs: e2 } = await fresh(browser);
+  await seedAndReload(p2, arch);
+  const back = await readState(p2);
+  await c2.close();
+  await ctx.close();
+  return {
+    pass: !!arch && scoreOf(back) === scoreOf(live) && sigOf(back) === sigOf(live),
+    expect: '真实对局存档（分数 ≤ 盘面可证上界）必须能原样恢复，分数与 16 格签名逐项一致',
+    actual: { steps: steps.length, liveScore: live.score, liveSig: sigOf(live),
+      archiveScore: arch?.score ?? null, archiveCap: arch ? capOf(arch.cells) : null,
+      restoredScore: back.score, restoredSig: sigOf(back),
+      errors: [...errs, ...e2].slice(0, 3) },
+  };
+});
+
+ft('FT-20', 'R', '恢复失败路径：getItem 抛异常后不能把页面永久卡在「正在恢复对局」', async browser => {
+  const { ctx, page, errs } = await fresh(browser, { width: 1400, height: 1000 }, () => {
+    const orig = Storage.prototype.getItem;
+    Storage.prototype.getItem = function (k) {
+      if (k === 'jtjsym.g2048.session') throw new Error('FT-20 injected getItem failure');
+      return orig.call(this, k);
+    };
+  });
+  await open(page, '/game_2048', 1800);
+  const ui = await page.evaluate(() => ({
+    loading: !!document.querySelector('.game-container.session-loading'),
+    tip: !!document.querySelector('.session-tip'),
+    disabled: [...document.querySelectorAll('.controls fluent-button')].map(b => b.disabled),
+    replayDisabled: document.querySelector('.replay-btn')?.disabled ?? null,
+    // #blazor-error-ui 是模板常驻元素（默认 display:none），不能按"存在"判出错，必须看可见性
+    errorUi: (() => { const e = document.querySelector('#blazor-error-ui');
+      return !!e && getComputedStyle(e).display !== 'none'; })(),
+  }));
+  const before = await readState(page);
+  const dir = firstEffectiveDir(boardOf(before));
+  if (dir) await clickDir(page, dir, 500);
+  const after = await readState(page);
+  await ctx.close();
+  return {
+    pass: !ui.loading && !ui.tip && ui.disabled.every(d => !d) && ui.replayDisabled !== true
+      && !ui.errorUi && !!dir && sigOf(after) !== sigOf(before),
+    expect: 'finally 必须在恢复的任何失败路径解除 isRestoring：无加载态、按钮全可用、仍可正常走子、circuit 不断',
+    actual: { ui, direction: dir, boardChanged: sigOf(after) !== sigOf(before), errors: errs.slice(0, 3) },
+  };
+});
+
+ft('FT-21', 'R', '恢复窗口内程序化点击方向按钮：不得造成画面与存档分裂', async browser => {
+  const { ctx, page, errs } = await fresh(browser, { width: 1400, height: 1000 }, () => {
+    window.__ft21 = { clicked: 0 };
+    const start = () => {
+      const mo = new MutationObserver(() => {
+        if (window.__ft21.clicked >= 3) return;
+        const b = document.querySelector('.controls fluent-button.dir-btn');
+        if (b) { window.__ft21.clicked++; b.click(); }
+      });
+      mo.observe(document.documentElement, { childList: true, subtree: true });
+    };
+    if (document.documentElement) start();
+    else document.addEventListener('DOMContentLoaded', start, { once: true });
+  });
+  const cells = Array(16).fill(0);
+  [0, 3, 6, 9].forEach((i, k) => { cells[i] = 2 << k; });
+  await seedAndReload(page, grid(cells, 20));
+  const probe = await page.evaluate(() => window.__ft21);
+  const s = await readState(page), st = await readStore(page), arch = archOf(st);
+  const consistent = !!arch && arch.cells.join(',') === sigOf(s) && String(arch.score) === String(scoreOf(s));
+  await ctx.close();
+  return {
+    pass: consistent,
+    expect: 'isRestoring 守卫必须覆盖方向入口：窗口内的点击被忽略，恢复结束后画面与存档逐格一致',
+    actual: { clicksInjected: probe?.clicked ?? 0, score: s.score, sig: sigOf(s),
+      archiveScore: arch?.score ?? null, archiveSig: arch?.cells?.join(',') ?? null,
+      consistent, errors: errs.slice(0, 3) },
+  };
+});
+
+ft('FT-22', 'R', '键盘路径的「渲染即已落盘」不变式（OnKeyDown 改 async lambda 后）', async browser => {
+  const { ctx, page, errs } = await fresh(browser);
+  await open(page, '/game_2048', 1500);
+  const before = await readState(page);
+  await page.evaluate(() => {
+    window.__ft22 = [];
+    const snap = () => {
+      const raw = sessionStorage.getItem('jtjsym.g2048.session');
+      const tiles = [...document.querySelectorAll('.game-container .tile')].map(t => t.textContent.trim());
+      window.__ft22.push({ raw, tiles: tiles.map(t => parseInt(t, 10) || 0).join(',') });
+    };
+    const mo = new MutationObserver(snap);
+    mo.observe(document.querySelector('.game-container'),
+      { childList: true, subtree: true, characterData: true, attributes: true });
+  });
+  // 先试真实键盘；不生效再退回程序化事件，两种通道都记下来
+  await page.keyboard.press('ArrowRight');
+  await sleep(450);
+  let s1 = await readState(page);
+  let channel = 'keyboard.press';
+  if (sigOf(s1) === sigOf(before)) {
+    await page.evaluate(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })));
+    await sleep(450);
+    s1 = await readState(page);
+    channel = 'dispatchEvent';
+  }
+  const snaps = await page.evaluate(() => window.__ft22);
+  const moved = sigOf(s1) !== sigOf(before);
+  const last = snaps[snaps.length - 1] || null;
+  const lastArch = last?.raw ? archOf({ session: last.raw }) : null;
+  const inSync = !!lastArch && lastArch.cells.join(',') === last.tiles && last.tiles === sigOf(s1);
+  await ctx.close();
+  return {
+    pass: moved && inSync,
+    expect: '键盘走子后，DOM 出现该步的同一帧 sessionStorage 必须已是同一盘面（await 落盘不得退回 fire-and-forget）',
+    actual: { channel, moved, snapshots: snaps.length, lastDomSig: last?.tiles ?? null,
+      lastArchiveSig: lastArch?.cells?.join(',') ?? null, finalDomSig: sigOf(s1), inSync,
+      errors: errs.slice(0, 3) },
+  };
+});
+
+ft('FT-23', 'R', '快速切页 / 连续刷新下 circuit 与 disposed 守卫的稳定性', async browser => {
+  const { ctx, page, errs } = await fresh(browser);
+  const trail = [];
+  for (let i = 0; i < 6; i++) {
+    await page.goto(i % 2 ? '/game_2048' : '/counter', { waitUntil: 'domcontentloaded', timeout: 20000 }).catch(e => trail.push('goto:' + e.message.slice(0, 60)));
+    await sleep(120);
+  }
+  await page.goto('/game_2048', { waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => !!window.Blazor, null, { timeout: 15000 }).catch(() => {});
+  await sleep(1200);
+  const s = await readState(page);
+  const ui = await page.evaluate(() => ({
+    reconnect: (() => { const e = document.querySelector('#blazor-error-ui');
+      return !!e && getComputedStyle(e).display !== 'none'; })(),
+    loading: !!document.querySelector('.game-container.session-loading'),
+    tiles: document.querySelectorAll('.game-container .tile').length,
+  }));
+  await ctx.close();
+  return {
+    pass: !ui.reconnect && !ui.loading && ui.tiles === 16 && errs.length === 0,
+    expect: '快速切页不得触发未处理异常 / 重连横幅 / 永久加载态，最终页面仍可渲染 16 格',
+    actual: { trail, ui, score: s.score, errors: errs.slice(0, 5) },
+    kind: 'observe',
+  };
+});
+
+ft('FT-24', 'R', '年份下拉当前年完整性与预渲染首帧（P-014 跨年自愈的运行时可验证部分）', async browser => {
+  const { ctx, page, errs } = await fresh(browser);
+  // FluentUI 渲染的是 <fluent-select>/<fluent-option>，不是原生 <select>/<option>
+  const html = await (await fetch(BASE + '/loveTime')).text();
+  const preOptions = (html.match(/<fluent-option\b/g) || []).length;
+  await open(page, '/loveTime', 1300);
+  const sels = await page.evaluate(() => [...document.querySelectorAll('fluent-select')]
+    .map(s => [...s.querySelectorAll('fluent-option')].map(o => o.textContent.trim()))
+    .filter(a => a.length > 20 && /^\d{4}$/.test(a[0])));
+  await ctx.close();
+  const year = new Date().getFullYear();
+  const want = year - 1950 + 1;
+  // 页面只有一组日期选择器：年(77) / 月(12) / 日(31)，故年份下拉恒为 1 个
+  const ok = sels.length === 1 && sels.every(a => a.length === want && a[0] === '1950' && a[a.length - 1] === String(year));
+  return {
+    pass: ok && preOptions >= want,
+    expect: `年份下拉含 1950~${year} 共 ${want} 项，且预渲染首帧就带 fluent-option（不是空 select 闪一下）`,
+    actual: { year, want, prerenderOptionCount: preOptions,
+      runtimeYearSelects: sels.map(a => ({ count: a.length, first: a[0], last: a[a.length - 1] })),
+      errors: errs.slice(0, 3),
+      note: '跨年自愈需改服务端时钟，Node 侧无法伪造；仅静态复核 EnsureYearsFresh 的触发条件' },
+  };
+});
+
+ft('FT-25', 'R', 'Tetris 新增 <h1> 后多视口布局：标题高度与 min-height 的 30px 硬编码是否对齐', async browser => {
+  const rows = [];
+  for (const vp of [{ width: 320, height: 568 }, { width: 375, height: 667 },
+                    { width: 768, height: 1024 }, { width: 1400, height: 900 }]) {
+    const { ctx, page, errs } = await fresh(browser, vp);
+    await open(page, '/tetris', 900);
+    const m = await page.evaluate(() => {
+      const h1 = document.querySelector('h1.tetris-title');
+      const cs = h1 ? getComputedStyle(h1) : null;
+      const c = document.querySelector('.tetris-container');
+      const cv = document.querySelector('canvas');
+      const r = cv?.getBoundingClientRect();
+      return {
+        h1: !!h1,
+        outerH: h1 ? h1.getBoundingClientRect().height + parseFloat(cs.marginBottom || 0) : null,
+        lineHeight: cs?.lineHeight ?? null, marginBottom: cs?.marginBottom ?? null,
+        minHeight: c ? getComputedStyle(c).minHeight : null,
+        scrollW: document.documentElement.scrollWidth, clientW: document.documentElement.clientWidth,
+        scrollH: document.documentElement.scrollHeight, innerH: window.innerHeight,
+        canvasBottom: r ? Math.round(r.bottom) : null,
+      };
+    });
+    rows.push({ vp: vp.width, ...m, errors: errs.slice(0, 2) });
+    await ctx.close();
+  }
+  const bad = rows.filter(r => !r.h1 || r.scrollW > r.clientW || Math.abs((r.outerH ?? 0) - 30) > 1);
+  return {
+    pass: bad.length === 0,
+    expect: '四档视口均有标题、无横向溢出，且标题外高恰为 30px（与 CSS 里两处 calc 的减数一致）',
+    actual: { rows, badWidths: bad.map(r => r.vp),
+      note: '纵向溢出单独登记：H-006 历史项，加标题后是否恶化见 rows.scrollH/innerH' },
+  };
+});
+
+ft('FT-26', '静态', '修复一致性巡检：文档声称 / 判据口径 / 代码事实三者是否对齐', async () => {
+  const read = p => fs.readFileSync(path.join(ROOT, p), 'utf8');
+  const g = read('jtjsym/jtjsym/Pages/MyPage/Game_2048.razor');
+  const src = read('Test/functiontest.mjs');
+  const t = read('jtjsym/jtjsym/Pages/MyPage/Tetris.razor');
+  const lt = read('jtjsym/jtjsym/Pages/MyPage/LoveTime.razor');
+  const css = read('jtjsym/jtjsym/wwwroot/css/site.css');
+  const docDir = path.join(ROOT, '1设计文档/2过程设计文件/202611');
+  const docs = fs.existsSync(docDir)
+    ? fs.readdirSync(docDir).filter(f => f.startsWith('19-修复文档'))
+        .map(f => fs.readFileSync(path.join(docDir, f), 'utf8')).join('\n')
+    : '';
+  const facts = {
+    doc19ClaimsFt09Pass: /FT-09 转 PASS/.test(docs),
+    // 按用例边界切片，避免用固定长度正则跨段误配
+    ft09ActuallyObserve: (() => { const a = src.indexOf("ft('FT-09'"), b = src.indexOf("ft('FT-10'");
+      return a >= 0 && b > a && /kind: 'observe'/.test(src.slice(a, b)); })(),
+    ft07GateDropsInstantReload: /pass: afterDom\.lost === 0/.test(src),
+    ft06ReclassifiedToCloneSemantics: /克隆 sessionStorage/.test(src),
+    loadingCssIsVisualOnly: /\.game-container\.session-loading[\s\S]{0,200}?opacity/.test(css)
+      && /pointer-events:\s*none/.test(css),
+    archiveCapIsUpperBoundNotExact: /score <= scoreCap/.test(g),
+    restoreNoBestWrite: !/恢复分支[\s\S]{0,80}UpdateBestScore/.test(g),
+    tetrisDisposeFirstLine: /public async ValueTask DisposeAsync\(\)\s*\{\s*Dispose\(\);/.test(t),
+    loveTimeRefreshAllOnCallback: /anchorDates\[type\] = selectedDate;\s*RefreshAll\(\);/.test(lt),
+    unusedNavigationInjection: /@inject NavigationManager Navigation/.test(g),
+    pauseStillMissesDifficultyTimer: /private void PauseGame\(\)[\s\S]{0,220}?gameTimer\?\.Stop\(\);/.test(t)
+      && !/PauseGame\(\)[\s\S]{0,220}?difficultyTimer\?\.Stop\(\)/.test(t),
+  };
+  return { pass: true, kind: 'info', expect: '仅登记事实，供报告区分「代码修复」与「判据/口径改写」', actual: facts };
+});
+
+ft('FT-27', 'R', '内容闸拒档后应清除坏档：二次进入不得残留或重复拒绝', async browser => {
+  const { ctx, page, errs } = await fresh(browser);
+  const cells = Array(16).fill(0); cells[0] = -2;
+  await seedAndReload(page, grid(cells, -5));
+  const s1 = await readState(page), st1 = await readStore(page);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => !!window.Blazor, null, { timeout: 15000 }).catch(() => {});
+  await sleep(1000);
+  const s2 = await readState(page), st2 = await readStore(page);
+  await ctx.close();
+  return {
+    pass: st1.session === null && st2.session === null && scoreOf(s1) === 0 && scoreOf(s2) === 0,
+    expect: '被拒的坏档应从 sessionStorage 移除，二次进入仍是干净新局，不留残留',
+    actual: { firstPass: { score: s1.score, blocks: nonEmpty(s1), session: st1.session },
+      secondPass: { score: s2.score, blocks: nonEmpty(s2), session: st2.session },
+      errors: errs.slice(0, 3) },
+  };
+});
+
+ft('FT-28', 'R', '恢复窗口内注入键盘方向事件：按键静默丢弃且画面存档一致', async browser => {
+  const { ctx, page, errs } = await fresh(browser, { width: 1400, height: 1000 }, () => {
+    window.__ft28 = { sent: 0 };
+    const fire = () => {
+      for (let i = 0; i < 3; i++) {
+        window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowLeft', bubbles: true }));
+        window.__ft28.sent++;
+      }
+    };
+    if (document.readyState === 'loading') document.addEventListener('DOMContentLoaded', fire, { once: true });
+    else fire();
+  });
+  const cells = Array(16).fill(0);
+  [0, 3, 6, 9].forEach((i, k) => { cells[i] = 2 << k; });
+  await seedAndReload(page, grid(cells, 20));
+  const probe = await page.evaluate(() => window.__ft28);
+  const s = await readState(page), st = await readStore(page), arch = archOf(st);
+  const consistent = !!arch && arch.cells.join(',') === sigOf(s) && String(arch.score) === String(scoreOf(s));
+  await ctx.close();
+  return {
+    pass: consistent,
+    expect: '恢复窗口内的键盘输入不得改写对局；窗口结束前按键会被静默丢弃（可用性现象单列登记）',
+    actual: { keysInjected: probe?.sent ?? 0, score: s.score, sig: sigOf(s),
+      archiveScore: arch?.score ?? null, consistent,
+      note: '键盘监听注册在 OnAfterRenderAsync 的恢复分支之后，故窗口内按键无人接收',
+      errors: errs.slice(0, 3) },
+    kind: 'observe',
+  };
+});
+
+ft('FT-29', 'R', '内容闸值域上界：131072 接受 / 262144 拒绝 / 非 2 幂拒绝', async browser => {
+  const { ctx, page, errs } = await fresh(browser);
+  const rows = [];
+  for (const [name, v, want] of [['2^17 边界', 131072, true], ['2^18 越界', 262144, false], ['非 2 幂 6', 6, false]]) {
+    const cells = Array(16).fill(0); cells[0] = v;
+    await seedAndReload(page, grid(cells, 0));
+    const s = await readState(page);
+    const first = parseInt(s.tiles[0], 10) || 0;
+    rows.push({ name, value: v, expectedAccept: want, firstTile: first, accepted: first === v, score: s.score });
+  }
+  await ctx.close();
+  return {
+    pass: rows.every(r => r.accepted === r.expectedAccept),
+    expect: 'MaxTileValue = 1<<17：等于上界的最大块应可恢复，超过上界与非 2 幂应退化为新局',
+    actual: { rows, errors: errs.slice(0, 3) },
+  };
 });
 
 // ───────────────────────── 执行 ─────────────────────────
