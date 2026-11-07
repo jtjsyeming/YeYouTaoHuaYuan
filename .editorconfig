@@ -2,8 +2,12 @@ root = true
 
 [*]
 charset = utf-8
-indent_style = space      # 或 tab
-indent_size = 4           # 如果使用空格，设置大小
-end_of_line = lf          # 换行风格 (lf: Unix 风格)
+# 注释必须独立成行：EditorConfig 规范不支持行内注释，`#` 之后会被当成值的一部分。
+# 本文件此前三条注释都写在行尾，导致 indent_* 与 end_of_line 实际未生效。
+indent_style = space
+indent_size = 4
+# 工作区换行实为 CRLF（core.autocrlf=true），原件写的 lf 与实情不符；
+# 改为实情，避免编辑器按 lf 另存时把整文件换行翻新成一个大 diff。
+end_of_line = crlf
 trim_trailing_whitespace = true
 insert_final_newline = true

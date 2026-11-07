@@ -11,12 +11,6 @@ a, .btn-link {
     color: #0071c1;
 }
 
-.btn-primary {
-    color: #fff;
-    background-color: #1b6ec2;
-    border-color: #1861ac;
-}
-
 .content {
     padding-top: 1.1rem;
 }
@@ -60,8 +54,8 @@ a, .btn-link {
 
 .game-container {
     display: flex;
-    justify-content: center; /* Ë®Æ½¾ÓÖÐ */
-    align-items: center; /* ´¹Ö±¾ÓÖÐ */
+    justify-content: center; /* 水平居中 */
+    align-items: center; /* 垂直居中 */
     flex-direction: column;
     gap: 10px;
     background: rgba(0, 0, 0, 0.8);
@@ -70,8 +64,8 @@ a, .btn-link {
     border-radius: 8px;
     padding: 20px;
     box-shadow: 0 4px 8px rgba(0, 0, 0, 0.5);
-    margin-top: 20px; /* ¸ù¾ÝÐèÒªµ÷ÕûÉÏ±ß¾à */
-    margin-bottom: 20px; /* ¸ù¾ÝÐèÒªµ÷ÕûÏÂ±ß¾à */
+    margin-top: 20px; /* 根据需要调整上边距 */
+    margin-bottom: 20px; /* 根据需要调整下边距 */
     /* 瓷砖尺寸单一来源：50px 封顶，为 <305px 视口提供防线（主流机型无视觉变化） */
     --tile-size: min(50px, calc((100vw - 120px) / 4));
 }
@@ -95,8 +89,8 @@ a, .btn-link {
 
 .row {
     display: flex;
-    justify-content: center; /* Ê¹Ã¿ÐÐµÄ´É×©Ë®Æ½¾ÓÖÐ */
-    gap: 5px; /* µ÷Õû´É×©Ö®¼äµÄ¼ä¸ô */
+    justify-content: center; /* 使每行的瓷砖水平居中 */
+    gap: 5px; /* 调整瓷砖之间的间隔 */
 }
 
 .tile {
@@ -140,12 +134,8 @@ button {
 
 body {
     font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
-    color: cornflowerblue;
-    text-align: center;
-}
-
-div {
     color: #886D68;
+    text-align: center;
 }
 
 .timer {
@@ -219,8 +209,8 @@ div {
    位置要求：必须在本文件末尾（.tile 规则之后）。
    .tile-empty/.tile-2…/.tile-128 与 .tile 特异性相同（0,1,0），只能靠源码顺序覆盖；
    若写在 .tile 前面，.tile 的 background-color:#eeeeee 与 font-size 会把下面全部压回去。
-   注意：.tile 的 color 继承自 div{color:#886D68}，8 及以上必须显式给白字，
-   否则是"深褐字压在橙/黄底上"，对比度极差。*/
+   注意：.tile 的 color 从 body{color:#886D68} 逐层继承（H-010 后不再有 div{color} 强制覆盖）；
+   8 及以上仍显式给白字，是该色块自身的对比度选择，不是对抗继承。*/
 .tile-empty  { background: rgba(255, 255, 255, .06); }
 .tile-2      { background: #eee4da; color: #776e65; }
 .tile-4      { background: #ede0c8; color: #776e65; }
@@ -327,7 +317,7 @@ a.home-card:focus-visible { outline: 2px solid #1b6ec2; outline-offset: 3px; }
 .card-title {
     margin: 0;
     font-size: 1.05rem;
-    color: #24303c;   /* 显式给色：.card-body 是 div，会被全局 div{color:#886D68} 染成褐色 */
+    color: #24303c;   /* 显式给色：这张卡标题的视觉选择；颜色本可从 body 继承，此处只是覆盖成深蓝灰 */
 }
 
 .card-desc {

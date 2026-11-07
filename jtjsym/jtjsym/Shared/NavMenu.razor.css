@@ -49,8 +49,8 @@
         background: transparent;
         border: none;
         border-radius: inherit;
-        /* 必须显式 inherit：site.css 里有一条全局 `div{color:#886D68}`，
-           它会盖掉从 <a> 继承下来的颜色，图标 fill:currentColor 就跟着变成褐色 */
+        /* 显式 inherit：颜色沿 body → .nav-item → <a> 逐层继承而来，
+           这里声明只是确保定位层不引入新色，图标 fill:currentColor 随之跟随文字 */
         color: inherit;
     }
 
@@ -65,8 +65,8 @@
         white-space: nowrap;
     }
 
-/* 文字包在 .fluent-nav-text 这个 div 里，而 site.css 有一条全局 `div{color:#886D68}`，
-   会盖掉从 <a> 继承的颜色（这也是之前所有导航文字发褐、hover/active 变不白的真正原因） */
+/* 文字包在 .fluent-nav-text 这个 div 里；颜色从 <a> 继承（全局 div{color} 已由 H-010 移除），
+   此处显式 inherit 保证文字与 hover/active 状态色始终跟随 <a> */
 .nav-item ::deep .fluent-nav-text {
     color: inherit;
 }

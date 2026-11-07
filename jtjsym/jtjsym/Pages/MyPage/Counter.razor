@@ -8,7 +8,7 @@
 <p role="status">次数: @knockCount</p>
 
 <style>
-	.btn-primary {
+	.muyu-btn {
 		width: 48px;
 		height: 48px;
 		background-image: url('Images/counter.gif'); /* 木鱼图片路径 */
@@ -22,7 +22,7 @@
 		transition: transform 0.1s ease; /* 点击效果过渡 */
 	}
 
-		.btn-primary:active {
+		.muyu-btn:active {
 			transform: scale(1.1); /* 点击时放大 */
 		}
 </style>
@@ -33,7 +33,7 @@
 }
 
 <FluentButton IconEnd="@(new Icons.Filled.Size32.AnimalPawPrint().WithColor("#7D8E89"))"
-			  class="btn-primary" @onclick="KnockWoodenFish" @onmouseout="StopKnocking">
+			  class="muyu-btn" @onclick="KnockWoodenFish" @onmouseout="StopKnocking">
 </FluentButton>
 
 @if (ShowImage)

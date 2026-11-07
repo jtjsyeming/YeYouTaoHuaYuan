@@ -50,16 +50,16 @@ test.describe('冒烟集（28 条 P0）', () => {
     const deco = () => page.locator('article div img[src*="counter.gif"]').count();
 
     const t0 = await statusText();
-    const btnCount = await page.locator('fluent-button.btn-primary').count();
+    const btnCount = await page.locator('fluent-button.muyu-btn').count();
     check('FISH-01', /次数:\s*0/.test(t0) && btnCount === 1 && (await deco()) === 0, `文案="${t0}" 按钮=${btnCount} 装饰=${await deco()}`);
 
-    await page.locator('fluent-button.btn-primary').click();
+    await page.locator('fluent-button.muyu-btn').click();
     await sleep(500);
     const t1 = await statusText();
     check('FISH-02', /次数:\s*1/.test(t1) && (await deco()) === 2, `点击后="${t1}" 装饰=${await deco()}`);
 
     for (let i = 0; i < 9; i++) {
-      await page.locator('fluent-button.btn-primary').click();
+      await page.locator('fluent-button.muyu-btn').click();
       await sleep(60);
     }
     await sleep(500);
