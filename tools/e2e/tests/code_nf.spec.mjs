@@ -107,9 +107,7 @@ test.describe('NF 非功能', () => {
     check('NF-02', /次数:\s*1/.test(fish) && after >= 2 && toggler && navOpen, detail.join('；'));
   });
 
-  test('NF-02b 全站 6 页 375px 无横向溢出', async ({ browser }) => {
-    const mctx = await browser.newContext({ viewport: { width: 375, height: 812 }, isMobile: true, hasTouch: true });
-    const mp = await mctx.newPage();
+  test('NF-02b 全站 6 页 375px / 320px 无横向溢出', async ({ browser }) => {
     const pages = [
       ['首页', '/'],
       ['木鱼', '/counter'],
@@ -119,11 +117,15 @@ test.describe('NF 非功能', () => {
       ['编程挑战', '/coding_place'],
     ];
     const overflow = {};
-    for (const [name, path] of pages) {
-      await open(mp, path);
-      overflow[name] = await viewportMetrics(mp);
+    for (const vp of [{ width: 375, height: 812 }, { width: 320, height: 568 }]) {
+      const mctx = await browser.newContext({ viewport: vp, isMobile: true, hasTouch: true });
+      const mp = await mctx.newPage();
+      for (const [name, path] of pages) {
+        await open(mp, path);
+        overflow[`${vp.width}px/${name}`] = await viewportMetrics(mp);
+      }
+      await mctx.close();
     }
-    await mctx.close();
     const bad = Object.entries(overflow).filter(([, v]) => v.scrollW > v.clientW + 1);
     check(
       'NF-02b',
@@ -186,6 +188,26 @@ test.describe('NF 非功能', () => {
       await sleep(900);
     }
     check('NF-06', errs.length === 0, errs.length ? errs.slice(0, 4).join(' | ') : '无 console error / pageerror（含 LoveTime 每秒重渲染与 Tetris Timer 回调期）');
+  });
+
+  test('NF-10 观察：断线后按键的框架级噪声（不设门禁）', async ({ page }) => {
+    // 背景：《21》§4 实测——连接断开后按键会让 blazor.server.js 抛
+    // "Cannot send data if the connection is not in the 'Connected' State."
+    // 且 .catch()/try-catch 均无效（框架内部另起未处理拒绝）。本条只记录条数，不判红。
+    await page.addInitScript(() => {
+      const Orig = window.WebSocket;
+      window.__ws = [];
+      window.WebSocket = class extends Orig { constructor(...a) { super(...a); window.__ws.push(this); } };
+    });
+    const errs = trackErrors(page);
+    await open(page, '/game_2048', 2000);
+    await page.evaluate(() => window.__ws.forEach(w => { try { w.close(); } catch { } }));
+    await sleep(2500);
+    const before = errs.length;
+    await page.keyboard.press('ArrowLeft');
+    await sleep(1200);
+    const delta = errs.length - before;
+    check('NF-10', true, `断线后按一次 ← 新增错误 ${delta} 条（基线：2；仅记录，不判红）`);
   });
 
   test('NF-05/07/08 部署与长时会话（需生产环境）', async () => {
