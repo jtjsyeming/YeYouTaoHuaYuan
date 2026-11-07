@@ -3,6 +3,7 @@
 @using System.Numerics
 @using System.Text.Json
 @using System.Text.Json.Serialization
+@using jtjsym.Services
 @inject IJSRuntime JS
 @implements IAsyncDisposable
 
@@ -50,7 +51,7 @@
 
 @code {
     private const int GridSize = 4;
-    private const int FourSpawnPercent = 10;   // 标准 2048：90% 出 2、10% 出 4
+    // 90/10 取值比例已随 D-01 迁入 Services/Game2048Core.FourSpawnPercent（单一来源）
     private const int MaxTileValue = 1 << 17;  // 131072：4×4 棋盘的 2 的幂上界（改 GridSize 必须同步改）
     private int[,] board = new int[GridSize, GridSize];
     private Random random = new Random();
@@ -146,7 +147,7 @@
         UpdateBestScore();   // Score 已在 Merge 内累加完毕，此处判断破纪录（按钮与键盘共用）
         AddRandomTile();
 
-        if (IsGameOver())
+        if (Game2048Core.IsGameOver(FlatBoard()))
         {
             isGameOver = true;
         }
@@ -169,31 +170,19 @@
         return false;
     }
 
-    private bool IsGameOver()
+    /// <summary>棋盘 → 行主序扁平 16 格。与 SaveSessionAsync 里 cells 的写法同序
+    /// （<c>i / GridSize, i % GridSize</c>），不会转置。</summary>
+    private int[] FlatBoard()
     {
-        // 检查是否还有空位
+        var flat = new int[GridSize * GridSize];
         for (int row = 0; row < GridSize; row++)
         {
             for (int col = 0; col < GridSize; col++)
             {
-                if (board[row, col] == 0)
-                    return false;
+                flat[row * GridSize + col] = board[row, col];
             }
         }
-
-        // 检查是否有可合并的相邻数字
-        for (int row = 0; row < GridSize; row++)
-        {
-            for (int col = 0; col < GridSize; col++)
-            {
-                if (col < GridSize - 1 && board[row, col] == board[row, col + 1])
-                    return false;
-                if (row < GridSize - 1 && board[row, col] == board[row + 1, col])
-                    return false;
-            }
-        }
-
-        return true;
+        return flat;
     }
 
     protected override void OnInitialized()
@@ -240,8 +229,8 @@
         if (emptyTiles.Count > 0)
         {
             var (row, col) = emptyTiles[random.Next(emptyTiles.Count)];
-            // Next(100) ∈ [0,100)，< 90 覆盖 90 个值 → 2 的概率恰 90%，其余 10 个值 → 4
-            board[row, col] = random.Next(100) < 100 - FourSpawnPercent ? 2 : 4;
+            // 90/10 的取值与常量都在 Game2048Core.SpawnValue 里（D-01 单一来源）
+            board[row, col] = Game2048Core.SpawnValue(random);
         }
     }
 
@@ -252,7 +241,7 @@
         for (int row = 0; row < GridSize; row++)
         {
             var line = GetRow(row);
-            var mergedLine = Merge(line);
+            var mergedLine = Game2048Core.Merge(line, ref Score);
             SetRow(row, mergedLine);
         }
         await AfterMove(before);
@@ -265,7 +254,7 @@
         for (int row = 0; row < GridSize; row++)
         {
             var line = GetRow(row).Reverse().ToArray();
-            var mergedLine = Merge(line).Reverse().ToArray();
+            var mergedLine = Game2048Core.Merge(line, ref Score).Reverse().ToArray();
             SetRow(row, mergedLine);
         }
         await AfterMove(before);
@@ -278,7 +267,7 @@
         for (int col = 0; col < GridSize; col++)
         {
             var line = GetColumn(col);
-            var mergedLine = Merge(line);
+            var mergedLine = Game2048Core.Merge(line, ref Score);
             SetColumn(col, mergedLine);
         }
         await AfterMove(before);
@@ -291,7 +280,7 @@
         for (int col = 0; col < GridSize; col++)
         {
             var line = GetColumn(col).Reverse().ToArray();
-            var mergedLine = Merge(line).Reverse().ToArray();
+            var mergedLine = Game2048Core.Merge(line, ref Score).Reverse().ToArray();
             SetColumn(col, mergedLine);
         }
         await AfterMove(before);
@@ -331,42 +320,6 @@
         {
             board[row, col] = line[row];
         }
-    }
-
-    private int[] Merge(int[] line)
-    {
-        // Step1: 压缩 —— 取出所有非零块，保持相对顺序
-        var values = new List<int>();
-        foreach (var v in line)
-        {
-            if (v != 0) values.Add(v);
-        }
-
-        // Step2: 从移动方向一侧起成对消费，等值即合并
-        var merged = new List<int>();
-        int i = 0;
-        while (i < values.Count)
-        {
-            if (i + 1 < values.Count && values[i] == values[i + 1])
-            {
-                merged.Add(values[i] * 2);
-                Score += values[i] * 2;
-                i += 2;   // 两个块同时消费 —— 不复制、不回看
-            }
-            else
-            {
-                merged.Add(values[i]);
-                i += 1;
-            }
-        }
-
-        // Step3: 尾部补零
-        while (merged.Count < GridSize)
-        {
-            merged.Add(0);
-        }
-
-        return merged.ToArray();
     }
 
     // ───────────────────────── 最高分持久化（D-16）─────────────────────────
@@ -463,7 +416,7 @@
                             board[i / GridSize, i % GridSize] = cells[i];
 
                         Score = st.Score;
-                        isGameOver = IsGameOver(); // 重算，不信任存档；死局自然出遮罩
+                        isGameOver = Game2048Core.IsGameOver(FlatBoard()); // 重算，不信任存档；死局自然出遮罩
                         // 此处**不再**调用 UpdateBestScore()（P-003）：存档分不得抬升永久纪录。
                         // 单靠这一句删除并不够 —— 若 Score 里留着 999999，玩家走一步仍会经 AfterMove 写入，
                         // 故伪造分必须在闸一就被拒（分数可证上界）。
