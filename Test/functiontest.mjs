@@ -21,6 +21,12 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(HERE, '..');
+// 设计/测试文档于 2026-11-08 整体迁出工作区，位于工作区父目录下的独立文档根。
+// 静态用例需跨到该根读文件；允许用 JTJSYM_DOCS 覆盖，便于换机复跑。
+const DOC_ROOT = process.env.JTJSYM_DOCS
+  ? path.resolve(process.env.JTJSYM_DOCS)
+  : path.resolve(ROOT, '..', '1设计文档', '1夜游桃花源');
+const docRead = p => fs.readFileSync(path.join(DOC_ROOT, p), 'utf8');
 const require = createRequire(pathToFileURL(path.join(ROOT, 'tools/e2e/package.json')).href);
 const { chromium } = require('@playwright/test');
 
@@ -425,14 +431,16 @@ ft('FT-09', 'D-17', 'ServerPrerendered 首屏闪烁：预渲染新局 → 恢复
   await ctx.close();
   const changed = JSON.stringify(first.tiles) !== JSON.stringify(settled.tiles) || first.score !== settled.score;
   return {
-    pass: preHasLoading === true && preHtmlLoading,
-    expect: '首帧（DOMContentLoaded）必须处于加载态：容器带 session-loading，而不是看起来像能玩的假新局',
+    // P-020 判据升级：预渲染实例的 isRestoring 恒为 true ⇒ 首屏必须是 **16 个空灰块 + 分数「—」**，
+    // 即预渲染 HTML 里不能出现任何数字块（preTiles === 0）。它把"看起来像能玩的假新局"这件
+    // 事从"只能缓解"变成可判定的门禁，故 kind 由 observe 升为门禁。
+    pass: preHasLoading === true && preHtmlLoading && preTiles === 0,
+    expect: '首帧（DOMContentLoaded）必须处于加载态：容器带 session-loading，且预渲染 HTML 不输出任何数字块',
     actual: { preHasLoading, preHtmlLoading,
       prerenderHtml: { score: preScore, best: preBest, numericTiles: preTiles },
       firstPaint: { score: first.score, best: first.best, blocks: nonEmpty(first) },
       afterRestore: { score: settled.score, best: settled.best, blocks: nonEmpty(settled) },
       restoredBefore: { score: restored.score }, changed, errors: errs.slice(0, 3) },
-    kind: 'observe',   // P-009 只能缓解（预渲染实例拿不到 sessionStorage），故不进 FAIL 门禁
   };
 });
 
@@ -620,7 +628,7 @@ ft('FT-16', '静态', '工程静态事实巡检（编码 / 死代码 / 文档一
   const tetris = read('jtjsym/jtjsym/Pages/MyPage/Tetris.razor');
   const lovetime = read('jtjsym/jtjsym/Pages/MyPage/LoveTime.razor');
   const readme = read('README.md');
-  const statusDoc = read('1设计文档/1代码结构与更新记录/夜游桃花源网站技术栈与代码结构现状.md');
+  const statusDoc = docRead('1代码结构与更新记录/夜游桃花源网站技术栈与代码结构现状.md');
   const facts = {
     siteCssGarbledCommentLines: garbled,
     siteCssUtf8Decodable: (() => { try { cssBytes.toString('utf8'); return true; } catch { return false; } })(),
@@ -783,6 +791,12 @@ ft('FT-21', 'R', '恢复窗口内程序化点击方向按钮：不得造成画�
 ft('FT-22', 'R', '键盘路径的「渲染即已落盘」不变式（OnKeyDown 改 async lambda 后）', async browser => {
   const { ctx, page, errs } = await fresh(browser);
   await open(page, '/game_2048', 1500);
+  // P-039：把"固定等 1500ms"换成键盘就绪信号。慢机 / CI 上 register 晚到会让真实按键落空，
+  // 表现成 channel=dispatchEvent / snapshots=0 的假 FAIL（本轮全量实测 8 PASS / 1 FAIL 即此）。
+  const kbdReady = await page
+    .waitForFunction(() => window.__jtjsymKbdReady === true, null, { timeout: 15000 })
+    .then(() => true)
+    .catch(() => false);
   const before = await readState(page);
   await page.evaluate(() => {
     window.__ft22 = [];
@@ -795,16 +809,26 @@ ft('FT-22', 'R', '键盘路径的「渲染即已落盘」不变式（OnKeyDown �
     mo.observe(document.querySelector('.game-container'),
       { childList: true, subtree: true, characterData: true, attributes: true });
   });
-  // 先试真实键盘；不生效再退回程序化事件，两种通道都记下来
-  await page.keyboard.press('ArrowRight');
-  await sleep(450);
+  // 先试真实键盘；**同一方向不生效就换方向**，四方向都不动才退回程序化事件。
+  // 换方向的理由：开局两块是随机的，若两块恰好贴右墙，ArrowRight 就是合法但无效的一步
+  // （盘面不变 ⇒ moved=false ⇒ 假 FAIL），这与"落盘不变式"无关。实测 6 例抽样 1 次即踩到。
   let s1 = await readState(page);
   let channel = 'keyboard.press';
+  let triedDir = null;
+  for (const key of ['ArrowRight', 'ArrowDown', 'ArrowLeft', 'ArrowUp']) {
+    await page.keyboard.press(key);
+    await sleep(450);
+    s1 = await readState(page);
+    triedDir = key;
+    if (sigOf(s1) !== sigOf(before)) break;
+  }
   if (sigOf(s1) === sigOf(before)) {
+    // 兜底：真键盘通道整体失效（监听没装上）时才走这里，并如实记为 dispatchEvent
     await page.evaluate(() => window.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowRight', bubbles: true })));
     await sleep(450);
     s1 = await readState(page);
     channel = 'dispatchEvent';
+    triedDir = 'ArrowRight';
   }
   const snaps = await page.evaluate(() => window.__ft22);
   const moved = sigOf(s1) !== sigOf(before);
@@ -815,7 +839,7 @@ ft('FT-22', 'R', '键盘路径的「渲染即已落盘」不变式（OnKeyDown �
   return {
     pass: moved && inSync,
     expect: '键盘走子后，DOM 出现该步的同一帧 sessionStorage 必须已是同一盘面（await 落盘不得退回 fire-and-forget）',
-    actual: { channel, moved, snapshots: snaps.length, lastDomSig: last?.tiles ?? null,
+    actual: { channel, triedDir, moved, snapshots: snaps.length, kbdReady, lastDomSig: last?.tiles ?? null,
       lastArchiveSig: lastArch?.cells?.join(',') ?? null, finalDomSig: sigOf(s1), inSync,
       errors: errs.slice(0, 3) },
   };
@@ -871,10 +895,13 @@ ft('FT-24', 'R', '年份下拉当前年完整性与预渲染首帧（P-014 跨�
   };
 });
 
-ft('FT-25', 'R', 'Tetris 新增 <h1> 后多视口布局：标题高度与 min-height 的 30px 硬编码是否对齐', async browser => {
+ft('FT-25', 'R', 'Tetris 新增 <h1> 后多视口布局：标题 30px 配平与纵向零溢出（P-023）', async browser => {
   const rows = [];
+  // 6 档：320/375 手机（L3 Grid）、768×1024 iPad 竖屏（P-023 的关键档，L2 上界 780→767 后走横排）、
+  // 700×1000（L2 堆叠 + 高度预算）、768×500（矮窗横排）、1400×900 桌面
   for (const vp of [{ width: 320, height: 568 }, { width: 375, height: 667 },
-                    { width: 768, height: 1024 }, { width: 1400, height: 900 }]) {
+                    { width: 768, height: 1024 }, { width: 700, height: 1000 },
+                    { width: 768, height: 500 }, { width: 1400, height: 900 }]) {
     const { ctx, page, errs } = await fresh(browser, vp);
     await open(page, '/tetris', 900);
     const m = await page.evaluate(() => {
@@ -893,15 +920,18 @@ ft('FT-25', 'R', 'Tetris 新增 <h1> 后多视口布局：标题高度与 min-he
         canvasBottom: r ? Math.round(r.bottom) : null,
       };
     });
-    rows.push({ vp: vp.width, ...m, errors: errs.slice(0, 2) });
+    rows.push({ vp: `${vp.width}×${vp.height}`, ...m, errors: errs.slice(0, 2) });
     await ctx.close();
   }
+  // 纵向判据此前只是"单独登记"（H-006 历史项），P-023 把它升为硬门禁：
+  // 改前 768×1024 是 1050/1024、700×1000 是 1050/1000、768×500 是 808/500，全部红。
   const bad = rows.filter(r => !r.h1 || r.scrollW > r.clientW || Math.abs((r.outerH ?? 0) - 30) > 1);
+  const badV = rows.filter(r => r.scrollH > r.innerH);
   return {
-    pass: bad.length === 0,
-    expect: '四档视口均有标题、无横向溢出，且标题外高恰为 30px（与 CSS 里两处 calc 的减数一致）',
-    actual: { rows, badWidths: bad.map(r => r.vp),
-      note: '纵向溢出单独登记：H-006 历史项，加标题后是否恶化见 rows.scrollH/innerH' },
+    pass: bad.length === 0 && badV.length === 0,
+    expect: '六档视口均有标题、无横向溢出、标题外高恰为 30px，且纵向零滚动（scrollH ≤ innerH）',
+    actual: { rows, badWidths: bad.map(r => r.vp), verticalOverflow: badV.map(r => `${r.vp}: ${r.scrollH}/${r.innerH}`),
+      note: '纵向零滚动靠 L2 上界 780→767 + 堆叠态高度预算 max(12px,(100dvh−450px)/20) 达成（P-023）' },
   };
 });
 
@@ -912,7 +942,7 @@ ft('FT-26', '静态', '修复一致性巡检：文档声称 / 判据口径 / 代
   const t = read('jtjsym/jtjsym/Pages/MyPage/Tetris.razor');
   const lt = read('jtjsym/jtjsym/Pages/MyPage/LoveTime.razor');
   const css = read('jtjsym/jtjsym/wwwroot/css/site.css');
-  const docDir = path.join(ROOT, '1设计文档/2过程设计文件/202611');
+  const docDir = path.join(DOC_ROOT, '2过程设计文件/202611');
   const docs = fs.existsSync(docDir)
     ? fs.readdirSync(docDir).filter(f => f.startsWith('19-修复文档'))
         .map(f => fs.readFileSync(path.join(docDir, f), 'utf8')).join('\n')
@@ -1257,6 +1287,422 @@ ft('FT-37', 'H', 'H-002/007/011 工程治理巡检：备案链接、CI YAML 覆�
     actual: { facts,
       note: facts.d08CoveredByPrGreen ? '' : 'CI PR/push 的 --grep 不含 D08-，新增的 3 条 H-003 门禁用例在 PR 上永远不跑，只有夜间/手动全量才覆盖' },
     kind: 'info',
+  };
+});
+
+// ═══════════════ 迁移专项：2026-11-08 设计文档迁出工作区 ═══════════════
+// 本组用例由「文档整体移出仓库」这一变更驱动，独立实现，不复用既有 e2e 断言。
+// 关注点：可执行资产中的旧路径是否失效、历史报告可读性、站点运行时是否解耦、归档目录可写性。
+
+ft('FT-38', '迁移', '自研 FT 自身的静态文档引用在文档迁出后是否仍可解析', async () => {
+  const src = readSrc('Test/functiontest.mjs');
+  const re = /(?:read|readSrc)\(\s*'((?:jtjsym|tools|Test|README|\.github|1设计文档)[^']*)'\s*\)/g;
+  const refs = [...new Set([...src.matchAll(re)].map(m => m[1]))];
+  const missing = refs.filter(p => !fs.existsSync(path.join(ROOT, p)));
+  const legacy = [...src.matchAll(/path\.join\(ROOT,\s*'([^']*1设计文档[^']*)'\)/g)].map(m => m[1]);
+  return {
+    pass: missing.length === 0 && legacy.length === 0 && fs.existsSync(DOC_ROOT),
+    expect: '所有静态 read()/readSrc() 路径应能在工作区内解析；不得再以 ROOT 拼接已迁出的旧文档根；新文档根必须存在',
+    actual: { docRoot: DOC_ROOT, docRootExists: fs.existsSync(DOC_ROOT),
+      staticRefs: refs.length, missing, legacyRootJoins: legacy,
+      note: '迁移前 FT-16 在 readFileSync 旧路径上抛 ENOENT，被判为 error；FT-26 因 existsSync 兜底静默降级为事实失真' },
+  };
+});
+
+ft('FT-39', '迁移', '工作区可执行资产是否仍指向已删除的文档旧根', async () => {
+  const targets = ['README.md', '.github/workflows/tests.yml', 'tools/e2e/package.json',
+    'tools/e2e/playwright.config.mjs', 'tools/e2e/tests/helpers.mjs', '.vscode/tasks.json'];
+  const out = [];
+  for (const rel of targets) {
+    const p = path.join(ROOT, rel);
+    if (!fs.existsSync(p)) continue;
+    const s = fs.readFileSync(p, 'utf8');
+    const refs = [...new Set([...s.matchAll(/1设计文档\/[^\s`"')\]]*/g)].map(m => m[0]))];
+    const broken = refs.filter(r => !fs.existsSync(path.join(ROOT, r)));
+    out.push({ file: rel, refs: refs.length, broken });
+  }
+  const totalBroken = out.reduce((n, o) => n + o.broken.length, 0);
+  return {
+    pass: totalBroken === 0,
+    expect: 'README / CI / e2e 配置中出现的文档路径应仍能按工作区根解析（CI 与 e2e 本就不引用文档路径）',
+    actual: { assets: out, totalBroken,
+      note: '按文档所在目录（工作区根）解析；新文档根命中不算数，因为引用者没写新根' },
+  };
+});
+
+ft('FT-40', '迁移', '文档迁出后历史测试报告是否完整可读且总结表规格未损', async () => {
+  const dirs = ['1代码结构与更新记录', '2过程设计文件', '3测试报告', '9测试用例固定执行历史'];
+  const present = dirs.filter(d => fs.existsSync(path.join(DOC_ROOT, d)));
+  const repDir = path.join(DOC_ROOT, '3测试报告');
+  const reports = fs.existsSync(repDir)
+    ? fs.readdirSync(repDir).filter(f => /^\d{4}-\d{2}-\d{2}(-\d+)?\.md$/.test(f)).sort() : [];
+  const desc = a => a.every((v, i) => i === 0 || a[i - 1] >= v);
+  const tables = reports.map(f => {
+    const s = fs.readFileSync(path.join(repDir, f), 'utf8');
+    const rows = s.split('\n').filter(l => /^\| [PH]-\d+ /.test(l));
+    const seg = { P: [], H: [] };
+    for (const r of rows) {
+      const c = r.split('|')[1].trim();
+      seg[c[0]].push(parseInt(c.slice(2), 10));
+    }
+    return { file: f, rows: rows.length,
+      badCols: rows.filter(r => r.split('|').length !== 5).length,
+      pDesc: desc(seg.P), hDesc: desc(seg.H), pCount: seg.P.length, hCount: seg.H.length };
+  });
+  return {
+    pass: present.length === 4 && tables.length >= 3
+      && tables.every(t => t.badCols === 0 && t.pDesc && t.hDesc && t.rows > 0),
+    expect: '四个子目录齐全；三份历史报告总结表均严格三列、P/H 段内编号降序',
+    actual: { subdirs: present, tables },
+  };
+});
+
+ft('FT-41', '迁移', '文档迁出不影响站点运行时：六路由可达且无控制台异常', async browser => {
+  const { ctx, page, errs } = await fresh(browser);
+  const bad = [];
+  page.on('response', r => { if (r.status() >= 400) bad.push({ url: r.url(), status: r.status() }); });
+  const routes = ['/', '/counter', '/loveTime', '/game_2048', '/tetris', '/coding_place'];
+  const rows = [];
+  for (const r of routes) {
+    const resp = await page.goto(BASE + r, { waitUntil: 'domcontentloaded' });
+    await sleep(450);
+    rows.push({ route: r, status: resp ? resp.status() : 0,
+      hasBlazor: await page.evaluate(() => !!window.Blazor).catch(() => false),
+      title: (await page.title().catch(() => '')) || null });
+  }
+  await ctx.close();
+  return {
+    pass: rows.every(x => x.status === 200 && x.hasBlazor) && errs.length === 0,
+    expect: '文档是纯资产，与 wwwroot/路由无耦合：六页均 200、Blazor 建连、无控制台异常',
+    actual: { rows, httpErrors: bad.slice(0, 6), httpErrorCount: bad.length, errors: errs.slice(0, 5) },
+  };
+});
+
+ft('FT-42', '迁移', '定时任务执行历史中的报告目录仍写工作区旧根', async () => {
+  const base = path.join(ROOT, '.workbuddy/memory/automations');
+  const dirs = fs.existsSync(base) ? fs.readdirSync(base) : [];
+  const hits = [];
+  for (const d of dirs) {
+    const p = path.join(base, d, 'memory.md');
+    if (!fs.existsSync(p)) continue;
+    const s = fs.readFileSync(p, 'utf8');
+    const refs = [...new Set([...s.matchAll(/1设计文档\/[^\s`"')\]]*/g)].map(m => m[0]))];
+    if (refs.length) hits.push({ automation: d, refs,
+      oldRootResolvable: refs.some(r => fs.existsSync(path.join(ROOT, r))) });
+  }
+  return {
+    pass: true, kind: 'info', expect: '仅登记事实，不判对错',
+    actual: { automationCount: dirs.length, hits,
+      note: '执行历史里的路径是当时事实，不应回改；但若定时任务据此决定报告落盘位置，会在工作区重建旧目录，造成报告分裂。本次未调用自动化接口核实其当前配置' },
+  };
+});
+
+ft('FT-43', '迁移', '新文档根内部仍以旧相对路径互引的规模', async () => {
+  let files = 0, refs = 0; const samples = [];
+  const walk = d => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) walk(p);
+      else if (e.name.endsWith('.md')) {
+        const c = [...fs.readFileSync(p, 'utf8').matchAll(/1设计文档\/[^\s`"')\]]*/g)].length;
+        if (c) {
+          files++; refs += c;
+          if (samples.length < 8) samples.push({ file: path.relative(DOC_ROOT, p), count: c });
+        }
+      }
+    }
+  };
+  if (fs.existsSync(DOC_ROOT)) walk(DOC_ROOT);
+  return {
+    pass: true, kind: 'info', expect: '仅登记事实，不判对错',
+    actual: { mdFilesWithLegacyRefs: files, legacyRefs: refs, samples,
+      note: '这些路径写在文档正文里，按新文档根看仍指向同名子目录，但按工作区根已无法解析；属迁移后的文档内部一致性欠账' },
+  };
+});
+
+ft('FT-44', '迁移', '测试报告归档目录可写，且按年月日命名不与历史冲突', async () => {
+  const dir = path.join(DOC_ROOT, '3测试报告');
+  let writable = false, probeOk = false, existing = [];
+  try { fs.accessSync(dir, fs.constants.W_OK); writable = true; } catch { /* no access */ }
+  try {
+    const probe = path.join(dir, '.__ft_write_probe__');
+    fs.writeFileSync(probe, 'ft', 'utf8'); fs.unlinkSync(probe); probeOk = true;
+  } catch { /* read-only */ }
+  if (fs.existsSync(dir)) existing = fs.readdirSync(dir).filter(f => f.endsWith('.md')).sort();
+  const d = new Date();
+  const today = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}.md`;
+  return {
+    pass: writable && probeOk && existing.length >= 3,
+    expect: '3测试报告/ 在新文档根下真实可写；本轮按 YYYY-MM-DD.md 命名可正常落盘',
+    actual: { dir, writable, probeOk, todayName: today,
+      todayAlreadyExists: fs.existsSync(path.join(dir, today)), existing },
+  };
+});
+
+ft('FT-45', '迁移', '迁出后的文档根是否仍处于版本控制之下', async () => {
+  const findGit = d => {
+    let cur = path.resolve(d);
+    for (;;) {
+      if (fs.existsSync(path.join(cur, '.git'))) return cur;
+      const p = path.dirname(cur);
+      if (p === cur) return null;
+      cur = p;
+    }
+  };
+  let mdCount = 0;
+  const walk = d => {
+    for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+      const p = path.join(d, e.name);
+      if (e.isDirectory()) { if (e.name !== '.git') walk(p); }
+      else if (e.name.endsWith('.md')) mdCount++;
+    }
+  };
+  if (fs.existsSync(DOC_ROOT)) walk(DOC_ROOT);
+  const docGit = findGit(DOC_ROOT), wsGit = findGit(ROOT);
+  // 判据改写（2026-11-08 13:25 用户明确「P-038 由我自己控制」）：文档根不进工程 git 是
+  // **设计接受的现状**，不是缺陷、不是待办。继续让本用例判红只会制造长期假红并误导台账，
+  // 故降级为仅登记事实的 info 项。**这不是现象消失**：docGitRoot 仍为 null。
+  return {
+    pass: true, kind: 'info',
+    expect: '仅登记事实，不判对错：文档根是否纳入版本控制由用户本人决定（P-038 设计接受）',
+    actual: { docRoot: DOC_ROOT, docGitRoot: docGit, workspaceGitRoot: wsGit,
+      mdFilesOutsideGit: docGit ? 0 : mdCount, mdCount,
+      ownerDecision: '用户本人控制（2026-11-08 13:25）', designAccepted: true,
+      note: '工作区仓库的提交历史仍保有迁移前的文档内容；新位置由用户自行管理。判据由门禁降为 info，属口径对齐而非修复' },
+  };
+});
+
+// ═══════════════ 本轮专项：《28》v2.0 开放项一次性收口（2026-11-08 第 2 轮） ═══════════════
+// 独立实现，不复用既有 e2e 断言。两条线：① 新改动本身是否逐点落地；
+// ② 新改动有没有打断别的路径（骨架化副作用 / 布局边界 / 就绪信号生命周期 / 子集机制）。
+
+ft('FT-46', '本轮', '《28》v2.0 改动清单逐点静态落地核对', async () => {
+  const core = readSrc('jtjsym/jtjsym/Services/Game2048Core.cs');
+  const g2048 = readSrc('jtjsym/jtjsym/Pages/MyPage/Game_2048.razor');
+  const tetris = readSrc('jtjsym/jtjsym/Pages/MyPage/Tetris.razor');
+  const ltime = readSrc('jtjsym/jtjsym/wwwroot/js/lovetimer.js');
+  const kbd = readSrc('jtjsym/jtjsym/wwwroot/js/gamekeyboard.js');
+  const pkg = readSrc('tools/e2e/package.json');
+  const yml = readSrc('.github/workflows/tests.yml');
+  const nf = readSrc('tools/e2e/tests/code_nf.spec.mjs');
+  const d08 = readSrc('tools/e2e/tests/d08_visibility.spec.mjs');
+  const d14 = readSrc('tools/e2e/tests/d14_mobile_layout.spec.mjs');
+  const d18 = readSrc('tools/e2e/tests/d18_archive_guard.spec.mjs');
+  const unit = readSrc('jtjsym/jtjsym.Tests/Game2048CoreTests.cs');
+  const readme = readSrc('README.md');
+  const gi = readSrc('.gitignore');
+  const own = readSrc('Test/functiontest.mjs');
+  const checks = {
+    p019_coreMigration: /public static bool IsValidArchive/.test(core) && /Game2048Core\.IsValidArchive\(cells, score\)/.test(g2048),
+    p019_mod4: /score % 4 != 0/.test(core),
+    p020_skeleton: /isRestoring \? "" :/.test(g2048) && /isRestoring \? "—"/.test(g2048),
+    p023_767: /max-width: 767px/.test(tetris) && !/max-width: 780px/.test(tetris),
+    p023_budget: /100dvh - 450px/.test(tetris) && /min-height: 431px/.test(tetris),
+    p026_initialSync: /OnVisibilityChanged', document\.visibilityState/.test(ltime),
+    p027_testPr: /"test:pr"/.test(pkg) && /npm run test:pr/.test(yml),
+    p029_xmlContract: /长度由调用方保证/.test(core),
+    p032_errorText: /errs\.slice\(0, 4\)/.test(nf),
+    p035_readme: !/1设计文档\//.test(readme),
+    p035_gitignore: /1设计文档\//.test(gi),
+    p039_readyFlag: /__jtjsymKbdReady = true/.test(kbd) && /__jtjsymKbdReady = false/.test(kbd),
+    d08_4: /D08-4 初始即 hidden/.test(d08),
+    d18_non4: /archive\(\[4, 4\], 6\)/.test(d18),
+    d14_768: /w: 768, h: 1024/.test(d14),
+    unitTheory: /IsValidArchive_EnforcesAllFourCriteria/.test(unit) && /Merge_ThreeCellLine_ReturnsThreeCells/.test(unit),
+  };
+  const missing = Object.entries(checks).filter(([, v]) => !v).map(([k]) => k);
+  // 《28》v2.0 §2.7 / §9 要求把 FT-28 从 observe 升为门禁，单列登记（不进本用例判红）
+  const i28 = own.indexOf("ft('FT-28',");
+  const ft28StillObserve = i28 >= 0 && /kind:\s*'observe'/.test(own.slice(i28, i28 + 2600));
+  return {
+    pass: missing.length === 0,
+    expect: '17 个改动点应在产品代码 / 测试资产中逐点可证',
+    actual: { checks, missing, ft28StillObserve,
+      note: 'FT-28 仍为 observe 属《28》§9 要求未落实的实施偏差，单列登记；STA 判据不覆盖它' },
+  };
+});
+
+ft('FT-47', '本轮', 'P-019 存档分数矩阵：%4 拒伪分且合法分零误杀（独立注入回放）', async browser => {
+  const { ctx, page, errs } = await fresh(browser);
+  const caps = [
+    { name: 'cap内·等于上界', cells: [4, 4], score: 8, want: true },
+    { name: 'cap内·4倍数', cells: [4, 4], score: 4, want: true },
+    { name: 'cap内·零分', cells: [4, 4], score: 0, want: true },
+    { name: 'cap内·非4倍数', cells: [4, 4], score: 6, want: false },
+    { name: '超cap', cells: [4, 4], score: 9, want: false },
+    { name: '远超高伪分', cells: [4, 4], score: 999999, want: false },
+    { name: '负分·-4', cells: [4, 4], score: -4, want: false },
+    { name: '非2幂块', cells: [3], score: 0, want: false },
+    { name: '全零盘', cells: [], score: 0, want: false },
+    { name: 'FT-18 老伪分', cells: [2048, 1024, 512], score: 33790, want: false },
+    { name: '精确上界', cells: [2048, 1024, 512], score: 33792, want: true },
+    { name: '超上界·仍4倍数', cells: [2048, 1024, 512], score: 33796, want: false },
+    { name: '4倍数伪分残余', cells: [2048, 1024, 512], score: 33788, want: true },
+  ];
+  const rows = [];
+  for (const c of caps) {
+    const cells = Array.from({ length: 16 }, (_, i) => c.cells[i] ?? 0);
+    await seedAndReload(page, grid(cells, c.score));
+    const st = await readState(page);
+    const store = await readStore(page);
+    const shown = scoreOf(st);
+    rows.push({ name: c.name, score: c.score, want: c.want,
+      accepted: store.session !== null && shown === c.score, shown,
+      session: store.session ? 'kept' : 'cleared' });
+  }
+  await ctx.close();
+  const wrong = rows.filter(r => r.accepted !== r.want);
+  return {
+    pass: wrong.length === 0 && errs.length === 0,
+    expect: '13 档独立注入：非 4 倍数 / 负分 / 非 2 幂 / 全零 / 超上界一律拒并清档；cap 内 4 倍数一律放行',
+    actual: { rows, wrong: wrong.map(r => r.name), errors: errs.slice(0, 3),
+      note: '不复用 d18 / G2048-41 的注入；33788 一档是《28》§9 已登记的"4 倍数伪分"残余，放行属预期而非漏检' },
+  };
+});
+
+ft('FT-48', '本轮', 'P-020 骨架化副作用：DOM 不摘、分数占位、最高分首帧与恢复后表现', async browser => {
+  const html = await (await fetch(BASE + '/game_2048')).text();
+  const tileCount = (html.match(/class="tile [^"]*"/g) || []).length;
+  const numericTiles = (html.match(/class="tile [^"]*"\s*>\s*[1-9]\d*/g) || []).length;
+  // Razor 会把破折号 HTML 实体化：预渲染实际输出 `<p>分数：&#x2014;</p>`，
+  // 只按字面量 `—` 匹配会假红（本用例首跑即踩到，属测试资产判据陷阱，不是产品缺陷）
+  const scoreDash = /分数：(?:—|&#x2014;|&mdash;)/.test(html);
+  const bestInHtml = (/最高分：\s*([^<\s]*)/.exec(html) || [])[1] ?? null;
+  const { ctx, page, errs } = await fresh(browser, { width: 1400, height: 1000 },
+    () => { try { localStorage.setItem('jtjsym.g2048.best', '999'); } catch { /* no storage */ } });
+  await open(page, '/game_2048', 1300);
+  const st = await readState(page);
+  await ctx.close();
+  const scoreNumeric = /^\d+$/.test((st.score || '').replace(/[^\d]/g, ''));
+  return {
+    pass: tileCount === 16 && numericTiles === 0 && scoreDash && scoreNumeric,
+    expect: '预渲染 HTML 仍是 16 个 .tile（DOM 未摘）、零数字块、分数为「—」；交互实例恢复后分数为数字',
+    actual: { prerender: { tileCount, numericTiles, scoreDash, bestInHtml },
+      afterRestore: { score: st.score, best: st.best, scoreNumeric },
+      bestJump: bestInHtml !== (st.best || '').replace(/[^\d]/g, ''),
+      errors: errs.slice(0, 3),
+      note: '最高分不在骨架化范围内：预渲染输出 0，恢复后由 localStorage 跳到真实值，是 P-020 的连带首屏跳变' },
+  };
+});
+
+ft('FT-49', '本轮', 'P-023 布局边界矩阵：10 档视口纵横溢出与 12px 格子地板', async browser => {
+  const vps = [
+    { width: 768, height: 1024 }, { width: 700, height: 1000 },
+    { width: 700, height: 800 }, { width: 700, height: 700 },
+    { width: 700, height: 600 }, { width: 768, height: 500 },
+    { width: 740, height: 360 }, { width: 667, height: 375 },
+    { width: 844, height: 390 }, { width: 1400, height: 900 },
+  ];
+  const rows = [];
+  for (const vp of vps) {
+    const { ctx, page, errs } = await fresh(browser, vp);
+    await open(page, '/tetris', 800);
+    await page.waitForSelector('.game-canvas', { timeout: 8000 }).catch(() => {});
+    const m = await page.evaluate(() => {
+      const cell = document.querySelector('.grid-cell');
+      const cv = document.querySelector('.game-canvas');
+      return {
+        scrollW: document.documentElement.scrollWidth,
+        clientW: document.documentElement.clientWidth,
+        scrollH: document.documentElement.scrollHeight, innerH: innerHeight,
+        cellSize: cell ? getComputedStyle(cell).width : null,
+        canvasWidth: cv ? Math.round(cv.getBoundingClientRect().width) : null,
+      };
+    });
+    rows.push({ vp: `${vp.width}×${vp.height}`, ...m, errors: errs.slice(0, 2) });
+    await ctx.close();
+  }
+  const hOver = rows.filter(r => r.scrollH > r.innerH + 1);
+  const wOver = rows.filter(r => r.scrollW > r.clientW + 1);
+  // 《28》§1.2 / §9 已声明：700×600 触发 12px 地板，"宁可滚也不给 3px 格子"，接受滚动
+  const unexpected = hOver.filter(r => r.vp !== '700×600');
+  return {
+    pass: wOver.length === 0 && unexpected.length === 0,
+    expect: '除已声明的 700×600（12px 地板、接受滚动）外，10 档纵向零溢出；全部档无横向溢出',
+    actual: { rows, horizontalOverflow: wOver.map(r => r.vp),
+      verticalOverflow: hOver.map(r => `${r.vp}: ${r.scrollH}/${r.innerH}`),
+      acceptedFloorCase: hOver.some(r => r.vp === '700×600'),
+      note: '独立取样（不复用 FT-25 六档 / D14-10 四档），重点覆盖 L2 高度预算与 L6 解除堆叠的交界' },
+  };
+});
+
+ft('FT-50', '本轮', 'P-039 键盘就绪信号的置位与跨页重建时序', async browser => {
+  const { ctx, page, errs } = await fresh(browser);
+  const read = () => page.evaluate(() => window.__jtjsymKbdReady ?? null);
+  const steps = [];
+  await open(page, '/game_2048', 1200);
+  steps.push({ step: '2048 首载', ready: await read() });
+  await page.goto(BASE + '/counter', { waitUntil: 'domcontentloaded' });
+  await sleep(900);
+  steps.push({ step: '整页导航到 counter', ready: await read() });
+  await open(page, '/tetris', 1100);
+  steps.push({ step: 'tetris 首载', ready: await read() });
+  await open(page, '/game_2048', 1100);
+  steps.push({ step: '回到 2048', ready: await read() });
+  await ctx.close();
+  return {
+    pass: steps[0].ready === true && steps[2].ready === true && steps[3].ready === true,
+    expect: '2048 / Tetris / 返回 2048 三处 register 后信号均为 true；整页导航后信号应消失（JS 模块重建）',
+    actual: { steps, errors: errs.slice(0, 3),
+      note: 'counter 页无键盘组件，读到 null/undefined 属预期（不是 false —— removeListeners 只在同页 unregister 时置 false）' },
+  };
+});
+
+ft('FT-51', '本轮', 'P-027 test:pr 白名单覆盖率与「新增 spec 必漏」机制性残余', async () => {
+  const pkg = JSON.parse(readSrc('tools/e2e/package.json'));
+  const script = pkg.scripts['test:pr'] || '';
+  const grep = (/--grep\s+"([^"]+)"/.exec(script) || [])[1] || '';
+  const re = grep ? new RegExp(grep) : null;
+  const dir = path.join(ROOT, 'tools/e2e/tests');
+  const files = fs.readdirSync(dir).filter(f => f.endsWith('.spec.mjs'));
+  const titles = [];
+  for (const f of files) {
+    const s = fs.readFileSync(path.join(dir, f), 'utf8');
+    for (const m of s.matchAll(/\btest\(\s*['"`]([^'"`]+)['"`]/g)) titles.push({ file: f, title: m[1] });
+  }
+  const hit = re ? titles.filter(t => re.test(t.title)) : [];
+  const perFile = files.map(f => ({ file: f,
+    total: titles.filter(t => t.file === f).length,
+    hit: hit.filter(t => t.file === f).length }));
+  const zeroHit = perFile.filter(p => p.total > 0 && p.hit === 0);
+  const ciCallsTestPr = /run:\s*npm run test:pr/.test(readSrc('.github/workflows/tests.yml'));
+  const coverage = titles.length ? +(hit.length / titles.length * 100).toFixed(1) : 0;
+  return {
+    pass: ciCallsTestPr && zeroHit.length === 0 && coverage >= 85,
+    expect: 'CI 只调 npm run test:pr；18 个 spec 中没有任何一个完全不进 PR；标题级覆盖率 ≥85%',
+    actual: { grep, ciCallsTestPr, specFiles: files.length, titles: titles.length,
+      hit: hit.length, coverage, zeroHit: zeroHit.map(p => p.file), perFile,
+      missedTitles: titles.filter(t => !hit.includes(t)).map(t => `${t.file} :: ${t.title}`).slice(0, 15),
+      note: '⚠ 机制性残余：子集仍是"编号前缀白名单"，新增 spec 的编号前缀若不手工登记依旧会漏；标题统计只数 test(...) 字面量，不含 test.fixme/skip' },
+  };
+});
+
+ft('FT-52', '本轮', '本轮台账 / 文档与用户决策的一致性登记', async () => {
+  const status = docRead('1代码结构与更新记录/夜游桃花源网站技术栈与代码结构现状.md');
+  const log = docRead('1代码结构与更新记录/更新记录.md');
+  const logTop = log.slice(0, 6500);
+  const ddir = path.join(DOC_ROOT, '2过程设计文件/202611');
+  const d28 = fs.existsSync(ddir) ? fs.readdirSync(ddir).filter(f => f.startsWith('28-修复文档')) : [];
+  const v2 = d28.find(f => f.includes('v2.0'));
+  const v2text = v2 ? fs.readFileSync(path.join(ddir, v2), 'utf8').slice(0, 500) : '';
+  const facts = {
+    statusVersion: (/> 版本：(v[\d.]+)/.exec(status) || [])[1] ?? null,
+    logHasC40: /C-40/.test(logTop), logHasC47: /C-47/.test(logTop),
+    logCommitPlaceholder: /`（未提交）`/.test(logTop),
+    d28Files: d28.length,
+    d28v2StillPending: /状态：待实施/.test(v2text),
+    logStillAsksP038: /P-038[\s\S]{0,80}(需用户拍板|git init)/.test(logTop),
+    docRootMd: (() => { let n = 0; const w = d => {
+      for (const e of fs.readdirSync(d, { withFileTypes: true })) {
+        const p = path.join(d, e.name);
+        if (e.isDirectory()) { if (e.name !== '.git') w(p); } else if (e.name.endsWith('.md')) n++;
+      }
+    }; if (fs.existsSync(DOC_ROOT)) w(DOC_ROOT); return n; })(),
+  };
+  return {
+    pass: true, kind: 'info', expect: '仅登记事实，不判对错（台账由实施方维护，测试角色不修改）',
+    actual: { facts,
+      note: '2026-11-08 13:25 用户明确「P-038 由我自己控制」：不进工程 git 属设计接受；台账若仍写「需用户拍板」即为文档与最新决策不同步' },
   };
 });
 
