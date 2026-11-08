@@ -26,6 +26,7 @@
     "test:d20": "playwright test tests/d20_lt_consistency.spec.mjs",
     "test:d08": "playwright test tests/d08_visibility.spec.mjs",
     "test:fast": "playwright test tests/nav_fish.spec.mjs tests/lt.spec.mjs tests/g2048.spec.mjs tests/code_nf.spec.mjs tests/d11_d12.spec.mjs",
+    "test:pr": "playwright test --project=chromium --grep \"NAV-|FISH-|G2048-|LT-|TRIS-0|D14-|D08-|D02-|D-1[12]|D15-|NF-|CODE-\"",
     "test:unit": "dotnet test ../../jtjsym/jtjsym.Tests/jtjsym.Tests.csproj --nologo",
     "test:all": "npm run test:unit && playwright test"
   },

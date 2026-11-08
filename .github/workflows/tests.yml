@@ -71,11 +71,14 @@ jobs:
           npx playwright install --with-deps chromium
           ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'firefox' || '' }}
 
-      # PR/push：chromium 关键回归子集。**必须带 --project=chromium**，否则 firefox 项目也会被选中
+      # PR/push：chromium 关键回归子集。**必须带 --project=chromium**，否则 firefox 项目也会被选中。
+      # 子集定义已下沉到 tools/e2e/package.json 的 `test:pr`（P-027）：CI 与本地同源，
+      # 不再各自维护一份 grep 白名单 —— 上一版的教训就是"白名单只在 yaml 里，漏了 D02-/NF-/D15- 等 40 条"。
+      # ⚠ 新增 spec 时**必须**把它用例标题的编号前缀登记进 test:pr，否则该 spec 永远不会在 PR 上跑。
       - name: e2e（PR/push：chromium 子集）
         if: github.event_name == 'pull_request' || github.event_name == 'push'
         working-directory: tools/e2e
-        run: npx playwright test --project=chromium --grep "NAV-|FISH-|G2048-|LT-|TRIS-0|D14-"
+        run: npm run test:pr
 
       # 夜间/手动：双浏览器全量（Firefox 是 P-017 的常态观测窗口）
       - name: e2e（夜间/手动：全量）
