@@ -2,7 +2,7 @@
 // 迁移自 nav_fish.mjs + fix.mjs + fix2.mjs（三者覆盖同一模块，合并为两个 describe）
 // 用例编号写进 test() 标题首段，便于 --grep NAV / --grep FISH 过滤并与《07》一一对应。
 import { test, expect } from '@playwright/test';
-import { check, checkEq, open, sleep, trackErrors } from './helpers.mjs';
+import { check, checkEq, fishCount, open, sleep, trackErrors } from './helpers.mjs';
 
 test.describe('NAV 站点框架', () => {
   test('NAV-01~NAV-03 首页内容、5 项导航与高亮', async ({ page }) => {
@@ -133,7 +133,9 @@ test.describe('FISH 电子木鱼', () => {
     const decoBefore = await decoCount();
     check(
       'FISH-01',
-      /次数:\s*0/.test(t0) && btnCount === 1 && decoBefore === 0,
+      // C-50：取数与文案解耦（fishCount 只认行尾数字），但首屏这一条额外判标签本身 ——
+      // 否则文案被改回/改错时全组会静默变绿（R1 的唯一代价，用这一条 + FISH-07 的整串锚定兜住）。
+      /^本次功德：/.test(t0) && fishCount(t0) === 0 && btnCount === 1 && decoBefore === 0,
       `文案="${t0}" 按钮数=${btnCount} 装饰 gif 数=${decoBefore}（装饰为 <div><img src=Images/counter.gif>，非 fluent-icon）`,
     );
 
@@ -164,7 +166,7 @@ test.describe('FISH 电子木鱼', () => {
     });
     check(
       'FISH-02',
-      /次数:\s*1/.test(t1) &&
+      fishCount(t1) === 1 &&
         deco.n === 4 &&
         deco.up === 1 &&
         deco.down === 1 &&
@@ -179,7 +181,7 @@ test.describe('FISH 电子木鱼', () => {
     }
     await sleep(500);
     const t10 = await statusText();
-    check('FISH-03', /次数:\s*10/.test(t10), `连点 10 次后文案="${t10}"`);
+    check('FISH-03', fishCount(t10) === 10, `连点 10 次后文案="${t10}"`);
 
     await page.locator('fluent-button.muyu-btn').hover();
     await sleep(200);
@@ -198,12 +200,12 @@ test.describe('FISH 电子木鱼', () => {
     await page.reload({ waitUntil: 'domcontentloaded' });
     await sleep(1500);
     const tReload = await statusText();
-    check('FISH-05', /次数:\s*0/.test(tReload), `刷新后文案="${tReload}"`);
+    check('FISH-05', fishCount(tReload) === 0, `刷新后文案="${tReload}"`);
   });
 
   test('FISH-06 断网期间点击不生效，恢复后从原值继续', async ({ page, context }) => {
     const statusText = async () => ((await page.textContent('p[role=status]').catch(() => '')) || '').trim();
-    const n = s => parseInt(/次数:\s*(\d+)/.exec(s)?.[1] ?? '-1');
+    const n = fishCount; // 只认行尾数字，不绑定文案（C-50）
 
     await open(page, '/counter');
     await page.locator('fluent-button.muyu-btn').click();
@@ -255,7 +257,9 @@ test.describe('FISH 电子木鱼', () => {
     // 计数在服务端，被缓冲的点击一定会补执行 → 等它收敛到 105 再读，而不是点完立刻断言
     await page
       .waitForFunction(
-        n => new RegExp(`次数:\\s*${n}`).test(document.querySelector('p[role=status]')?.textContent || ''),
+        // C-50：等待条件不能再用文案正则（改了文案会空转到 20s 超时，且 catch 会把超时吞掉）
+        // `(?<!\d)` 让 n=1 不误命中「本次功德：11」，行尾 `$` 让 n=10 不误命中「本次功德：105」
+        n => new RegExp(`(?<!\\d)${n}$`).test(document.querySelector('p[role=status]')?.textContent || ''),
         CLICKS,
         { timeout: 20000 },
       )
@@ -273,7 +277,8 @@ test.describe('FISH 电子木鱼', () => {
     });
     check(
       'FISH-07',
-      /^次数: 105$/.test(txt) && m.sw <= m.cw + 1 && m.docSw <= m.docCw + 1,
+      // 整串锚定保留：这里是全场唯一校验「文案结构完整、无尾随脏字符」的地方
+      /^本次功德：105$/.test(txt) && m.sw <= m.cw + 1 && m.docSw <= m.docCw + 1,
       `105 次点击后文案="${txt}"；状态行 ${m.sw}/${m.cw}、页面 ${m.docSw}/${m.docCw}（375×667，超 1px 即判截断/溢出）`,
     );
   });
@@ -352,7 +357,8 @@ test.describe('FISH 电子木鱼', () => {
     }
     await page
       .waitForFunction(
-        () => /次数:\s*10\b/.test(document.querySelector('p[role=status]')?.textContent || ''),
+        // 浏览器内不能用 helper（helpers 是 Node 侧模块），用行尾后缀正则
+        () => new RegExp('(?<!\\d)10$').test(document.querySelector('p[role=status]')?.textContent || ''),
         null,
         { timeout: 15000 },
       )
@@ -375,11 +381,11 @@ test.describe('FISH 电子木鱼', () => {
 
     check(
       'FISH-09',
-      /次数:\s*1\b/.test(t1) &&
+      fishCount(t1) === 1 &&
         popsAfterOne >= 1 &&
-        /次数:\s*10\b/.test(t10) &&
+        fishCount(t10) === 10 &&
         m.docSw <= m.docCw + 1 &&
-        /次数:\s*1\b/.test(tDegraded) &&
+        fishCount(tDegraded) === 1 &&
         popsDegraded === 0,
       `①点击1次="${t1}"（飘字 ${popsAfterOne} 个）；②共 10 次="${t10}"、页面 ${m.docSw}/${m.docCw}（375×667 不得横向溢出）；③模块 404 后="${tDegraded}"、飘字 ${popsDegraded} 个（期望计数仍 1、飘字 0）`,
     );

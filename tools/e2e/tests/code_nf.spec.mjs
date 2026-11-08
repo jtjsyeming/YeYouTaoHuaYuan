@@ -1,7 +1,7 @@
 // CODE — 编程挑战；NF — 非功能（兼容/移动端/性能/并发/控制台）
 // 迁移自 code_nf.mjs。NF-01 只在 firefox 项目中执行（见 playwright.config.mjs 的 testMatch）。
 import { test, expect } from '@playwright/test';
-import { check, open, sleep, trackErrors, viewportMetrics } from './helpers.mjs';
+import { check, fishCount, open, sleep, trackErrors, viewportMetrics } from './helpers.mjs';
 
 test.describe('CODE 编程挑战', () => {
   test('CODE-01~CODE-03 标题、纯文本题面与换行', async ({ page }) => {
@@ -131,7 +131,7 @@ test.describe('NF 非功能', () => {
 
     check(
       'NF-01',
-      /次数:\s*1/.test(fish) && /分数/.test(score) && tinfo.length === 2 && errs.length === 0,
+      fishCount(fish) === 1 && /分数/.test(score) && tinfo.length === 2 && errs.length === 0,
       `页面：${log.join(' ')}；木鱼="${fish}"；2048="${score}"；Tetris=${JSON.stringify(tinfo)}；` +
         `JS 异常=${errs.length}${errs.length ? '：' + errs.slice(0, 4).join(' | ') : ''}（文档要求各玩 1 分钟，此处为功能抽查）`,
     );
@@ -171,7 +171,7 @@ test.describe('NF 非功能', () => {
     detail.push(`折叠按钮可见=${toggler}、tap 后展开=${navOpen}`);
 
     await mctx.close();
-    check('NF-02', /次数:\s*1/.test(fish) && after >= 2 && toggler && navOpen, detail.join('；'));
+    check('NF-02', fishCount(fish) === 1 && after >= 2 && toggler && navOpen, detail.join('；'));
   });
 
   test('NF-02b 全站 6 页 375px / 320px 无横向溢出', async ({ browser }) => {
@@ -245,7 +245,7 @@ test.describe('NF 非功能', () => {
     const t = await p3.evaluate(() => [...document.querySelectorAll('.info-value')].map(e => e.textContent.trim()));
     await p2.close();
     await p3.close();
-    check('NF-04', /次数:\s*1/.test(c) && /分数/.test(g) && t.length === 2, `木鱼="${c}"；2048="${g}"；Tetris 难度/分数=${JSON.stringify(t)}`);
+    check('NF-04', fishCount(c) === 1 && /分数/.test(g) && t.length === 2, `木鱼="${c}"；2048="${g}"；Tetris 难度/分数=${JSON.stringify(t)}`);
   });
 
   test('NF-06 遍历 6 页控制台无红色异常', async ({ page }) => {

@@ -534,3 +534,12 @@ export function parseTimer(s) {
 
 export const secsOf = p => p.mi * 60 + p.s;
 
+/** 木鱼状态行取数：只认行尾数字，不绑定文案。
+ *  文案改过两次（`次数: ` → `本次功德：`，C-50），把「数字比对」与「标签」解耦后，
+ *  再改文案只需动两处显式标签断言：nav_fish 的 FISH-01 前缀 + FISH-07 的整串锚定。
+ *  行尾 `$` 让 "本次功德：105" 不会误判成 10，`(\d+)` 贪婪匹配整段数字。 */
+export function fishCount(text) {
+  const m = /(\d+)\s*$/.exec((text ?? '').trim());
+  return m ? Number(m[1]) : -1;
+}
+

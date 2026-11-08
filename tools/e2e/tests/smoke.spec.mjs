@@ -6,6 +6,7 @@ import {
   clickDir,
   clickGameBtn,
   countTiles,
+  fishCount,
   open,
   parseTimer,
   pickSelect,
@@ -51,14 +52,14 @@ test.describe('冒烟集（28 条 P0）', () => {
 
     const t0 = await statusText();
     const btnCount = await page.locator('fluent-button.muyu-btn').count();
-    check('FISH-01', /次数:\s*0/.test(t0) && btnCount === 1 && (await deco()) === 0, `文案="${t0}" 按钮=${btnCount} 装饰=${await deco()}`);
+    check('FISH-01', fishCount(t0) === 0 && btnCount === 1 && (await deco()) === 0, `文案="${t0}" 按钮=${btnCount} 装饰=${await deco()}`);
 
     await page.locator('fluent-button.muyu-btn').click();
     await sleep(500);
     const t1 = await statusText();
     // C-49：装饰由上下两枚扩为四向，此处只校数量（冒烟集保持轻量）；
     // 「四条方位各 1」的完整判据在 nav_fish 的 FISH-02，那里用 dx/dy 分类，抓得住"左右被堆成上下"。
-    check('FISH-02', /次数:\s*1/.test(t1) && (await deco()) === 4, `点击后="${t1}" 装饰=${await deco()}（期望 4）`);
+    check('FISH-02', fishCount(t1) === 1 && (await deco()) === 4, `点击后="${t1}" 装饰=${await deco()}（期望 4）`);
 
     for (let i = 0; i < 9; i++) {
       await page.locator('fluent-button.muyu-btn').click();
@@ -66,7 +67,7 @@ test.describe('冒烟集（28 条 P0）', () => {
     }
     await sleep(500);
     const t10 = await statusText();
-    check('FISH-03', /次数:\s*10/.test(t10), `连点 10 次后="${t10}"`);
+    check('FISH-03', fishCount(t10) === 10, `连点 10 次后="${t10}"`);
   });
 
   test('LT-01/LT-03/LT-08/LT-09/LT-12/LT-14/LT-19/LT-23 爱情计时器', async ({ page }) => {

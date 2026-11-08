@@ -7,7 +7,7 @@
 
 <h1>按下试试</h1>
 
-<p role="status">次数: @knockCount</p>
+<p role="status">本次功德：@knockCount</p>
 
 <style>
 	.muyu-btn {
@@ -32,7 +32,7 @@
 
 	/* 按钮下移到视口约 1/3 处（《29》§3.3 的 R1）。
 	   227 ≈ 内容栈 114 的一半 + 余量，是"落点旋钮"，不影响正确性；
-	   若日后 h1 / 次数行增减，重跑 FISH-10 三档即可发现。
+	   若日后 h1 / 本次功德行增减，重跑 FISH-10 三档即可发现。
 	   用 dvh 不用 vh：移动端地址栏展开时 100vh 比可视区高（同 D-14 / 《23》的教训）。 */
 	.muyu-stage {
 		display: flex;
