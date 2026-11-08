@@ -114,3 +114,45 @@ test('D08-3 后台返回后的年份自愈：列表完整且不重置已选年�
   );
   check('D08-3-主行', !!parseTimer(after.timers[0]), `主行应可解析，实测 "${after.timers[0]}"`);
 });
+
+// P-026 的用例：页面**一开始就在后台**。此时全程不会发生任何 visibilitychange，
+// 只能靠 lovetimer.js 在 register() 里同步一次当前态（否则 ticker 会一直按可见态推帧）。
+test('D08-4 初始即 hidden 打开：主行零变化，且恢复 visible 后能继续走秒', async ({ page }) => {
+  // 造"初始即后台"必须早于页面脚本（含 blazor.server.js）执行，故用 addInitScript。
+  // 与 setVisibility 走同一手法（遮蔽实例上的 getter，configurable 以便后面 delete），
+  // 只是时机不同：这里在文档创建前就生效，因此**没有任何事件可依赖**。
+  await page.addInitScript(() => {
+    Object.defineProperty(document, 'visibilityState', { get: () => 'hidden', configurable: true });
+  });
+
+  await open(page, '/loveTime', 2200);
+
+  // 判据 1：初始 hidden 期间主行必须冻结
+  const base = (await readLoveTime(page)).timers;
+  const samples = [];
+  for (let i = 0; i < 3; i++) {
+    await sleep(1200);
+    samples.push((await readLoveTime(page)).timers);
+  }
+  const moved = samples.filter(t => t.join('|') !== base.join('|')).length;
+  check(
+    'D08-4-冻结',
+    moved === 0,
+    `初始 hidden 期间 3 次取样应与基线完全一致；实测 ${moved}/3 次不同（基线 "${base[0]}"，末次 "${samples.at(-1)[0]}"）`,
+  );
+
+  // 判据 2（不可省）：恢复 visible 后必须继续走秒。
+  // 否则"判据 1 恒真"可能只是因为 ticker 根本没起来（这正是 D08-1 要对照组的原因）。
+  await setVisibility(page, null);
+  await sleep(400);
+  const resumed = [(await readLoveTime(page)).timers[0]];
+  for (let i = 0; i < 2; i++) {
+    await sleep(1200);
+    resumed.push((await readLoveTime(page)).timers[0]);
+  }
+  check(
+    'D08-4-对照',
+    new Set(resumed).size >= 2,
+    `恢复 visible 后 2.4 秒内应至少出现 2 种文本，实测 ${resumed.map(t => `"${t}"`).join(' / ')}`,
+  );
+});

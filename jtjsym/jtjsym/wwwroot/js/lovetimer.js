@@ -37,6 +37,11 @@ export function register(ref) {
   pageHideHandler = () => removeListener();
   window.addEventListener('pagehide', pageHideHandler);
 
+  // 注册即同步一次当前态（P-026 / FT-30）：「页面初始就在后台」不存在任何 visibilitychange 可依赖，
+  // 只靠事件会让后台打开的标签页一直按可见态推送。这是"注册那一刻读一次"，不是事件，与上面的
+  // pagehide 清理互不干扰；invoke 同样挂 catch（断线/已销毁时不能污染控制台）。
+  ref.invokeMethodAsync('OnVisibilityChanged', document.visibilityState).catch(() => {});
+
   currentId = ++seq;
   return currentId;
 }
