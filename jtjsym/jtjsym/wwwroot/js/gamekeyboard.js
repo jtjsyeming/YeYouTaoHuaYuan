@@ -65,6 +65,10 @@ export function register(ref, options = {}) {
   window.addEventListener('pagehide', onPageHide);
 
   currentId = ++seq;
+  // 键盘就绪信号（P-039）：E2E 不能靠"固定等 1500ms"来猜监听是否已装上 ——
+  // 慢机 / CI 上 register 晚到就会让按键落空（FT-22 实测 8 PASS / 1 FAIL）。
+  // 用 window 上的布尔量做 waitForFunction 的判据；unregister / removeListeners 都会置回 false。
+  window.__jtjsymKbdReady = true;
   return currentId;
 }
 
@@ -109,4 +113,5 @@ function removeListeners() {
   document.removeEventListener('visibilitychange', onVisibilityChange);
   window.removeEventListener('pagehide', onPageHide);
   keydownHandler = keyupHandler = null;
+  window.__jtjsymKbdReady = false;   // 撤掉监听 = 不再就绪（P-039）；register 会重新置 true
 }
