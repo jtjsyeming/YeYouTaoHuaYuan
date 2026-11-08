@@ -17,7 +17,10 @@
         <div class="row">
             @for (int col = 0; col < GridSize; col++)
             {
-                <div class="tile @TileClass(board[row, col])">@(board[row, col] == 0 ? "" : board[row, col].ToString())</div>
+                @* P-020 预渲染骨架化：isRestoring 期间只渲染空块与空文本（**不摘 DOM** —— 那会让 16 个 .tile
+                   在恢复窗口内消失，而 countTiles / readBoard 是 10 个 spec 的前置）。预渲染实例的
+                   isRestoring 恒为 true（OnAfterRenderAsync 不执行）⇒ 首屏天然是 16 个空灰块，没有"假数字"。 *@
+                <div class="tile @TileClass(isRestoring || board[row, col] == 0 ? 0 : board[row, col])">@(isRestoring ? "" : (board[row, col] == 0 ? "" : board[row, col].ToString()))</div>
             }
         </div>
     }
@@ -37,7 +40,7 @@
     </div>
 </div>
 
-<p>分数：@Score</p>
+<p>分数：@(isRestoring ? "—" : Score.ToString())</p>
 <p class="best-score">最高分：@BestScore</p>
 <p><FluentButton Class="replay-btn" @onclick="OnReplayClicked" Disabled="@(isGameOver || isRestoring)">重玩</FluentButton></p>
 
