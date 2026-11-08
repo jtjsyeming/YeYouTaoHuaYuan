@@ -16,6 +16,7 @@
 //   每条用例自带独立预期与证据，失败不中断其余用例。
 import fs from 'node:fs';
 import path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -1703,6 +1704,89 @@ ft('FT-52', '本轮', '本轮台账 / 文档与用户决策的一致性登记', 
     pass: true, kind: 'info', expect: '仅登记事实，不判对错（台账由实施方维护，测试角色不修改）',
     actual: { facts,
       note: '2026-11-08 13:25 用户明确「P-038 由我自己控制」：不进工程 git 属设计接受；台账若仍写「需用户拍板」即为文档与最新决策不同步' },
+  };
+});
+
+// ───── 第 6 轮专项：提交后基线可复现性（2026-11-08 15:54~15:55 分批提交） ─────
+// 背景：第 5 版报告 P-046 登记「被测基线是 16 个未提交改动、无 commit hash、无法精确复现」。
+// 本轮该批改动已落为 9 个 commit，故补三条持久化静态闸：产品基线是否真的干净、
+// 台账是否随提交同步、测试资产是否完整入库。三条均不依赖站点状态。
+const gitOut = (...args) => {
+  try { return execFileSync('git', ['-C', ROOT, ...args], { encoding: 'utf8', windowsHide: true }).trim(); }
+  catch { return ''; }
+};
+const BASELINE_COMMIT = '03d4eeb'; // 2026-11-08 10:38「设计文档移出」，第 4/5 版报告的共同基线
+
+ft('FT-53', '本轮', '提交后基线可引用：产品工作区洁净 + HEAD 可追溯到具体 commit', async () => {
+  const porcelain = gitOut('status', '--porcelain').split('\n').filter(Boolean);
+  // 测试资产（本脚本）与本会话工作日志属于测试角色自身产物，不算「产品基线」脏
+  const testAsset = l => /functiontest\.mjs|\.workbuddy\//.test(l);
+  const productDirty = porcelain.filter(l => !testAsset(l));
+  const head = gitOut('rev-parse', 'HEAD');
+  const headShort = gitOut('rev-parse', '--short', 'HEAD');
+  const headSubject = gitOut('log', '-1', '--format=%s');
+  const since = Number(gitOut('rev-list', '--count', `${BASELINE_COMMIT}..HEAD`) || 0);
+  const msgs = gitOut('log', '--format=%s', `${BASELINE_COMMIT}..HEAD`).split('\n').filter(Boolean);
+  const untagged = msgs.filter(m => !/(P-\d{3}|H-\d{3}|C-\d+|docs|test|chore|fix|feat|style|refactor)/.test(m));
+  const changedFiles = gitOut('diff', '--name-only', BASELINE_COMMIT, 'HEAD').split('\n').filter(Boolean);
+  const pass = head.length >= 7 && productDirty.length === 0 && since >= 1 && untagged.length === 0;
+  return {
+    pass,
+    expect: '第 5 版报告的 16 个未提交改动应已落成可引用的 commit：HEAD 可解析、产品侧工作区零差异、每条提交带可识别主题',
+    actual: { head, headShort, headSubject, since, commitCount: msgs.length, untagged,
+      porcelain, productDirty, changedFileCount: changedFiles.length,
+      note: '判据刻意不硬编码提交条数；新增提交后仍成立。Test/functiontest.mjs 未提交视为测试资产，不判产品基线脏' },
+  };
+});
+
+ft('FT-54', '本轮', '提交后台账 / 修复文档的状态同步事实登记', async () => {
+  const log = docRead('1代码结构与更新记录/更新记录.md');
+  const logTop = log.slice(0, 6500);
+  const status = docRead('1代码结构与更新记录/夜游桃花源网站技术栈与代码结构现状.md');
+  const hashes = gitOut('log', '--format=%h', `${BASELINE_COMMIT}..HEAD`).split('\n').filter(Boolean);
+  const ddir = path.join(DOC_ROOT, '2过程设计文件/202611');
+  const d28 = fs.existsSync(ddir) ? fs.readdirSync(ddir).filter(f => f.startsWith('28-修复文档') && f.includes('v2.0')) : [];
+  const v2text = d28.length ? fs.readFileSync(path.join(ddir, d28[0]), 'utf8').slice(0, 500) : '';
+  const facts = {
+    logStillUncommitted: /`（未提交）`/.test(logTop),
+    logHasAnyNewHash: hashes.some(h => logTop.includes(h)),
+    newHashes: hashes,
+    statusVersion: (/> 版本：(v[\d.]+)/.exec(status) || [])[1] ?? null,
+    d28v2StillPending: /状态：待实施/.test(v2text),
+    logStillAsksP038: /P-038[\s\S]{0,80}(需用户拍板|git init)/.test(logTop),
+    reportFiles: fs.existsSync(path.join(DOC_ROOT, '3测试报告'))
+      ? fs.readdirSync(path.join(DOC_ROOT, '3测试报告')).filter(f => f.endsWith('.md')).length : 0,
+  };
+  return {
+    pass: true, kind: 'info',
+    expect: '仅登记事实、不判对错：台账与修复文档由实施方维护，测试角色按项目约定不修改《现状》《更新记录》',
+    actual: { facts, note: '第 5 版 P-044 已登记同类不同步；本轮复核提交动作之后是否收敛' },
+  };
+});
+
+ft('FT-55', '本轮', '自研 FT 与 e2e 测试资产完整入库、判据修正未被提交丢失', async () => {
+  const self = path.join(HERE, 'functiontest.mjs');
+  const src = fs.readFileSync(self, 'utf8');
+  const ids = [...src.matchAll(/^ft\('(FT-\d+)'/gm)].map(m => Number(m[1].slice(3))).sort((a, b) => a - b);
+  const missing = Array.from({ length: 52 }, (_, i) => i + 1).filter(n => !ids.includes(n));
+  let syntaxOk = true;
+  try { execFileSync(process.execPath, ['--check', self], { windowsHide: true }); } catch { syntaxOk = false; }
+  const committedSrc = gitOut('show', 'HEAD:Test/functiontest.mjs');
+  const committedIds = [...committedSrc.matchAll(/^ft\('(FT-\d+)'/gm)].map(m => Number(m[1].slice(3)));
+  const missingInHead = Array.from({ length: 52 }, (_, i) => i + 1).filter(n => !committedIds.includes(n));
+  const entityFixInHead = /&#x2014;/.test(committedSrc) && /scoreDash/.test(committedSrc);
+  const d08UpgradedInHead = /initialHidden|visibilityState/.test(committedSrc);
+  const specDir = path.join(ROOT, 'tools/e2e/tests');
+  const specFiles = fs.existsSync(specDir) ? fs.readdirSync(specDir).filter(f => f.endsWith('.spec.mjs')).length : 0;
+  const cliOk = /--only/.test(src) && /--json/.test(src) && /--base/.test(src) && /JTJSYM_DOCS/.test(src);
+  const pass = missing.length === 0 && missingInHead.length === 0 && syntaxOk && entityFixInHead && d08UpgradedInHead && specFiles >= 18 && cliOk;
+  return {
+    pass,
+    expect: '提交到 HEAD 的自研脚本应完整含 FT-01~52、含 FT-48 的 HTML 实体化判据修正与 D-08 可见性用例，且当前脚本语法/CLI 可用；e2e spec 不少于 18 份',
+    actual: { currentCaseCount: ids.length, currentMax: ids.at(-1), missing,
+      headCaseCount: committedIds.length, missingInHead, entityFixInHead, d08UpgradedInHead,
+      syntaxOk, specFiles, cliOk,
+      note: '防止「测试时修好的判据」在分批提交时被漏提或回退；当前脚本比 HEAD 多出的用例属本轮新增，单独由 --only 试跑' },
   };
 });
 
