@@ -196,7 +196,7 @@ test.describe('D-14 移动端俄罗斯方块右侧布局', () => {
     check(
       'D14-9-堆叠',
       s.panel.top > s.canvas.bottom,
-      `700×900：面板 top=${s.panel.top} > 画布 bottom=${s.canvas.bottom}（641~780px 仍纵向堆叠）`,
+      `700×900：面板 top=${s.panel.top} > 画布 bottom=${s.canvas.bottom}（641~767px 仍纵向堆叠）`,
     );
   });
 
@@ -235,14 +235,17 @@ test.describe('D-14 移动端俄罗斯方块右侧布局', () => {
     check('D14-10c', badW.length === 0, `横向溢出=${badW.join('；') || '无'}`);
   });
 
-  test('D14-10d 桌面三档回归：格子仍 30px、纵向溢出归零', async ({ page }) => {
+  test('D14-10d 桌面四档回归：格子仍 30px、纵向溢出归零', async ({ page }) => {
     test.setTimeout(120_000);
     // 挂 D14-10 名下（不新占用例号）：③(100dvh−142px)/20 只在矮视口生效；
     // ④(100dvh−30px−1.1rem) 让「零纵向滚动」第一次真正为 0（原先恒溢 17.6px，P-023）。
+    // 768×1024（iPad 竖屏）是 P-023 的关键档：L2 上界 780→767 后它改走横排，
+    // 两条判据（格子 30 + 纵向溢出 0）**同时**成立；改回 780 这一档就会红。
     const DESKTOPS = [
       { w: 1400, h: 1000 },
       { w: 1280, h: 800 },
       { w: 1024, h: 768 },
+      { w: 768, h: 1024 },
     ];
     const cells = {};
     const over = {};
