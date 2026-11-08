@@ -59,6 +59,30 @@ public class Game2048CoreTests
         Assert.Equal(new[] { 2, 2, 4, 4 }, input);
     }
 
+    // ───────────────────── 长度契约：异长输入必须等长返回（P-029）─────────────────────
+    // 组件侧恒传 4 格，但 Merge 用 line.Length 驱动压缩与补零，故"等长返回"是可依赖的契约；
+    // 这两条把它钉死（`i += 2` 保证合并出的新块不参与本轮再合并，所以不会链式反应）。
+
+    [Fact]
+    public void Merge_ThreeCellLine_ReturnsThreeCells()
+    {
+        int score = 0;
+        var actual = Game2048Core.Merge(new[] { 2, 2, 2 }, ref score);
+
+        Assert.Equal(new[] { 4, 2, 0 }, actual);
+        Assert.Equal(4, score);
+    }
+
+    [Fact]
+    public void Merge_FiveCellLine_ReturnsFiveCells()
+    {
+        int score = 0;
+        var actual = Game2048Core.Merge(new[] { 2, 2, 2, 2, 2 }, ref score);
+
+        Assert.Equal(new[] { 4, 4, 2, 0, 0 }, actual);
+        Assert.Equal(8, score);
+    }
+
     // ──────────── Merge：右/下方向 = Reverse 后复用（G2048-15/17/18 的算法侧）────────────
     // 组件里右/下就是 `Merge(line.Reverse()).Reverse()`，抽离后这段组合仍在 razor 里，
     // 故这里用同一种组合验证"方向语义"确实由 Reverse 复用保证，而不是另写了一份。
@@ -139,6 +163,43 @@ public class Game2048CoreTests
     public void IsGameOver_Throws_OnWrongLength(int length)
     {
         Assert.Throws<ArgumentException>(() => Game2048Core.IsGameOver(new int[length]));
+    }
+
+    // ────────────────── 存档内容闸：IsValidArchive（P-019，随迁 Core 才可测）──────────────────
+
+    /// <summary>
+    /// 把"前 n 块"放进 16 格盘（其余为 0）：IsValidArchive 本身不看长度，但用例保持与真实存档同形。
+    /// </summary>
+    private static int[] Archive(params int[] tiles)
+    {
+        var cells = new int[16];
+        Array.Copy(tiles, cells, tiles.Length);
+        return cells;
+    }
+
+    [Theory]
+    // 判据 ④ 的正反两端：cap 内、且是 4 的倍数才放行
+    [InlineData(new[] { 4, 4 }, 8, true)]        // G2048-41：等于上界（8 = 4·(2−1)·2）
+    [InlineData(new[] { 4, 4 }, 6, false)]       // P-019 新增：cap 内但非 4 倍数 ⇒ 必须拒
+    // FT-18 的伪分（连续三版 FAIL 的那一档）：33790 % 4 == 2
+    [InlineData(new[] { 2048, 1024, 512 }, 33790, false)]
+    // 同一盘面的精确上界：20480 + 9216 + 4096 = 33792，恰等即放行（证明拒绝来自 %4 而非上界）
+    [InlineData(new[] { 2048, 1024, 512 }, 33792, true)]
+    [InlineData(new[] { 2048, 1024, 512 }, 33796, false)]   // 超上界（且仍是 4 的倍数）
+    // 判据 ②：全零盘（P-004）
+    [InlineData(new int[0], 0, false)]
+    // 判据 ①：非 2 的幂 / 超单块上界 / 低于 2
+    [InlineData(new[] { 3 }, 0, false)]
+    [InlineData(new[] { 262144 }, 0, false)]
+    [InlineData(new[] { 1 }, 0, false)]
+    // 判据 ③ 的边界：单块 2 的可证上界为 0
+    [InlineData(new[] { 2 }, 0, true)]
+    [InlineData(new[] { 2 }, 4, false)]
+    // 负分（d18:40 的注入档）
+    [InlineData(new[] { 4, 4 }, -5, false)]
+    public void IsValidArchive_EnforcesAllFourCriteria(int[] tiles, int score, bool expected)
+    {
+        Assert.Equal(expected, Game2048Core.IsValidArchive(Archive(tiles), score));
     }
 
     // ─────────────────────── SpawnValue：90/10 的比例区间（D-01）───────────────────────

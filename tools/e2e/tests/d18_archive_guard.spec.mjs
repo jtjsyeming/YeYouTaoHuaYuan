@@ -117,6 +117,12 @@ test.describe('18 2048 存档数据完整性', () => {
     await seed(page, archive([4, 4], 9));
     checkEq('G2048-41-超上界', { score: await readScore(page), archive: await readSession(page) },
       { score: 0, archive: null }, '比可证上界多 1 分即为不可能状态，必须拒绝并清档');
+
+    // P-019 新增：cap 之内但**不是 4 的倍数**。这是"伪分"最小时可构造例 —— 6 ≤ 8，
+    // 只靠上界判据会放行；真实对局的合并增量恒 ∈ {4,8,16,…}，总分必是 4 的倍数。
+    await seed(page, archive([4, 4], 6));
+    checkEq('G2048-41-非4倍数', { score: await readScore(page), archive: await readSession(page) },
+      { score: 0, archive: null }, '6 虽在 cap(8) 之内，但不是 4 的倍数 ⇒ 必拒并清档');
   });
 
   test('G2048-42 真实对局不被误杀（防"校验过紧"）', async ({ page }) => {

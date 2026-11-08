@@ -1,3 +1,5 @@
+using System.Numerics;
+
 namespace jtjsym.Services;
 
 /// <summary>
@@ -12,10 +14,16 @@ public static class Game2048Core
     /// <summary>标准 2048：90% 出 2、10% 出 4（D-01 常量随迁；改它要同步《07》G2048-01 的口径）。</summary>
     public const int FourSpawnPercent = 10;
 
+    /// <summary>单块上界 131072（= 2¹⁷）：4×4 棋盘的 2 的幂上界。改 <c>GridSize</c> 必须同步改。
+    /// 随 <see cref="IsValidArchive"/> 一并迁入本类（P-019），组件不再持有副本。</summary>
+    public const int MaxTileValue = 1 << 17;
+
     /// <summary>
     /// 压缩 → 成对消费 → 尾补零。score 走 <c>ref</c> 累加，与原 <c>Merge</c> 的语义逐字一致
     /// （合并即加分，未合并不加分；<c>i += 2</c> 保证合并出的新块不参与本步再合并）。
     /// </summary>
+    /// <param name="line">一条线。**长度由调用方保证**（当前恒为 4，来自 GetRow/GetColumn/Reverse）；本方法不做长度校验。</param>
+    /// <returns>与输入**等长**的线：合并结果靠前、尾部补 0。传入 3 格返回 3 格，传入 5 格返回 5 格。</returns>
     public static int[] Merge(int[] line, ref int score)
     {
         ArgumentNullException.ThrowIfNull(line);
@@ -52,6 +60,43 @@ public static class Game2048Core
         }
 
         return merged.ToArray();
+    }
+
+    /// <summary>
+    /// 存档内容校验（P-002/004/005/019）。<b>结构闸</b>（长度、版本）由调用点负责，本方法只做内容闸，
+    /// 故 <paramref name="cells"/> 必须已是非 null 且长度为 <c>GridSize²</c>。
+    /// <para>四条判据：① 每个非零块是 [2, <see cref="MaxTileValue"/>] 内的 2 的幂；
+    /// ② 至少有一块（全零盘拒 → P-004 根治）；③ 分数不超过由盘面可证的合并上界 → 伪高分在这一条被拒；
+    /// ④ 分数是 4 的倍数（P-019）。</para>
+    /// <para><b>④ 的数学依据</b>：合并增量 = 合并结果 <c>values[i] * 2</c>，而 <c>values[i] ≥ 2</c>
+    /// ⇒ 每次增量 ∈ {4, 8, 16, …}，全被 4 整除；spawn 不计分；开局 0 ⇒ 任意真实对局的总分恒 ≡ 0 (mod 4)。
+    /// 典型反例 <c>[2048,1024,512]</c> + 33790（33790 % 4 == 2）在 ③ 内放行、被 ④ 拒。</para>
+    /// <para><b>上界推导（判据 ③）</b>（前提：标准 2048 规则，spawn 只出 2 或 4，无道具/加成）：
+    /// 把每个块看成一棵合并树，叶子是 spawn 出的 2/4，内部结点值即该次合并的得分增量。全部 spawn 为 2 时
+    /// 值为 v 的树共有 log₂v − 1 层内部结点、各层贡献之和恰为 v，故该树对总分贡献 v·(log₂v − 1)；
+    /// 4 点 spawn 只会跳过一次合并、使实际分更小。各终局块的树互不相交 ⇒ score ≤ Σ v·(log₂v − 1)。
+    /// 完美终局盘反算得 3,932,164，与文献理论最大分 3,932,156 差 8（最末那个 4 由 spawn 产生时不贡献分数），
+    /// 公式自洽。改规则或改 <c>GridSize</c> 时必须同步重算，否则 G2048-42（真实对局回放）会先红。</para>
+    /// <para><b>已知残余</b>（§9 已登记接受）：判据 ④ 把注入空间收窄到 1/4，但"4 的倍数伪分"仍会被接受；
+    /// 彻底解需按盘面反算可达分数上界（等价于恢复时重放整局），成本与收益不成比例。</para>
+    /// </summary>
+    public static bool IsValidArchive(int[] cells, int score)
+    {
+        ArgumentNullException.ThrowIfNull(cells);
+
+        if (score < 0 || score % 4 != 0) return false;   // 伪分：标准 2048 总分恒为 4 的倍数
+
+        var hasTile = false;
+        long scoreCap = 0;                              // 理论最大 3,932,164：用 long 免掉将来改棋盘的隐患
+        foreach (var v in cells)
+        {
+            if (v == 0) continue;
+            if (v < 2 || v > MaxTileValue || (v & (v - 1)) != 0) return false;   // 越界 / 非 2 的幂
+            hasTile = true;
+            scoreCap += (long)v * (BitOperations.Log2((uint)v) - 1);            // v == 2 时贡献 0
+        }
+
+        return hasTile && score <= scoreCap;
     }
 
     /// <summary>

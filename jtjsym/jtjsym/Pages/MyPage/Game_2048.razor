@@ -52,7 +52,7 @@
 @code {
     private const int GridSize = 4;
     // 90/10 取值比例已随 D-01 迁入 Services/Game2048Core.FourSpawnPercent（单一来源）
-    private const int MaxTileValue = 1 << 17;  // 131072：4×4 棋盘的 2 的幂上界（改 GridSize 必须同步改）
+    // 单块上界 MaxTileValue 亦已随 P-019 迁入 Game2048Core（同一处契约，连同 IsValidArchive 一起可单测）
     private int[,] board = new int[GridSize, GridSize];
     private Random random = new Random();
     private int Score = 0;
@@ -92,31 +92,10 @@
         [JsonPropertyName("score")] public int Score { get; set; }
     }
 
-    /// <summary>存档内容校验（P-002/004/005）。结构闸已在调用点用过嵌套属性模式，故 <paramref name="cells"/> 必非 null。
-    /// 三条判据：① 每个非零块是 [2, 131072] 内的 2 的幂；② 至少有一块（全零盘拒 → P-004 根治）；
-    /// ③ 分数不超过由盘面可证的合并上界 → 伪高分在这一条被拒，P-003 的入口随之关闭。
-    /// <para>上界推导（前提：标准 2048 规则，spawn 只出 2 或 4，无道具/加成）：把每个块看成一棵合并树，
-    /// 叶子是 spawn 出的 2/4，内部结点值即该次合并的得分增量。全部 spawn 为 2 时值为 v 的树共有 log₂v − 1
-    /// 层内部结点、各层贡献之和恰为 v，故该树对总分贡献 v·(log₂v − 1)；4 点 spawn 只会跳过一次合并、使实际分更小。
-    /// 各终局块的树互不相交 ⇒ score ≤ Σ v·(log₂v − 1)。完美终局盘反算得 3,932,164，与文献理论最大分 3,932,156
-    /// 差 8（最末那个 4 由 spawn 产生时不贡献分数），公式自洽。
-    /// 改规则或改 GridSize 时必须同步重算，否则 G2048-42（真实对局回放）会先红。</para></summary>
-    private static bool IsValidArchive(int[] cells, int score)
-    {
-        if (score < 0) return false;
-
-        var hasTile = false;
-        long scoreCap = 0;                              // 理论最大 3,932,164：用 long 免掉将来改棋盘的隐患
-        foreach (var v in cells)
-        {
-            if (v == 0) continue;
-            if (v < 2 || v > MaxTileValue || (v & (v - 1)) != 0) return false;   // 越界 / 非 2 的幂
-            hasTile = true;
-            scoreCap += (long)v * (BitOperations.Log2((uint)v) - 1);            // v == 2 时贡献 0
-        }
-
-        return hasTile && score <= scoreCap;
-    }
+    /// <summary>存档内容校验（P-002/004/005/019）。判据、上界推导与已知残余全部落在
+    /// <see cref="Game2048Core.IsValidArchive"/>（迁出组件才可单测）；此处只保留转发，
+    /// 调用点语义不变 —— <b>结构闸</b>（版本 / 长度）仍在上面的模式匹配里。</summary>
+    private static bool IsValidArchive(int[] cells, int score) => Game2048Core.IsValidArchive(cells, score);
 
     // 键盘：window 级 JS 监听的模块句柄与回调引用（详见 wwwroot/js/gamekeyboard.js）
     private IJSObjectReference? keyModule;
