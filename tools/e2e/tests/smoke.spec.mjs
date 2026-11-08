@@ -56,7 +56,9 @@ test.describe('冒烟集（28 条 P0）', () => {
     await page.locator('fluent-button.muyu-btn').click();
     await sleep(500);
     const t1 = await statusText();
-    check('FISH-02', /次数:\s*1/.test(t1) && (await deco()) === 2, `点击后="${t1}" 装饰=${await deco()}`);
+    // C-49：装饰由上下两枚扩为四向，此处只校数量（冒烟集保持轻量）；
+    // 「四条方位各 1」的完整判据在 nav_fish 的 FISH-02，那里用 dx/dy 分类，抓得住"左右被堆成上下"。
+    check('FISH-02', /次数:\s*1/.test(t1) && (await deco()) === 4, `点击后="${t1}" 装饰=${await deco()}（期望 4）`);
 
     for (let i = 0; i < 9; i++) {
       await page.locator('fluent-button.muyu-btn').click();

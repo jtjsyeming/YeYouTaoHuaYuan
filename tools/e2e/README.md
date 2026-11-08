@@ -87,3 +87,5 @@ dotnet run --project ../../jtjsym/jtjsym --no-launch-profile --environment Devel
 - 计时类用例（LT 秒级跳动、TRIS 难度升级）偶发抖动时，先确认 `workers` 仍为 1、`retries` 仍为 0，再排查是否并行/复用实例导致。
 - 冒烟集的 `TRIS-10`（消行）/ `TRIS-20`（游戏结束）依赖有界自动玩：`TRIS-10` 用启发式落点评估（能稳定消行），`TRIS-20` 用"只堆中间两列"的会输策略（约 20 秒堆满）。若某次不触发，先看是否 `workers` 被改成 >1；全量 `tris.spec.mjs` 覆盖更充分。
 - 当前仍有 2 处 `fixme`：`NF-05/07/08`（需生产环境）与 `TRIS-23`（需读服务端控制台），均为人工验收项，按《07》§11.3 在册。`TRIS-26`（D-04）与 `D02-4` 已分别随 C-27、H-011 修好并转为真实用例，不要再按旧的"5 处 fixme"理解。
+- **同一「数量常量」可能写在两个 spec 里**：`FISH-02` 的装饰 gif 数在 `nav_fish.spec.mjs` 与 `smoke.spec.mjs` 各有一份，改一处会让另一处**静默失配**（`test:fish` 绿、`test:smoke` 红、`test:pr` 红）。改数量类判据前先 `grep -rn` 全库。
+- **汇总读数不要 `grep ... | tail -2`**：Playwright 的汇总行顺序是 `failed` → `skipped` → `passed`，`tail -2` 正好把 `1 failed` 切掉（2026-11-08 实测把 smoke 的失败误读成「1 skipped / 5 passed」，直到跑 PR 全量才暴露）。用 `tail -3`，或直接看 `echo "exit=$?"`。

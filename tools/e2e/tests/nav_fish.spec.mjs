@@ -147,8 +147,31 @@ test.describe('FISH 电子木鱼', () => {
     await page.locator('fluent-button.muyu-btn').click();
     await sleep(500);
     const t1 = await statusText();
-    const decoAfter = await decoCount();
-    check('FISH-02', /次数:\s*1/.test(t1) && decoAfter === 2, `点击后文案="${t1}" 装饰 gif=${decoAfter}（期望 2）`);
+    // C-49：装饰由上下两枚扩为四向（上/下/左/右各 1）。数量之外还要判「方位」——
+    // 若左右两枚被误写成 stage 的独立 flex item，数量仍是 4，但会堆成「左 / 按钮 / 右」三行、按钮横向跑偏。
+    const deco = await page.evaluate(() => {
+      const btn = document.querySelector('fluent-button.muyu-btn').getBoundingClientRect();
+      const bcx = btn.left + btn.width / 2, bcy = btn.top + btn.height / 2;
+      const dir = { up: 0, down: 0, left: 0, right: 0 };
+      const imgs = [...document.querySelectorAll('article div img[src*="counter.gif"]')];
+      for (const el of imgs) {
+        const r = el.getBoundingClientRect();
+        const dx = r.left + r.width / 2 - bcx, dy = r.top + r.height / 2 - bcy;
+        if (Math.abs(dx) < Math.abs(dy)) dir[dy < 0 ? 'up' : 'down']++;
+        else dir[dx < 0 ? 'left' : 'right']++;
+      }
+      return { n: imgs.length, ...dir };
+    });
+    check(
+      'FISH-02',
+      /次数:\s*1/.test(t1) &&
+        deco.n === 4 &&
+        deco.up === 1 &&
+        deco.down === 1 &&
+        deco.left === 1 &&
+        deco.right === 1,
+      `点击后文案="${t1}" 装饰 gif=${deco.n}（期望 4）；四向=上${deco.up}/下${deco.down}/左${deco.left}/右${deco.right}（各期望 1）`,
+    );
 
     for (let i = 0; i < 9; i++) {
       await page.locator('fluent-button.muyu-btn').click();
@@ -252,6 +275,149 @@ test.describe('FISH 电子木鱼', () => {
       'FISH-07',
       /^次数: 105$/.test(txt) && m.sw <= m.cw + 1 && m.docSw <= m.docCw + 1,
       `105 次点击后文案="${txt}"；状态行 ${m.sw}/${m.cw}、页面 ${m.docSw}/${m.docCw}（375×667，超 1px 即判截断/溢出）`,
+    );
+  });
+
+  // ── C-48（D-21）「功德+1」飘字与按钮下移 ──
+  test('FISH-08 单次点击出「功德+1」并自删；连点不合并也不重复', async ({ page }) => {
+    // 飘字由 JS 侧 document 捕获阶段的委托驱动，与 Blazor 计数链路互不等待，
+    // 所以节点应在"同一次点击"就出现（不经过 SignalR 往返）。
+    // 先等模块 import 完成再点，避免"注册尚未执行 → 永远不出节点"的假 FAIL。
+    const modLoaded = page
+      .waitForResponse(r => r.url().includes('/js/woodfish.js'), { timeout: 15000 })
+      .catch(() => null);
+    await open(page, '/counter', 1200);
+    await modLoaded;
+    await sleep(300);
+
+    const btn = page.locator('fluent-button.muyu-btn');
+    const pops = page.locator('.gongde-pop');
+
+    await btn.click();
+    await page.waitForSelector('.gongde-pop', { timeout: 3000 }).catch(() => {});
+    const n1 = await pops.count();
+    const txt = n1 > 0 ? ((await pops.first().textContent()) || '').trim() : '';
+    await sleep(1600);
+    const n2 = await pops.count();
+    check(
+      'FISH-08',
+      n1 === 1 && txt === '功德+1' && n2 === 0,
+      `点击后节点=${n1}（期望 1）文本="${txt}"（期望 功德+1）；1600ms 后=${n2}（期望 0：animationend 自删）`,
+    );
+
+    // FISH-08b：连点不合并。用 MutationObserver 记"并存峰值"而不是点完立刻数 ——
+    // 3 次真实 click 的往返可能已超过单个节点 1.1s 的寿命。
+    await page.evaluate(() => {
+      window.__popMax = 0;
+      window.__popObs = new MutationObserver(() => {
+        const n = document.querySelectorAll('.gongde-pop').length;
+        if (n > window.__popMax) window.__popMax = n;
+      });
+      window.__popObs.observe(document.body, { childList: true });
+    });
+    for (let i = 0; i < 3; i++) {
+      await btn.click();
+      await sleep(120);
+    }
+    await sleep(300);
+    const peak = await page.evaluate(() => {
+      window.__popObs?.disconnect();
+      return window.__popMax;
+    });
+    await sleep(1600);
+    const n3 = await pops.count();
+    check(
+      'FISH-08b',
+      peak === 3 && n3 === 0,
+      `连点 3 次并存峰值=${peak}（期望 3：逐点建、不重置；>3 说明重复绑定）；1600ms 后=${n3}`,
+    );
+  });
+
+  test('FISH-09 飘字不改变计数语义、不撑出横向滚动；模块缺失时降级为纯计数', async ({ page }) => {
+    const statusText = async () => ((await page.textContent('p[role=status]').catch(() => '')) || '').trim();
+    const btn = () => page.locator('fluent-button.muyu-btn');
+
+    // ① 375×667（与 FISH-07 同档）点一次：计数照常 +1，且确有飘字
+    await page.setViewportSize({ width: 375, height: 667 });
+    await open(page, '/counter', 2000);
+    await btn().click();
+    await sleep(600);
+    const t1 = await statusText();
+    const popsAfterOne = await page.locator('.gongde-pop').count();
+
+    // ② 再连点 9 次收敛到 10；.gongde-pop 是 position:fixed，不参与 scrollWidth
+    for (let i = 0; i < 9; i++) {
+      await btn().click();
+      await sleep(150);
+    }
+    await page
+      .waitForFunction(
+        () => /次数:\s*10\b/.test(document.querySelector('p[role=status]')?.textContent || ''),
+        null,
+        { timeout: 15000 },
+      )
+      .catch(() => {});
+    const t10 = await statusText();
+    const m = await page.evaluate(() => ({
+      docSw: document.documentElement.scrollWidth,
+      docCw: document.documentElement.clientWidth,
+    }));
+
+    // ③ 模块 404 时降级：只丢视觉，计数照常。
+    // route 必须在 open 之前挂 —— 模块只在首次渲染 import 一次。
+    // 本段不断言 trackErrors 为空（404 必然打一条 console error）。
+    await page.route('**/js/woodfish.js', r => r.fulfill({ status: 404, body: '' }));
+    await open(page, '/counter', 2000);
+    await btn().click();
+    await sleep(600);
+    const tDegraded = await statusText();
+    const popsDegraded = await page.locator('.gongde-pop').count();
+
+    check(
+      'FISH-09',
+      /次数:\s*1\b/.test(t1) &&
+        popsAfterOne >= 1 &&
+        /次数:\s*10\b/.test(t10) &&
+        m.docSw <= m.docCw + 1 &&
+        /次数:\s*1\b/.test(tDegraded) &&
+        popsDegraded === 0,
+      `①点击1次="${t1}"（飘字 ${popsAfterOne} 个）；②共 10 次="${t10}"、页面 ${m.docSw}/${m.docCw}（375×667 不得横向溢出）；③模块 404 后="${tDegraded}"、飘字 ${popsDegraded} 个（期望计数仍 1、飘字 0）`,
+    );
+  });
+
+  test('FISH-10 按钮下移到视口约 1/3，三档均无纵向溢出', async ({ page }) => {
+    // 区间按"现状必红、R1/R2 两条候选公式都必绿"取的窄带（《29》§5.2）；
+    // 现状实测 0.127 / 0.268 / 0.313，全部落在区间外。
+    const cases = [
+      { w: 1920, h: 1080, lo: 0.28, hi: 0.55 },
+      { w: 375, h: 667, lo: 0.33, hi: 0.62 },
+      { w: 320, h: 568, lo: 0.35, hi: 0.62 },
+    ];
+    const measured = [];
+    let ok = true;
+
+    for (const c of cases) {
+      await page.setViewportSize({ width: c.w, height: c.h });
+      await open(page, '/counter', 1200);
+      const r = await page.evaluate(() => {
+        const b = document.querySelector('fluent-button.muyu-btn');
+        const box = b.getBoundingClientRect();
+        return {
+          cy: box.top + box.height / 2,
+          vh: window.innerHeight,
+          sh: document.documentElement.scrollHeight,
+        };
+      });
+      const ratio = r.cy / r.vh;
+      const overflow = r.sh - r.vh;
+      measured.push(`${c.w}×${c.h}: cy=${r.cy.toFixed(1)} ratio=${ratio.toFixed(3)} 纵向溢出=${overflow}px`);
+      if (!(ratio >= c.lo && ratio <= c.hi) || overflow > 1) ok = false;
+    }
+
+    check(
+      'FISH-10',
+      ok,
+      `${measured.join('；')}（区间 1920 [0.28,0.55] / 375 [0.33,0.62] / 320 [0.35,0.62]）`,
     );
   });
 });
