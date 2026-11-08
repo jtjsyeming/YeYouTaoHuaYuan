@@ -132,7 +132,8 @@ test.describe('NF 非功能', () => {
     check(
       'NF-01',
       /次数:\s*1/.test(fish) && /分数/.test(score) && tinfo.length === 2 && errs.length === 0,
-      `页面：${log.join(' ')}；木鱼="${fish}"；2048="${score}"；Tetris=${JSON.stringify(tinfo)}；JS 异常=${errs.length}（文档要求各玩 1 分钟，此处为功能抽查）`,
+      `页面：${log.join(' ')}；木鱼="${fish}"；2048="${score}"；Tetris=${JSON.stringify(tinfo)}；` +
+        `JS 异常=${errs.length}${errs.length ? '：' + errs.slice(0, 4).join(' | ') : ''}（文档要求各玩 1 分钟，此处为功能抽查）`,
     );
   });
 
