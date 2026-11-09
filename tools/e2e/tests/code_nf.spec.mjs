@@ -131,7 +131,7 @@ test.describe('NF 非功能', () => {
 
     check(
       'NF-01',
-      fishCount(fish) === 1 && /分数/.test(score) && tinfo.length === 2 && errs.length === 0,
+      fishCount(fish) === 1 && /分数/.test(score) && tinfo.length === 3 && errs.length === 0,
       `页面：${log.join(' ')}；木鱼="${fish}"；2048="${score}"；Tetris=${JSON.stringify(tinfo)}；` +
         `JS 异常=${errs.length}${errs.length ? '：' + errs.slice(0, 4).join(' | ') : ''}（文档要求各玩 1 分钟，此处为功能抽查）`,
     );
@@ -245,7 +245,10 @@ test.describe('NF 非功能', () => {
     const t = await p3.evaluate(() => [...document.querySelectorAll('.info-value')].map(e => e.textContent.trim()));
     await p2.close();
     await p3.close();
-    check('NF-04', fishCount(c) === 1 && /分数/.test(g) && t.length === 2, `木鱼="${c}"；2048="${g}"；Tetris 难度/分数=${JSON.stringify(t)}`);
+    // 条数写死 3（难度 / 分数 / 最高分，D-23）而不是 ">=2"：它同时守"面板没多出意料之外的行"。
+    // ⚠ 改这里必须连 NF-01 的 tinfo.length 一起改 —— 两处是同一条数量断言的两份拷贝
+    //   （NF-01 只在 firefox 跑，test:pr 的 chromium 子集看不见它）。
+    check('NF-04', fishCount(c) === 1 && /分数/.test(g) && t.length === 3, `木鱼="${c}"；2048="${g}"；Tetris 难度/分数/最高分=${JSON.stringify(t)}`);
   });
 
   test('NF-06 遍历 6 页控制台无红色异常', async ({ page }) => {

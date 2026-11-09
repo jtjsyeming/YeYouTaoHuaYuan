@@ -67,6 +67,15 @@
                     <span class="info-value">@score</span>
                 </div>
 
+                <!-- 最高分（D-23）。类名 best-score 与 2048 的 <p class="best-score"> 共用，
+                     e2e 的 readBest() 靠这一个类名两页通吃（helpers.mjs），不再另造取数口径。
+                     占位只到 isBestLoaded 为止：读完成前恒「—」，读完才可能是 0 或真实值。
+                     ⚠ 本行之后**不要**再加 hr.divider —— 加一行已 +30px，divider 再 +13px。 -->
+                <div class="info-row best-score">
+                    <span class="info-label">最高分:</span>
+                    <span class="info-value">@(isBestLoaded ? bestScore.ToString() : "—")</span>
+                </div>
+
                 <hr class="divider" />
 
                 <!-- 下一方块预览 -->
@@ -507,16 +516,18 @@
     }
 
     /* L2b：堆叠态的高度预算（P-023 第二步）。
-       堆叠后纵向固定开销从横排的 142px 涨到 450px —— 因为画布与侧栏由"并排"变成"上下"，
-       侧栏实测 300.5px 全部落在纵向。故在 L2 区段内把 ③ 号上限换成 (100dvh - 450px)/20，
+       堆叠后纵向固定开销从横排的 142px 涨到 480px —— 因为画布与侧栏由"并排"变成"上下"，
+       侧栏实测 330.5px 全部落在纵向。故在 L2 区段内把 ③ 号上限换成 (100dvh - 480px)/20，
        并给 12px 地板：再矮就放弃"零滚动"，宁可滚也不给 3px 的格子。
-       450 的实测分解（768×1024）：.content padding-top 17.6 + 标题 30 + 容器 padding 10
-       + 画布上下边框 4 + 画布/侧栏 gap 8 + 侧栏 300.5 + 行 gap 15 + 底栏 55 + 容器 padding 10。
+       480 的实测分解（768×1024）：.content padding-top 17.6 + 标题 30 + 容器 padding 10
+       + 画布上下边框 4 + 画布/侧栏 gap 8 + 侧栏 330.5 + 行 gap 15 + 底栏 55 + 容器 padding 10。
+       （P-023 时侧栏是 300.5、常数 450；D-23 加「最高分」一行后侧栏 +30 → 330.5，常数同步 +30。
+        700×1000 因此格子由 27.5 缩到 26，代价写进《现状》的 Tetris 布局备注。）
        ⚠ 只在 min-height:431px 生效：更矮的 641~767 视口由 L6 解除堆叠改回横排，
        那档继续用基础公式的 (100dvh - 142px)/20，不受本块影响（D14-10 的横屏四档即此区间）。 */
     @@media (min-width: 641px) and (max-width: 767px) and (min-height: 431px) {
         .tetris-container {
-            --cell-size: min(30px, calc((100vw - 78px) / 10), max(12px, calc((100dvh - 450px) / 20)));
+            --cell-size: min(30px, calc((100vw - 78px) / 10), max(12px, calc((100dvh - 480px) / 20)));
         }
     }
 
@@ -621,7 +632,11 @@
        侧栏实测 300.5px 是这档的**真正高度约束**（画布缩到 12px 后 top-area 高度由面板决定，
        再缩格子对总高零收益，实测 A/B 组溢出同为 48px）。
        本块必须在 L3 之后：L3 的 .side-panel{padding:8px} / .control-btn{height:38px} 会被这里覆盖。
-       与七档竖屏（h ≥ 568）无交集，D14-1/D14-2/D14-7 不受影响。 */
+       与七档竖屏（h ≥ 568）无交集，D14-1/D14-2/D14-7 不受影响。
+       ── D-23（最高分行）追加：新增一行 .info-row = **+30px 面板高度**（行高 24 + panel-content gap 6），
+       横屏四档因此 812×375 / 740×360 / 667×375 全部纵向溢出（740×360 直接打红 D14-10b）。
+       面板内边距与预览区已在 H-006 压到地板，还能回收的只有 gap / divider / 预览高度：
+       gap 6→4 省 16（8 个子项）、divider 1px0→0 省 6（3 条）、预览 32→28 省 4 = 共 26px。 */
     @@media (max-height: 430px) {
         .tetris-container {
             padding: 6px;
@@ -631,8 +646,13 @@
             padding: 6px;
         }
 
+        /* D-23：为容纳「最高分」行回收纵向空间（见块首注释的分解） */
+        .panel-content {
+            gap: 4px;
+        }
+
         .next-piece-preview {
-            min-height: 32px;
+            min-height: 28px;
             padding: 4px;
         }
 
@@ -647,7 +667,7 @@
         }
 
         .divider {
-            margin: 1px 0;
+            margin: 0;   /* D-23：1px 0 → 0，3 条共省 6px */
         }
     }
 
@@ -716,6 +736,17 @@
     private int currentIndex;
     private int nextIndex;
     private int score = 0;
+
+    // ── 最高分（D-23）：localStorage 持久化，键名与 2048 的 jtjsym.g2048.best 同命名空间 ──
+    // 两个标志刻意拆开：isBestReading 是"读只发生一次"的防重入闸；
+    // isBestLoaded 是"读完成"= 占位解锁。2048 把两者挤在一根标志上（await 之前就置位），
+    // 若照抄，await 期间任何一次重渲染都会把「—」画成「0」—— Tetris 有 1 秒一拍的
+    // gameTimer 与 50ms 的 softDropTimer，窗口一旦被拉长（弱机 interop 慢）就会露 0。
+    private const string BestKey = "jtjsym.tetris.best";
+    private int bestScore = 0;
+    private bool isBestReading = false;
+    private bool isBestLoaded = false;
+
     private int difficultyLevel = 1;
     private int speed = INITIAL_SPEED;
     private bool isGameOver = false;
@@ -951,6 +982,7 @@
         {
             y++;
             score += 1;
+            UpdateBestScore();   // 内存即时；**不落盘**（D-23：落盘只在消行/结束/重玩）
             StateHasChanged();
         }
         else
@@ -1073,7 +1105,37 @@
                 4 => 1000,
                 _ => 100 * rowsCleared
             };
+
+            // 落盘点之一：消行是本作唯一的大额加分，顺带把软降攒下的零头一起固化
+            UpdateBestScore();
+            _ = PersistBestAsync();
         }
+    }
+
+    /// <summary>
+    /// 最高分只在**内存里即时跟进**，不负责落盘（D-23）。
+    /// 只增不减 ⇒ 重玩后 score 归零时自然不覆盖；也不必在 InitializeGame 里复位。
+    /// </summary>
+    private void UpdateBestScore()
+    {
+        if (score <= bestScore) return;
+        bestScore = score;
+    }
+
+    /// <summary>
+    /// 落盘点只有三处：消行后 / GameOver / 重玩。软降的 +1 在"固化"意义上是延时的，
+    /// UI 值始终即时（实测：按住 1 秒 = score 16、best 16、localStorage 仍是 null）。
+    /// </summary>
+    private async Task PersistBestAsync()
+    {
+        try
+        {
+            // bestScore 在第一个 await 之前求值 ⇒ fire-and-forget 晚完成也写不到"后来的值"
+            await JS.InvokeVoidAsync("localStorage.setItem", BestKey, bestScore);
+        }
+        catch (JSException) { }              // 隐私模式 / 配额超限
+        catch (JSDisconnectedException) { }  // 切页 / 断线
+        catch (ObjectDisposedException) { }  // 电路已释放（与 2048 的 WriteBestAsync 同口径）
     }
 
     private void IncreaseDifficulty()
@@ -1129,6 +1191,9 @@
     private void RestartGame()
     {
         StopTimers();
+        // 落盘点之三：必须排在 InitializeGame() 之前 —— 它会 score = 0。
+        // （bestScore 本身不参与复位，这里提前只是让"写盘时机早于清零"成为显式事实，别让人以为依赖它。）
+        _ = PersistBestAsync();
         InitializeGame();
         currentPiece = null;
         nextPiece = null;
@@ -1142,6 +1207,7 @@
 
         isGameOver = true;
         StopTimers();
+        _ = PersistBestAsync();   // 落盘点之二：遮罩由本 circuit 渲染，写盘可达
         StateHasChanged();
     }
 
@@ -1161,7 +1227,27 @@
     protected override async Task OnAfterRenderAsync(bool firstRender)
     {
         // 仅交互实例会走到 firstRender=true，规避 ServerPrerendered 的预渲染实例
-        if (!firstRender || keyModule is not null) return;
+        if (!firstRender) return;
+
+        // ① 读最高分（D-23）。**必须与键盘模块解耦**：旧写法是合并守卫
+        //    `if (!firstRender || keyModule is not null) return;`，第二段逻辑一旦提前返回
+        //    或 import 抛异常，最高分就永远读不到；反之键盘挂了也不该连累它。
+        if (!isBestReading)
+        {
+            isBestReading = true;
+            try
+            {
+                var raw = await JS.InvokeAsync<string?>("localStorage.getItem", BestKey);
+                if (int.TryParse(raw, out var v) && v > 0) bestScore = v;
+            }
+            catch (JSException) { }              // 隐私模式 / 存储被禁：保持 0，游戏零降级
+            catch (JSDisconnectedException) { }  // 切页 / 断线
+            isBestLoaded = true;                 // 读完才解锁占位（顺序：必须在 await 之后）
+            StateHasChanged();
+        }
+
+        // ② 键盘（原逻辑不动）
+        if (keyModule is not null) return;
 
         keyRef = DotNetObjectReference.Create(this);
         keyModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/gamekeyboard.js");

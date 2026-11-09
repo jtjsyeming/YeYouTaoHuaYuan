@@ -68,9 +68,13 @@ export const readScore = async page => {
   return parseInt(/(?:分数|Score)[:：]\s*(\d+)/.exec(txt)?.[1] ?? '-1');
 };
 
-/** 最高分文案 "最高分：N"；元素不存在（其他页面）返回 null，便于复用 */
+/** 最高分文案 "最高分：N"；元素不存在（其他页面）返回 null，便于复用。
+ *  选择器用类名而非标签：2048 是 `<p class="best-score">`（全角冒号），
+ *  Tetris 是 `<div class="info-row best-score">` 里的 `.info-value`（半角冒号），
+ *  放宽成 `.best-score` 后两页一起命中，避免 Tetris 再造第二套取数口径（D-23）。
+ *  ⚠ 占位期间返回 **-1**（不是 null）：元素在、正则不匹配。等数字时用 waitForFunction，别把 -1 当"没读到"。 */
 export const readBest = async page => {
-  const loc = page.locator('p.best-score');
+  const loc = page.locator('.best-score');
   if ((await loc.count()) === 0) return null;
   const txt = (await loc.first().textContent()) ?? '';
   return parseInt(/最高分[:：]\s*(\d+)/.exec(txt)?.[1] ?? '-1');
@@ -204,6 +208,9 @@ export const readTetris = page =>
       pieceColors: [...new Set(pieceCells.filter(c => c !== 'rgba(0, 0, 0, 0)'))],
       difficulty: info[0],
       score: info[1],
+      // D-23：最高分是第 3 个 .info-value（append 在分数行之后 ⇒ info[1] 仍是 score）。
+      // 仅供布局/就绪判断顺手可用；**断言值一律走 readBest()**，别再新增第三处口径。
+      best: info[2],
       previewFilled: preview.filter(c => c !== 'rgba(0, 0, 0, 0)').length,
       previewColors: [...new Set(preview.filter(c => c !== 'rgba(0, 0, 0, 0)'))],
       gameOver: !!document.querySelector('.game-over-text'),

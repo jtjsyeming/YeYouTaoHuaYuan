@@ -48,8 +48,9 @@ dotnet run --project ../../jtjsym/jtjsym --no-launch-profile --environment Devel
 | `npm run test:code` / `test:nf` | CODE / NF（含 Firefox 兼容、Slow 3G） | 2~3 分钟 |
 | `npm run test:d02` | D02 键盘操作 + 2048 数值配色（D02-4 为 `fixme`） | 1.5 分钟 |
 | `npm run test:d14` | D14 移动端俄罗斯方块两栏布局（七档视口 + 桌面零变化回归） | 3~4 分钟 |
+| `npm run test:d22` | D-23 俄罗斯方块最高分（预置读 / 首屏占位 / 不闪 0 / 未落盘 / 重玩固化 / 损坏值 / 跨页隔离） | 20 秒 |
 | `npm run test:fast` | nav + lt + g2048 + code_nf（不含 tris 长时项） | 6 分钟 |
-| `npm run test:pr` | **CI 的 PR/push 子集**（chromium + 编号前缀白名单，见下） | 待实测 |
+| `npm run test:pr` | **CI 的 PR/push 子集**（chromium + 编号前缀白名单，见下） | 13 分钟 |
 | `npm run test:all` | 全部 | 17~20 分钟 |
 
 - **`test:pr` 是 CI 与本地同源的唯一子集定义**（`.github/workflows/tests.yml` 只调 `npm run test:pr`）。它靠 `--grep` 的前缀白名单选用例，**新增 spec 时必须把标题编号前缀加进去**，否则该 spec 永远不会在 PR 上跑（`D02-`/`NF-`/`D15-`/`D-11`/`D-12` 就这样漏过 40 条）。当前白名单：`NAV-|FISH-|G2048-|LT-|TRIS-0|D14-|D08-|D02-|D-1[12]|D15-|NF-|CODE-`（126 条选中 115 条；故意排除 TRIS-10~14/20/21/25/26/ERR 与 smoke 的人工项）；
@@ -87,6 +88,7 @@ dotnet run --project ../../jtjsym/jtjsym --no-launch-profile --environment Devel
 - 计时类用例（LT 秒级跳动、TRIS 难度升级）偶发抖动时，先确认 `workers` 仍为 1、`retries` 仍为 0，再排查是否并行/复用实例导致。
 - 冒烟集的 `TRIS-10`（消行）/ `TRIS-20`（游戏结束）依赖有界自动玩：`TRIS-10` 用启发式落点评估（能稳定消行），`TRIS-20` 用"只堆中间两列"的会输策略（约 20 秒堆满）。若某次不触发，先看是否 `workers` 被改成 >1；全量 `tris.spec.mjs` 覆盖更充分。
 - 当前仍有 2 处 `fixme`：`NF-05/07/08`（需生产环境）与 `TRIS-23`（需读服务端控制台），均为人工验收项，按《07》§11.3 在册。`TRIS-26`（D-04）与 `D02-4` 已分别随 C-27、H-011 修好并转为真实用例，不要再按旧的"5 处 fixme"理解。
-- **同一「数量常量」可能写在两个 spec 里**：`FISH-02` 的装饰 gif 数在 `nav_fish.spec.mjs` 与 `smoke.spec.mjs` 各有一份，改一处会让另一处**静默失配**（`test:fish` 绿、`test:smoke` 红、`test:pr` 红）。改数量类判据前先 `grep -rn` 全库。
+- **同一「数量常量」可能写在两个 spec 里**：`FISH-02` 的装饰 gif 数在 `nav_fish.spec.mjs` 与 `smoke.spec.mjs` 各有一份，改一处会让另一处**静默失配**（`test:fish` 绿、`test:smoke` 红、`test:pr` 红）。改数量类判据前先 `grep -rn` 全库。**第二例（2026-11-09，D-23）**：Tetris 面板 `.info-value` 的行数写在 `NF-01`（`code_nf.spec.mjs:134`）与 `NF-04`（`:251`）两处，加「最高分」行后两处都得由 2 改 3；**`NF-01` 只在 firefox 跑**，`test:pr`（chromium 子集）看不见它，只有 `test:nf` 才会红 —— 这类"同一条断言两份拷贝、且分属不同 project"的最容易漏。
 - **汇总读数不要 `grep ... | tail -2`**：Playwright 的汇总行顺序是 `failed` → `skipped` → `passed`，`tail -2` 正好把 `1 failed` 切掉（2026-11-08 实测把 smoke 的失败误读成「1 skipped / 5 passed」，直到跑 PR 全量才暴露）。用 `tail -3`，或直接看 `echo "exit=$?"`。
 - **木鱼状态行取数一律用 `fishCount()`，不要写文案正则**：文案改过两次（`次数: ` → `本次功德：`，C-50），17 处数字比对已改为 `fishCount(x) === N`（`helpers.mjs`，只认行尾数字）。标签本身只在两处显式断言：`FISH-01` 的 `/^本次功德：/` 前缀与 `FISH-07` 的整串锚定 `/^本次功德：105$/` —— 这两条是唯一还看着文案的断言，改动时别顺手删。浏览器内 `waitForFunction` 用不了 Node 侧 helper，改行尾后缀正则 `(?<!\d)N$`。
+- **`git checkout -- X.razor` 只还原源码，不还原 bin**：2026-11-09 实测 `bin/Debug/net8.0/jtjsym.dll` 里留着上一轮探针构建的 `best-score` / `jtjsym.tetris.best`，页面照样渲染出「最高分」行，而 `git status` 是空的 —— 任何「以页面输出为准」的实测都会测到探针行为。改过代码后一律 `dotnet build --no-incremental` 再起站；怀疑残留时用 `python -c "print(open('jtjsym/jtjsym/bin/Debug/net8.0/jtjsym.dll','rb').read().count('关键字'.encode('utf-16-le')))"` 直查 dll（.NET 字符串是 UTF-16，`grep`/`strings` 都抓不到）。
