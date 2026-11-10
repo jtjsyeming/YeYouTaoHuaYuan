@@ -1,6 +1,8 @@
 ﻿@page "/tetris"
 @using Microsoft.FluentUI.AspNetCore.Components
+@using System.Text.Json
 @using System.Timers
+@using jtjsym.Services
 @inject IJSRuntime JS
 @implements IAsyncDisposable
 
@@ -700,8 +702,9 @@
 </style>
 
 @code {
-    private const int GRID_WIDTH = 10;
-    private const int GRID_HEIGHT = 20;
+    // 尺寸与地板常量都住在 Services/TetrisSession.cs（快照校验要用，且那里可单测）
+    private const int GRID_WIDTH = TetrisSession.GridWidth;
+    private const int GRID_HEIGHT = TetrisSession.GridHeight;
     private const int INITIAL_SPEED = 1000;
     private const int ACCELERATION = 50;
     private const int SOFT_DROP_INTERVAL = 50;
@@ -711,6 +714,11 @@
     private IJSObjectReference? keyModule;
     private DotNetObjectReference<Tetris>? keyRef;
     private int keyRegId;
+
+    // 后台自动暂停（D-24a）：独立的 visibility 模块句柄（详见 wwwroot/js/tetrissession.js）。
+    // 不与键盘模块合并：键盘那边有"removeListeners + currentId 抢占"的复杂契约，visibility 是另一条生命周期。
+    private IJSObjectReference? visModule;
+    private DotNetObjectReference<Tetris>? visRef;
 
     private readonly string[] BLOCK_COLORS = new string[]
     {
@@ -747,6 +755,16 @@
     private bool isBestReading = false;
     private bool isBestLoaded = false;
 
+    // ── 对局会话保持（D-24b）：sessionStorage（标签页会话级，关标签即清），与 best 的 localStorage 分工 ──
+    // 与 2048 的 jtjsym.g2048.session 同命名空间、同"结构闸 + 内容闸 + 不信任快照"口径；
+    // 刻意**不抽公共快照工具**：两边载荷形状（4×4 扁平 vs 20×10 + 方块矩阵 + 三件计分）差异大，
+    // 抽出来只会得到一层 if/else 转发，收益为负。
+    private const string SessionKey = "jtjsym.tetris.session";
+
+    /// <summary>写闸门：恢复流程开始前恒 false —— 预渲染实例与"恢复还没跑完"期间一律不写，
+    /// 否则一次空局 / 半恢复态就会把存档冲掉（2048 的 isSessionReady 同语义）。</summary>
+    private bool isSessionReady;
+
     private int difficultyLevel = 1;
     private int speed = INITIAL_SPEED;
     private bool isGameOver = false;
@@ -759,8 +777,11 @@
 
     protected override void OnInitialized()
     {
+        // D-24b：只备棋盘，**不开局、不启 timer**。
+        // 开局与计时器必须等到 firstRender（OnAfterRenderAsync）—— 只有那里才知道
+        // sessionStorage 里有没有可恢复的对局。附带好处：预渲染实例彻底不碰 timer
+        // （此前 StartGame 在预渲染里也会 NewPiece + StartTimers，两个实例各起一套表）。
         InitializeGame();
-        StartGame();
     }
 
     private void InitializeGame()
@@ -970,6 +991,15 @@
             LockPiece();
             ClearRows();
             NewPiece();
+            // 稳定点（D-24b / D-25）：一块锁定、消行结算、新块已出生 —— 棋盘与分数全部固化，
+            // 也是"当前块位于出生位（合法、确定）"的唯一时刻，快照只有这时才有意义。
+            // NewPiece() 可能已触发 GameOver()（出生位即碰撞）：那时快照与 best 都由 GameOver 收口，
+            // 这里再写一次会把"已结束的局"存成可恢复档 —— 正是 D24-2 的判红点。
+            if (!isGameOver)
+            {
+                _ = SaveSessionAsync();
+                _ = PersistBestAsync();   // D-25：把"只在消行点固化"扩展为"每个锁定点固化"
+            }
         }
         StateHasChanged();
     }
@@ -982,7 +1012,7 @@
         {
             y++;
             score += 1;
-            UpdateBestScore();   // 内存即时；**不落盘**（D-23：落盘只在消行/结束/重玩）
+            UpdateBestScore();   // 内存即时；**不逐分落盘**（D-25：落盘在锁定点，50ms 一拍逐分写 = 每秒 ~20 条 interop）
             StateHasChanged();
         }
         else
@@ -991,6 +1021,12 @@
             ClearRows();
             NewPiece();
             StopSoftDrop();
+            // 稳定点，同 DropPiece：先停软降（它会把 gameTimer 重新拉起来），再落盘
+            if (!isGameOver)
+            {
+                _ = SaveSessionAsync();
+                _ = PersistBestAsync();
+            }
             StateHasChanged();
         }
     }
@@ -1035,24 +1071,9 @@
     {
         if (isDisposed) return true;
 
-        for (int row = 0; row < piece.Length; row++)
-        {
-            for (int col = 0; col < piece[row].Length; col++)
-            {
-                if (piece[row][col] == 1)
-                {
-                    int newX = offX + col;
-                    int newY = offY + row;
-
-                    if (newX < 0 || newX >= GRID_WIDTH || newY >= GRID_HEIGHT)
-                        return true;
-
-                    if (newY >= 0 && gameGrid[newY][newX] > 0)
-                        return true;
-                }
-            }
-        }
-        return false;
+        // 实现住在 Services/TetrisSession.cs：恢复快照的"出生位碰撞"闸要用同一套判定，
+        // 两处各写一份必然漂移（那正是 P-019 把 IsValidArchive 迁出组件的理由）。
+        return TetrisSession.Collides(gameGrid, piece, offX, offY);
     }
 
     private void LockPiece()
@@ -1106,9 +1127,9 @@
                 _ => 100 * rowsCleared
             };
 
-            // 落盘点之一：消行是本作唯一的大额加分，顺带把软降攒下的零头一起固化
+            // 只更内存；落盘改由锁定点统一收口（D-25）。这里保留显式调用，
+            // 是为了"消行奖励立刻反映到最高分"这一点不依赖调用顺序（ClearRows 之后必然还会走到锁定点的落盘）。
             UpdateBestScore();
-            _ = PersistBestAsync();
         }
     }
 
@@ -1123,8 +1144,9 @@
     }
 
     /// <summary>
-    /// 落盘点只有三处：消行后 / GameOver / 重玩。软降的 +1 在"固化"意义上是延时的，
-    /// UI 值始终即时（实测：按住 1 秒 = score 16、best 16、localStorage 仍是 null）。
+    /// 落盘点（D-25 起）：每个**锁定点**（DropPiece / SoftDropPiece 的锁定分支）+ GameOver + 重玩 + DisposeAsync。
+    /// 软降的 +1 在"固化"意义上是延时的 —— 内存与 UI 即时，落盘只发生在上面这些点
+    /// （实测 D22-4 / D24-7：按住 ↓ 500ms = score 9、best 9、localStorage 仍是 null —— 那时方块还在半空，没到锁定点）。
     /// </summary>
     private async Task PersistBestAsync()
     {
@@ -1136,6 +1158,82 @@
         catch (JSException) { }              // 隐私模式 / 配额超限
         catch (JSDisconnectedException) { }  // 切页 / 断线
         catch (ObjectDisposedException) { }  // 电路已释放（与 2048 的 WriteBestAsync 同口径）
+    }
+
+    // ───────────────────────── 对局会话保持（D-24b）─────────────────────────
+
+    /// <summary>把当前对局拍成快照。对局结束 / 方块未出生时返回 null —— 这两种状态没有"可恢复"的语义。</summary>
+    private TetrisSnapshot? BuildSnapshot()
+    {
+        if (isGameOver || currentPiece is null || nextPiece is null) return null;
+
+        return new TetrisSnapshot
+        {
+            V = TetrisSnapshot.CurrentVersion,
+            Grid = gameGrid,          // 不克隆：下面的序列化在第一个 await 之前同步完成，晚到的写入改不动已生成的 JSON
+            Piece = currentPiece,
+            PieceIndex = currentIndex,
+            X = x,
+            Y = y,
+            Next = nextPiece,
+            NextIndex = nextIndex,
+            Score = score,
+            Level = difficultyLevel,
+            Speed = speed
+        };
+    }
+
+    /// <summary>落快照（fire-and-forget，调用点用 <c>_ =</c>）。与 best 各自独立 try，互不连坐。</summary>
+    private async Task SaveSessionAsync()
+    {
+        if (!isSessionReady) return;      // ★ 预渲染 / 恢复完成前绝不写（否则空局冲掉存档）
+
+        var snap = BuildSnapshot();
+        if (snap is null) return;
+
+        try
+        {
+            var json = JsonSerializer.Serialize(snap);
+            await JS.InvokeVoidAsync("sessionStorage.setItem", SessionKey, json);
+        }
+        catch (JSException) { }              // 隐私模式 / 配额超限：静默，游戏零降级（只是不保持）
+        catch (JSDisconnectedException) { }  // 切页 / 断线
+        catch (ObjectDisposedException) { }
+    }
+
+    /// <summary>清快照（对局结束 / 重玩）。失败静默：坏档在恢复侧还有一整道闸兜底。</summary>
+    private async Task RemoveSessionAsync()
+    {
+        try
+        {
+            await JS.InvokeVoidAsync("sessionStorage.removeItem", SessionKey);
+        }
+        catch (JSException) { }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+    }
+
+    /// <summary>
+    /// 覆盖式恢复。<b>只在 <see cref="TetrisSession.IsValid"/> 通过后调用</b> —— 这里不做任何校验，
+    /// 也不重算"是否结束"（Tetris 不需要：结束态的档不存在）。
+    /// 恢复后一律 <c>isPaused = true</c>：一切"回来"都是暂停待继续，用户点「继续游戏」再动。
+    /// </summary>
+    private void ApplySnapshot(TetrisSnapshot s)
+    {
+        gameGrid = s.Grid!;
+        currentPiece = s.Piece!;
+        currentIndex = s.PieceIndex;
+        nextPiece = s.Next!;
+        nextIndex = s.NextIndex;
+        x = s.X;
+        y = s.Y;
+        score = s.Score;
+        difficultyLevel = s.Level;
+        speed = s.Speed;
+
+        isGameOver = false;
+        isSoftDropping = false;
+        isPaused = true;
     }
 
     private void IncreaseDifficulty()
@@ -1152,6 +1250,8 @@
         {
             gameTimer.Interval = speed;
         }
+        // 等级与速度都变了 ⇒ 快照必须跟上，否则回来时用旧 speed 继续（D-24b §2.2 的附加落点）
+        _ = SaveSessionAsync();
         StateHasChanged();
     }
 
@@ -1172,6 +1272,8 @@
         gameTimer?.Stop();
         difficultyTimer?.Stop();   // 新增（H-001）：否则暂停期间照常 IncreaseDifficulty()
         StopSoftDrop();
+        // 暂停点也落一次快照：主动暂停后切页/锁屏，回来看到的是同一个暂停局面（D-24b §2.2）
+        _ = SaveSessionAsync();
         StateHasChanged();
     }
 
@@ -1191,9 +1293,11 @@
     private void RestartGame()
     {
         StopTimers();
-        // 落盘点之三：必须排在 InitializeGame() 之前 —— 它会 score = 0。
+        // 落盘点：必须排在 InitializeGame() 之前 —— 它会 score = 0。
         // （bestScore 本身不参与复位，这里提前只是让"写盘时机早于清零"成为显式事实，别让人以为依赖它。）
         _ = PersistBestAsync();
+        // 重玩 = 弃掉旧局，快照必须清（D-24b §2.2）：否则切页回来会把刚弃掉的局恢复出来（D24-3）
+        _ = RemoveSessionAsync();
         InitializeGame();
         currentPiece = null;
         nextPiece = null;
@@ -1207,7 +1311,8 @@
 
         isGameOver = true;
         StopTimers();
-        _ = PersistBestAsync();   // 落盘点之二：遮罩由本 circuit 渲染，写盘可达
+        _ = PersistBestAsync();    // 落盘点：遮罩由本 circuit 渲染，写盘可达
+        _ = RemoveSessionAsync();  // 结束态没有"可恢复"的语义（D24-2）
         StateHasChanged();
     }
 
@@ -1246,7 +1351,67 @@
             StateHasChanged();
         }
 
-        // ② 键盘（原逻辑不动）
+        // ② 恢复对局 or 开新局（D-24b）。顺序铁律：**必须在读最高分之后、键盘之前**。
+        //    在最高分之后是因为 best 与对局态无关却又不能互相牵连；在键盘之前是因为
+        //    键盘只负责输入，不该决定"这一局从哪来"。
+        //    与 2048 的差别：那边 OnInitialized 就开了新局、恢复是"覆盖"；Tetris 这边
+        //    OnInitialized 只备空盘，**开局本身在这里才发生** —— 否则预渲染/首帧会先亮一局新棋。
+        if (!isSessionReady)
+        {
+            isSessionReady = true;   // 先开闸：即使下面全失败，也不能永久不写
+            var restored = false;
+            try
+            {
+                var json = await JS.InvokeAsync<string?>("sessionStorage.getItem", SessionKey);
+                var snap = json is null ? null : JsonSerializer.Deserialize<TetrisSnapshot>(json);
+
+                // 结构闸 + 内容闸 + 出生位碰撞全部在 TetrisSession.IsValid（纯函数，可单测）。
+                // 这里绝不能写成 `snap is { V: 1 } && snap.Grid.Length == …`：Grid 为 null 时
+                // NRE 不在下面的 catch 列表里，冒泡出 OnAfterRenderAsync 会被判为未处理异常 → 直接断 circuit。
+                if (snap is not null && TetrisSession.IsValid(snap))
+                {
+                    ApplySnapshot(snap);      // 内含 isPaused = true
+                    StartTimers();            // 表跑着，但 isPaused 时 OnGameTimerElapsed / IncreaseDifficulty 都不动作
+                    restored = true;
+                }
+                else if (json is not null)
+                {
+                    // 坏档立刻清掉，避免每次进页面重复拒绝（2048 同口径）；棋盘保持 OnInitialized 的空盘
+                    await JS.InvokeVoidAsync("sessionStorage.removeItem", SessionKey);
+                }
+                // 无档（json is null）→ 保持空盘，下面 finally 之外的开局分支接管
+            }
+            catch (JSException) { }          // 隐私模式 / 存储被禁
+            catch (JsonException) { }        // 半截 JSON
+            catch (JSDisconnectedException) { }
+            catch (ObjectDisposedException) { }
+
+            if (!restored) StartGame();      // 无档 / 坏档 / 读失败 → 新开一局
+            if (!isDisposed) StateHasChanged();
+        }
+
+        // ③ 后台自动暂停（D-24a）：只在 hidden 时通知，回前台由用户按「继续游戏」
+        if (visModule is null)
+        {
+            visRef = DotNetObjectReference.Create(this);
+            visModule = await JS.InvokeAsync<IJSObjectReference>("import", "./js/tetrissession.js");
+
+            // 与键盘模块同款复检：import 期间组件可能已被销毁
+            if (isDisposed)
+            {
+                try { await visModule.DisposeAsync(); }
+                catch (JSDisconnectedException) { } catch (ObjectDisposedException) { } catch (JSException) { }
+                visModule = null;
+                visRef.Dispose();
+                visRef = null;
+            }
+            else
+            {
+                await visModule.InvokeVoidAsync("registerVisibility", visRef);
+            }
+        }
+
+        // ④ 键盘
         if (keyModule is not null) return;
 
         keyRef = DotNetObjectReference.Create(this);
@@ -1297,12 +1462,58 @@
             await InvokeAsync(StopSoftDrop);
     }
 
+    /// <summary>
+    /// 页面被切到后台（D-24a）。由 <c>tetrissession.js</c> 的 visibilitychange 触发。
+    /// <para>为什么必须做：三个 Timer 都在**服务端**跑，手机切后台后方块继续下落、难度继续升级 ——
+    /// 回来时往往已经 GameOver，而结束态的清档让"恢复快照"也无从谈起。这是"手机划一下回来局就没了"的另一半根因。</para>
+    /// <para>不监听 visible：回前台不自动续跑（与恢复态一致 —— 一切"回来"都是暂停待继续）。</para>
+    /// </summary>
+    [JSInvokable]
+    public async Task OnPageHidden()
+    {
+        await InvokeAsync(() =>
+        {
+            if (isDisposed || isPaused || isGameOver) return;   // 已暂停/已结束：幂等，不必再走一遍
+            PauseGame();
+        });
+    }
+
     public async ValueTask DisposeAsync()
     {
         Dispose();   // ★ 必须在首行：先置 isDisposed + 停 3 个 Timer（与 2048 的 disposed = true 对称）。
                      //   留在末尾时，两个 await 之间 isDisposed 仍是 false，Timer 照常回调 DropPiece/
                      //   SoftDropPiece/IncreaseDifficulty，连接已死时可能拖到秒级。
                      //   注意：不要顺手把 keyRegId = 0 也提到前面 —— unregister 传入旧 id 会短路，监听卸不掉。
+
+        // D-24b / D-25 的**尽力而为**收口：站内 NavLink 切页、浏览器返回这类优雅导航路径上
+        // interop 往往还活着，能多保住"当前块在下落途中"的进度与软降零头；硬关页时这里多半抛异常，
+        // 全部静默（主防线是锁定点与暂停点的落盘，不依赖这一段）。
+        _ = PersistBestAsync();
+        _ = SaveSessionAsync();
+
+        // 先卸 visibility：它没有"传入 id"的契约，卸载是幂等的，失败也不影响下面键盘的清理
+        if (visModule is not null)
+        {
+            try
+            {
+                await visModule.InvokeVoidAsync("unregisterVisibility");
+            }
+            catch (JSDisconnectedException) { }
+            catch (ObjectDisposedException) { }
+            catch (JSException) { }
+
+            try
+            {
+                await visModule.DisposeAsync();
+            }
+            catch (JSDisconnectedException) { }
+            catch (ObjectDisposedException) { }
+            catch (JSException) { }
+            visModule = null;
+        }
+        visRef?.Dispose();
+        visRef = null;
+
         if (keyModule is not null)
         {
             // 两发 interop 各自 try：若 unregister 抛出，不能连带跳过 DisposeAsync ——

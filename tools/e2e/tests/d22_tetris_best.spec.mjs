@@ -88,28 +88,47 @@ test.describe('D23 俄罗斯方块最高分', () => {
       `采样序列=${JSON.stringify(seq)}（期望不出现 最高分:0，末项为 最高分:999）`);
   });
 
-  test('D22-4 内存即时 + 未落盘：软降 1 秒 → best 跟 score，localStorage 仍空', async ({ page }) => {
+  // ⚠ 判据被 D-25 收窄（2026-11-10）：原来按住 1 秒再读，"1 秒 ≈ 20 行"足以让方块落地，
+  //    而 D-25 把落盘点从"消行后"扩展到了"每个锁定点"—— 照旧写法会读到已落盘的 best 而假红。
+  //    现在**按住期间取样**（500ms = 10 行，方块一定还在半空）：验证的是"软降的 +1 不逐分落盘"这条契约本身。
+  test('D22-4 软降只更内存：按住 ↓ 期间 best 跟 score，localStorage 仍空', async ({ page }) => {
     await open(page, '/tetris', 1500);
-    await holdSoftDrop(page, 1000);
-    await sleep(300); // 等 softDropTimer 停稳，避免读到半程分数
-    const s = await snapshot(page);
-    // 不写死期望分：50ms 一拍、受落块碰撞停表影响，1 秒约 16~20 分（《31》§1.3 实测 16）
+    const box = await page.locator('.down-btn').boundingBox();
+    await page.mouse.move(box.x + box.width / 2, box.y + box.height / 2);
+    await page.mouse.down();
+    await sleep(500);
+    const s = await snapshot(page);      // 一次 DOM 快照把 score / best / ls 原子读完（分三次读会被 50ms 一拍的软降 timer 撕开）
+    await page.mouse.up();
+    await sleep(200);
+    // 不写死期望分：50ms 一拍、受落块碰撞停表影响，500ms 约 10 分
     check(
       'D22-4',
       s.score > 0 && s.best === s.score && s.ls === null,
-      `score=${s.score} best=${s.best} localStorage=${s.ls === null ? 'null' : JSON.stringify(s.ls)}（期望 score>0、best=score、ls 仍为 null：软降只更内存不落盘）`,
+      `score=${s.score} best=${s.best} localStorage=${s.ls === null ? 'null' : JSON.stringify(s.ls)}（期望 score>0、best=score、ls 仍为 null：软降只更内存，落盘只发生在锁定点）`,
     );
   });
 
+  // ⚠ 判据被 D-25 改了两次（2026-11-10 全量跑暴露），两点都别改回去：
+  //   ① 按住时长 1000ms → **500ms**。D-25 把落盘点从"消行后"扩到"每个锁定点"，按住 1 秒（≈20 行）
+  //      足以让方块落地锁定，那时 best 早已由锁定点写进 localStorage，"重玩自己会落盘"就成了恒真。
+  //      500ms ≈ 10 行，方块一定还在半空 ⇒ 盘上仍是 null，后面那一发写盘只能由 RestartGame 提供。
+  //   ② 清零判据必须 expect.poll。Blazor Server 的 click 在服务端处理，DOM 回流晚于 click() resolve。
+  //      旧写法把 localStorage 的 poll 放在最前面（D-25 之前那是唯一的延时来源）；可 D-25 之后
+  //      它常常"值早就在盘上"→ 立刻返回、零延时余量，紧接着的 snapshot 就读到点击前的 DOM。
+  //      2026-11-10 `test:pr` 实测：孤立跑 test:d22 绿、全量跑红（读到 score=17），
+  //      但失败截图的可访问性快照里分数已是 0 —— 假红，不是回归。
   test('D22-5 重玩固化：点重新开始 → 分数归零、最高分保持且已落盘', async ({ page }) => {
     await open(page, '/tetris', 1500);
-    await holdSoftDrop(page, 1000);
-    await sleep(300);
+    await holdSoftDrop(page, 500);
+    await sleep(250);
     const before = await readBest(page);
-    check('D22-5-前置', before > 0, `重玩前最高分=${before}（软降攒分后应 > 0）`);
+    const lsBefore = await stored(page);
+    check('D22-5-前置', before > 0 && lsBefore === null,
+      `重玩前 最高分=${before}、localStorage=${lsBefore === null ? 'null' : JSON.stringify(lsBefore)}（期望 best>0 且盘上仍为空：方块还在半空，未到锁定点）`);
 
     await page.locator('.restart-btn').click();
-    // PersistBestAsync 是 fire-and-forget：点完立即读会拿到 null。必须 poll。
+
+    await expect.poll(async () => (await snapshot(page)).score, { timeout: 5000 }).toBe(0);
     await expect.poll(() => stored(page), { timeout: 5000 }).toBe(String(before));
 
     const s = await snapshot(page);

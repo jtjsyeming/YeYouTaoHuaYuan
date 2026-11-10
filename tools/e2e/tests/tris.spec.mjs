@@ -179,18 +179,21 @@ test.describe('TRIS 俄罗斯方块', () => {
     );
   });
 
-  test('TRIS-22 游戏进行中刷新 → 重置且无 ObjectDisposedException', async ({ page }) => {
+  // ⚠ 判据被 D-24b 改写过（2026-11-10）：原来断言"刷新即重置（分数 0 / 难度 1）"，
+  //    但那正是用户报的缺陷 —— 玩到一半刷新/切页就丢局。现在 sessionStorage 有档就恢复，
+  //    故这里验的是"恢复为暂停态、盘面还在、且刷新过程不炸 Timer"。重置语义改由 D24-3（重玩后清档）看守。
+  test('TRIS-22 游戏进行中刷新 → 恢复为暂停态且无 ObjectDisposedException', async ({ page }) => {
     const errs = trackErrors(page);
     await open(page, '/tetris', 1800);
-    await holdSoftDrop(page, 1200);
+    await holdSoftDrop(page, 1200);          // 至少锁一块：快照只在锁定点产生
     await page.reload({ waitUntil: 'domcontentloaded' });
     await open(page, '/tetris', 1800);
     const st = await readTetris(page);
     const timerErrs = errs.filter(e => /ObjectDisposed|Timer/i.test(e));
     check(
       'TRIS-22',
-      st.difficulty === '1' && st.score === '0' && !st.gameOver && timerErrs.length === 0,
-      `重置后 难度=${st.difficulty} 分数=${st.score}；Timer 类异常=${timerErrs.length}，浏览器异常总数=${errs.length}`,
+      st.paused && emptyCells(st) < 200 && !st.gameOver && timerErrs.length === 0,
+      `刷新后 暂停=${st.paused}（恢复一律暂停态）空白格=${emptyCells(st)}/200（<200 说明锁定块还在）结束=${st.gameOver}；Timer 类异常=${timerErrs.length}，浏览器异常总数=${errs.length}`,
     );
   });
 

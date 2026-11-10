@@ -53,6 +53,20 @@ const readLayout = page =>
   });
 
 test.describe('D-14 移动端俄罗斯方块右侧布局', () => {
+  // D-24b 起 /tetris 会把对局存进 sessionStorage，**同一 context 里的第二次导航**就会恢复成
+  // "暂停态"（面板多一颗「已暂停 / 继续游戏」，手机档 +46px）。D14-1 / D14-7 / D14-10 / D14-10d
+  // 都在一个 test 里连续 open 多个视口 —— 不隔离的话第 2 档以后测的是暂停态布局，判据会随执行顺序漂移。
+  // 暂停态本身由 D14-6 专门看守，故这里每个文档加载前清一次，保证测的是"运行中"的规范态。
+  test.beforeEach(async ({ page }) => {
+    await page.addInitScript(() => {
+      try {
+        sessionStorage.removeItem('jtjsym.tetris.session');
+      } catch {
+        /* 隐私模式：无 sessionStorage，本来就是"不保持" */
+      }
+    });
+  });
+
   test('D14-1/D14-2 七档手机视口：无横向溢出、无纵向滚动', async ({ page }) => {
     test.setTimeout(150_000);
     const rows = [];

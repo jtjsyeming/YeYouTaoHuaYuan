@@ -49,11 +49,12 @@ dotnet run --project ../../jtjsym/jtjsym --no-launch-profile --environment Devel
 | `npm run test:d02` | D02 键盘操作 + 2048 数值配色（D02-4 为 `fixme`） | 1.5 分钟 |
 | `npm run test:d14` | D14 移动端俄罗斯方块两栏布局（七档视口 + 桌面零变化回归） | 3~4 分钟 |
 | `npm run test:d22` | D-23 俄罗斯方块最高分（预置读 / 首屏占位 / 不闪 0 / 未落盘 / 重玩固化 / 损坏值 / 跨页隔离） | 20 秒 |
+| `npm run test:d24` | D-24 对局会话保持 + 后台自动暂停 / D-25 最高分落盘加固（切页往返 / 结束清档 / 重玩清档 / 8 种坏档 / 恢复后继续 / 切后台 / 软降零头） | 55 秒 |
 | `npm run test:fast` | nav + lt + g2048 + code_nf（不含 tris 长时项） | 6 分钟 |
 | `npm run test:pr` | **CI 的 PR/push 子集**（chromium + 编号前缀白名单，见下） | 13 分钟 |
 | `npm run test:all` | 全部 | 17~20 分钟 |
 
-- **`test:pr` 是 CI 与本地同源的唯一子集定义**（`.github/workflows/tests.yml` 只调 `npm run test:pr`）。它靠 `--grep` 的前缀白名单选用例，**新增 spec 时必须把标题编号前缀加进去**，否则该 spec 永远不会在 PR 上跑（`D02-`/`NF-`/`D15-`/`D-11`/`D-12` 就这样漏过 40 条）。当前白名单：`NAV-|FISH-|G2048-|LT-|TRIS-0|D14-|D08-|D02-|D-1[12]|D15-|NF-|CODE-`（126 条选中 115 条；故意排除 TRIS-10~14/20/21/25/26/ERR 与 smoke 的人工项）；
+- **`test:pr` 是 CI 与本地同源的唯一子集定义**（`.github/workflows/tests.yml` 只调 `npm run test:pr`）。它靠 `--grep` 的前缀白名单选用例，**新增 spec 时必须把标题编号前缀加进去**，否则该 spec 永远不会在 PR 上跑（`D02-`/`NF-`/`D15-`/`D-11`/`D-12` 就这样漏过 40 条）。当前白名单：`NAV-|FISH-|G2048-|LT-|TRIS-0|D14-|D08-|D02-|D-1[12]|D15-|NF-|CODE-|D22-|D24-`（**2026-11-10 实测：130 条选中 123 条通过 / 2 跳过 / 0 失败**；故意排除 TRIS-10~14/20/21/25/26/ERR 与 smoke 的人工项）；
 - 换端口：`BASE_URL=http://localhost:14099 npm run test:lt`；
 - 按用例编号过滤依赖"编号写在 `test()` 标题首段"的约定，例如 `npx playwright test --grep "LT-11"`；
 - **`trace` 默认关闭**（见 §6），失败时 `test-results/` 里只有失败截图；要逐帧复盘就临时加 `--trace on`；
@@ -92,3 +93,7 @@ dotnet run --project ../../jtjsym/jtjsym --no-launch-profile --environment Devel
 - **汇总读数不要 `grep ... | tail -2`**：Playwright 的汇总行顺序是 `failed` → `skipped` → `passed`，`tail -2` 正好把 `1 failed` 切掉（2026-11-08 实测把 smoke 的失败误读成「1 skipped / 5 passed」，直到跑 PR 全量才暴露）。用 `tail -3`，或直接看 `echo "exit=$?"`。
 - **木鱼状态行取数一律用 `fishCount()`，不要写文案正则**：文案改过两次（`次数: ` → `本次功德：`，C-50），17 处数字比对已改为 `fishCount(x) === N`（`helpers.mjs`，只认行尾数字）。标签本身只在两处显式断言：`FISH-01` 的 `/^本次功德：/` 前缀与 `FISH-07` 的整串锚定 `/^本次功德：105$/` —— 这两条是唯一还看着文案的断言，改动时别顺手删。浏览器内 `waitForFunction` 用不了 Node 侧 helper，改行尾后缀正则 `(?<!\d)N$`。
 - **`git checkout -- X.razor` 只还原源码，不还原 bin**：2026-11-09 实测 `bin/Debug/net8.0/jtjsym.dll` 里留着上一轮探针构建的 `best-score` / `jtjsym.tetris.best`，页面照样渲染出「最高分」行，而 `git status` 是空的 —— 任何「以页面输出为准」的实测都会测到探针行为。改过代码后一律 `dotnet build --no-incremental` 再起站；怀疑残留时用 `python -c "print(open('jtjsym/jtjsym/bin/Debug/net8.0/jtjsym.dll','rb').read().count('关键字'.encode('utf-16-le')))"` 直查 dll（.NET 字符串是 UTF-16，`grep`/`strings` 都抓不到）。
+- **同一个 test 里连续 `open()` 多个视口，等于让"上一次的对局"污染下一次**（2026-11-10，D-24b）：`/tetris` 从 D-24b 起会把对局写 `sessionStorage`，第二个 `open()` 就恢复成**暂停态**（面板多一颗按钮，手机档 +46px）。`d14_mobile_layout.spec.mjs` 因此加了 `beforeEach` 的 `addInitScript` 清 `jtjsym.tetris.session` —— 布局类断言要的永远是"运行中"的规范态，暂停态另有 `D14-6` 专门看守。**新增任何"一个 test 里反复导航"的用例前，先想清楚上一次的浏览器侧存储会不会被下一次读到。**
+- **给俄罗斯方块造"顶到天花板"的存档时，别把行填满**：19 行全满会在锁定那一刻被 `ClearRows` 一次清掉（`_ => 100 * rowsCleared` = **1900 分**），棋盘瞬间清空，于是永远到不了 `GameOver`。D24-2 首版就是这么红的（分数 1900 / 难度 1 / 无遮罩），正确姿势是每行留一格空（171 格）。
+- **`click()` 返回 ≠ DOM 已更新（Blazor Server 必踩）**：点击事件要经 SignalR 到服务端、处理完再回传 render batch。`locator.click()` 只保证事件在**浏览器侧**已派发，紧接着读 DOM 拿到的是**点击前**的样子。平时不炸只是因为后面恰好有 `expect.poll` / `sleep` 顶出几十毫秒余量。**2026-11-10 实测**：`D22-5` 把「点重开 → 分数归零」写成点完直读，孤立跑 `test:d22` 绿（7/7）、全量 `test:pr` 红（读到 `score=17`），而失败截图的可访问性快照里分数已是 `0` —— 典型假红。**凡是"点一下 → 断言画面变了"的判据，一律 `expect.poll` 读，不要 `sleep` 也不要点完直读。**
+- **别指望 `localStorage` 的 poll 顺便充当延时**：`expect.poll(() => stored(page))` 在"值早就在盘上"时会**立刻**返回，一个毫秒都不等。D-25 把 best 的落盘点扩到每个锁定点之后，`D22-5` 里那发 localStorage poll 就从"延时来源"退化成"瞬间通过"，于是紧跟着的 DOM 读取直接吃到上面那条坑。判据顺序上，**先 poll DOM，再 poll 存储**。
