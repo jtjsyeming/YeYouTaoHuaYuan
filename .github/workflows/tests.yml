@@ -12,7 +12,8 @@
 #   2. 不要单独 `dotnet build -c Release` —— webServer 的 `dotnet run` 自己会建（Debug），
 #      Release 那步纯属浪费，而且与 webServer 实际加载的产物不是同一份；
 #   3. 不要去掉 webServer 的 `--environment Development` —— 缺了它 Fluent 静态资源 404，
-#      所有尺寸/溢出断言都会得到假结果（假绿）。
+#      所有尺寸/溢出断言都会得到假结果（假绿）。另见 e2e job 级 env 的 ASPNETCORE_/DOTNET_
+#      ENVIRONMENT 双保险（《32》v3.0：CI 上 flag 曾未生效，环境变量是主防线）。
 #
 # 首次真跑前无法本地自证的两条（登记在《26》§4.3 第 5、7 条）：CI 首跑绿、故意坏断言能红。
 
@@ -47,6 +48,15 @@ jobs:
   e2e:
     runs-on: ubuntu-latest
     timeout-minutes: 90
+    # 环境变量兜底（诊断《32》v3.0 §2：2026-11-11 run 42 红，失败指纹 = Production：
+    # jtjsym.styles.css 与 Fluent *.razor.js 全 404 → StaticWebAssets 关闭 → 组件不升级 +
+    # 无样式 + razor.js 导入失败打死 circuit（LT 冻结）。本地 SDK 8.0.404 实测 `--environment`
+    # 生效，CI 上却不生效（具体 SDK 差异待自检输出确认）。环境变量由 WebApplicationBuilder
+    # 直接读取，**不依赖 dotnet run 的 flag 解析**，是最稳的一条路；flag 保留作双保险。
+    # job 级 env 会传播到 npm → playwright → webServer 子进程（dotnet run）。
+    env:
+      ASPNETCORE_ENVIRONMENT: Development
+      DOTNET_ENVIRONMENT: Development
     steps:
       - uses: actions/checkout@v4
 
@@ -119,13 +129,27 @@ jobs:
           grep -m1 "Hosting environment" /tmp/site.log || echo "（日志里没有这一行，见 /tmp/site.log）"
 
           echo "--- 静态资源（期望全 200）---"
+          fail=0
           for u in \
             "_content/Microsoft.Fast.Components.FluentUI/Microsoft.Fast.Components.FluentUI.lib.module.js" \
             "_content/Microsoft.Fast.Components.FluentUI/Components/Button/FluentButton.razor.js" \
-            "jtjsym.styles.css" \
-            "_framework/blazor.server.js" ; do
-            printf '%-100s %s\n' "$u" "$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:14074/$u")"
+            "jtjsym.styles.css" ; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:14074/$u")
+            printf '%-100s %s\n' "$u" "$code"
+            if [ "$code" != "200" ]; then fail=1; fi
           done
+          # 对照项：框架自带，任何环境都 200；它红说明站点本身异常（与资源缺失区分开）
+          printf '%-100s %s\n' "_framework/blazor.server.js" \
+            "$(curl -s -o /dev/null -w '%{http_code}' 'http://localhost:14074/_framework/blazor.server.js')"
+
+          # v3.0 加固（诊断《32》§4）：环境不对就**当场失败**，绝不让 Production 站点
+          # 混进测试阶段烧 15 分钟、产出几十条与产品无关的假红（2026-11-11 run 的教训）。
+          # 唯一放行条件：站点起不来（那是另一条报错，上面已 tail 日志）。
+          if [ "$fail" != "0" ]; then
+            echo "::error::静态资源有 404 —— 站点没跑在 Development（见上表）。先修环境，别动断言。"
+            tail -40 /tmp/site.log
+            exit 1
+          fi
 
       # PR/push：chromium 关键回归子集。**必须带 --project=chromium**，否则 firefox 项目也会被选中。
       # 子集定义已下沉到 tools/e2e/package.json 的 `test:pr`（P-027）：CI 与本地同源，
