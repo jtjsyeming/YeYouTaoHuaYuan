@@ -71,6 +71,62 @@ jobs:
           npx playwright install --with-deps chromium
           ${{ (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && 'firefox' || '' }}
 
+      # ────────────────────────────────────────────────────────────────────────────
+      # 自检：环境与静态资源可达性（诊断《32》v2.0 §4.D，本轮最重要的一条）
+      #
+      # 为什么值得单起一步、单起一次站：
+      #   ① 首跑 37 红（2026-11-08 run#2，118 用例）的最强假设是"CI 上的站点没有 Development
+      #      静态资源"——`_content/**` 与 `jtjsym.styles.css` 全 404 → Fluent 自定义元素不升级、
+      #      scoped CSS 不生效，且 `*.razor.js` 导入失败会直接把 circuit 打死（LT 走秒冻结）。
+      #      但 webServer 的 `stdout: 'ignore'` 把"环境是 Development 还是 Production"吞掉了，
+      #      只能靠下一轮的 console 文本反推。这一步用 5 秒把答案打出来。
+      #   ② 因为 `reuseExistingServer: true`，下面 Playwright 会**复用**这个实例 —— 顺带消灭了
+      #      "到底谁起站、日志去哪了"这个问题。
+      #   ③ 判读表（§4.D 原文，三条都对照过本仓库的实际资源路径）：
+      #        全 200      → 静态资源无问题，W1/W2 排除，转查"资源在但组件 JS 仍失败"
+      #        任一 404    → 实锤 M1，且当场知道是哪个 URL；**先修环境，别动任何断言**
+      #        站点起不来  → CI 上 `dotnet run` 与 webServer 行为不一致，看下面 tail 出来的日志
+      #
+      # ⚠ URL 清单与文档的偏差：文档写的 `js/web-components-v2.6.1.min.js` 在 Microsoft.Fast.Components.FluentUI
+      #   **3.8.0** 里不存在（该包的静态资源只有 css / bundle.scp.css / lib.module.js 三件 + 组件级 razor.js），
+      #   照抄会让自检永远报一个假 404、把结论误导向"实锤 M1"。这里换成核对过 `staticwebassets.build.json`
+      #   的四条真实路由：
+      #     lib.module.js    Fluent 模块入口，决定 fluent-button 是否升级（D15-9 的 null）
+      #     FluentButton.razor.js  组件级 razor.js，CI 日志里 404 的正是这一类（circuit 终止的触发者）
+      #     jtjsym.styles.css      scoped CSS，D14-10d 纵向 56px 恒定的指纹
+      #     _framework/blazor.server.js  **对照项**：框架自带、任何环境都该 200，用来区分"站点异常"与"资源缺失"
+      # ────────────────────────────────────────────────────────────────────────────
+      - name: 自检：环境与静态资源可达性（诊断 32/v2 §3.2）
+        working-directory: tools/e2e
+        run: |
+          # 后台起站：nohup + 重定向，避免 step 结束后输出管道被收走
+          nohup dotnet run --project ../../jtjsym/jtjsym --no-launch-profile \
+                --environment Development --urls http://localhost:14074 > /tmp/site.log 2>&1 &
+          # 90 × 2s = 180s：全新 runner 上首次 `dotnet run` 要先 restore + build，
+          # 文档写的 120s 在 2 核机上偏紧（本地冷启动实测 ~50s，CI 的 nuget 缓存是空的）
+          for i in $(seq 1 90); do
+            curl -sf -o /dev/null http://localhost:14074/ && break
+            sleep 2
+          done
+
+          if ! curl -sf -o /dev/null http://localhost:14074/; then
+            echo "::error::180 秒内站点没起来 —— 下面 tail 出 dotnet run 的日志"
+            tail -60 /tmp/site.log
+            exit 1
+          fi
+
+          echo "--- Hosting environment（W1/W2 的判据：期望 Development）---"
+          grep -m1 "Hosting environment" /tmp/site.log || echo "（日志里没有这一行，见 /tmp/site.log）"
+
+          echo "--- 静态资源（期望全 200）---"
+          for u in \
+            "_content/Microsoft.Fast.Components.FluentUI/Microsoft.Fast.Components.FluentUI.lib.module.js" \
+            "_content/Microsoft.Fast.Components.FluentUI/Components/Button/FluentButton.razor.js" \
+            "jtjsym.styles.css" \
+            "_framework/blazor.server.js" ; do
+            printf '%-100s %s\n' "$u" "$(curl -s -o /dev/null -w '%{http_code}' "http://localhost:14074/$u")"
+          done
+
       # PR/push：chromium 关键回归子集。**必须带 --project=chromium**，否则 firefox 项目也会被选中。
       # 子集定义已下沉到 tools/e2e/package.json 的 `test:pr`（P-027）：CI 与本地同源，
       # 不再各自维护一份 grep 白名单 —— 上一版的教训就是"白名单只在 yaml 里，漏了 D02-/NF-/D15- 等 40 条"。
@@ -92,5 +148,18 @@ jobs:
         with:
           name: playwright-report
           path: tools/e2e/playwright-report
+          retention-days: 14
+          if-no-files-found: ignore
+
+      # 诊断《32》v2 §2.4 实测：`playwright-report/index.html` 是**自包含单文件**，
+      # 里面 0 张 png —— 截图与 `error-context.md`（ARIA 快照）全在报告外，从没被回传过。
+      # 光有错误文本不足以定位"元素不可见/尺寸不对"这类失败，所以把 test-results 一起收上来。
+      # 路径写 `tools/e2e/test-results` 是对的：config 未设 outputDir，默认落在 config 所在目录。
+      - name: 上传失败现场（截图 + error-context.md + env-snapshot.json）
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: test-results
+          path: tools/e2e/test-results
           retention-days: 14
           if-no-files-found: ignore

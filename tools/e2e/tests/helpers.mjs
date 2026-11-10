@@ -1,6 +1,10 @@
 // 公共工具：等待、断言记录、俄罗斯方块/2048 的 DOM 读取
 // 迁移自 2026-11-01 的临时场景脚本；选择器与校验算法保持不变，只替换外壳（期望值 → expect.soft）。
-import { expect } from '@playwright/test';
+// 2026-11-10（诊断《32》v2.0 §4.A）：错误与网络失败改为**带来源 URL** 的软观测。
+//   起因：CI 首跑 37 红，日志里有 `There was an unhandled exception on the current circuit` 这一句，
+//   但旧 `trackErrors` 只存文本、不存来源，把它和一堆 404 混在一起，导致整轮诊断只能靠猜。
+import { expect, test } from '@playwright/test';
+import fs from 'node:fs/promises';
 
 export const EMPTY_COLOR = 'rgb(26, 26, 26)';
 
@@ -32,15 +36,104 @@ export function checkEq(id, actual, expected, detail = '') {
     .toEqual(expected);
 }
 
-/** 收集浏览器侧异常；断言时用 errors.length */
+/**
+ * 收集浏览器侧异常；断言时用 errors.length。
+ * 每条**附带来源 URL**（诊断《32》v2 §2.3 的核心证据就是靠它定位的）：
+ *   `console: Failed to load resource: … 404 (Not Found) @ /jtjsym.styles.css`
+ *   `console: There was an unhandled exception on the current circuit… @ /_framework/blazor.server.js`
+ * ⚠ 只加后缀、**不改计数语义**：全仓所有断言都是 `errors.length === 0` 或前后差值，
+ *   没有一处比对字符串全文，所以加后缀不会让任何既有用例改判。
+ */
 export function trackErrors(page) {
   const errors = [];
+  const src = m => {
+    const u = m.location?.()?.url;
+    return u ? ` @ ${u}` : '';
+  };
   page.on('pageerror', e => errors.push('pageerror: ' + e.message));
   page.on('console', m => {
-    if (m.type() === 'error') errors.push('console: ' + m.text());
+    if (m.type() === 'error') errors.push('console: ' + m.text() + src(m));
   });
   return errors;
 }
+
+/**
+ * 网络层失败（4xx/5xx 与 requestfailed）——**只记录、永不参与红绿**。
+ * 诊断《32》v2 §4.A：CI 上真正缺的那条线索是"404 的是哪个 URL"，而旧的 console 文本里没有 URL。
+ * ⚠ 必须幂等：`open()` 在单个用例里会被调用多次（NF-02b 是 6 页 × 2 视口 = 12 次），
+ *   不守卫会挂 12 份监听、把同一条 404 记 12 遍。
+ * ⚠ 会记到 favicon 之类的无关 4xx —— 这是刻意的：它是观测清单，不是断言依据。
+ */
+export function netFailures(page) {
+  if (!page.__net) {
+    page.__net = [];
+    page.on('requestfailed', r => {
+      const u = r.url();
+      if (!u.startsWith('data:') && !u.startsWith('ws')) {
+        page.__net.push(`requestfailed: ${u} — ${r.failure()?.errorText ?? '未知'}`);
+      }
+    });
+    page.on('response', res => {
+      if (res.status() < 400) return;
+      const u = res.url();
+      if (!page.__net.some(x => x.includes(u))) page.__net.push(`http ${res.status()}: ${u}`);
+    });
+  }
+  return page.__net;
+}
+
+/**
+ * 失败时 attach 一份环境快照（纯观测，不断言）。这是把"下一轮还要再猜一次"变成"一次看穿"的关键：
+ * 三个布尔值分别对应三种失败形态 —— Fluent 自定义元素没升级（D15-9 的 null）、
+ * scoped CSS 没加载（D14-10d 的纵向 56px 恒定）、shadowRoot 不存在（宿主背景读到的是壳）。
+ * ⚠ `scopedCssLoaded` 用 `s.cssRules` 判定是关键：404 的 `<link>` 在 `document.styleSheets` 里
+ *   **仍有一项**（`href` 也在），但 `cssRules` 长度为 0 —— 只数 `<link>` 个数会假绿。
+ */
+export async function snapshotEnv(page, testInfo) {
+  const snap = await page.evaluate(() => {
+    let scopedCssLoaded = false;
+    try {
+      scopedCssLoaded = [...document.styleSheets].some(
+        s => (s.href || '').includes('jtjsym.styles.css') && s.cssRules && s.cssRules.length > 0,
+      );
+    } catch {
+      scopedCssLoaded = false; // 跨域 sheet 读 cssRules 会抛，按"没加载"记
+    }
+    return {
+      fluentUpgraded: !!customElements.get('fluent-button'),
+      scopedCssLoaded,
+      shadowHost: !!document.querySelector('fluent-button, fluent-select')?.shadowRoot,
+      url: location.href,
+    };
+  });
+  const body = JSON.stringify({ ...snap, net: netFailures(page).slice(0, 20) }, null, 2);
+  // ⚠ 实测（2026-11-10）：只 `attach(body)` 时，条目确实进了 `testInfo.attachments`，
+  //   但 `test-results/` 目录里**没有落文件**（HTML 报告是自包含单文件，attachments 被压进它自己的 base64 zip）。
+  //   而 CI 的 artifact 收的是 `test-results/`，所以这里显式写一份文件 —— attach 保留，给本地 HTML 报告用。
+  const file = testInfo.outputPath('env-snapshot.json');
+  await fs.writeFile(file, body, 'utf8');
+  await testInfo.attach('env-snapshot.json', { body, contentType: 'application/json' });
+}
+
+/**
+ * 失败自动附快照的**唯一挂载点**。
+ * 为什么不写成 `test.afterEach(async ({ page }) => …)`：那会让"从不使用 page 的用例"（如只发 HTTP 请求的
+ * D22-2）也实例化一个 page，凭空多开一个空白标签。这里记 `open()` 真正碰过的那个 page。
+ * 为什么不挂到 4 个 spec：诊断《32》v2 §3.3 —— 组②（LT 走秒冻结）那 8 条在 `lt.spec` / `d20`，
+ * 恰好一条都没被 v1.0 的接入点覆盖。挂在 `open()` 上，8 个 spec 全部自动覆盖。
+ */
+let lastOpenedPage = null;
+
+test.afterEach(async ({}, testInfo) => {
+  const page = lastOpenedPage;
+  lastOpenedPage = null;                    // 先清，宁可漏一次也不要把上一个用例的 page 记到下一个
+  if (!page || testInfo.status !== 'failed') return;
+  try {
+    await snapshotEnv(page, testInfo);
+  } catch {
+    // 页面已经崩了（circuit 终止 / 浏览器关闭）：快照是加分项，不许反过来把用例搞红
+  }
+});
 
 /**
  * 打开页面并等 Blazor Server 电路就绪。
@@ -48,6 +141,8 @@ export function trackErrors(page) {
  * 不用 networkidle（SignalR 长连接会让它永远不 idle）。
  */
 export async function open(page, path, settle = 1500) {
+  netFailures(page);                        // 幂等，只挂一次；此后任何导航的 4xx 都自动记账
+  lastOpenedPage = page;
   await page.goto(path, { waitUntil: 'domcontentloaded', timeout: 20000 });
   await page.waitForFunction(() => !!window.Blazor, null, { timeout: 15000 }).catch(() => {});
   await sleep(settle);

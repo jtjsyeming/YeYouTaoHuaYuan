@@ -54,11 +54,25 @@ dotnet run --project ../../jtjsym/jtjsym --no-launch-profile --environment Devel
 | `npm run test:pr` | **CI 的 PR/push 子集**（chromium + 编号前缀白名单，见下） | 13 分钟 |
 | `npm run test:all` | 全部 | 17~20 分钟 |
 
-- **`test:pr` 是 CI 与本地同源的唯一子集定义**（`.github/workflows/tests.yml` 只调 `npm run test:pr`）。它靠 `--grep` 的前缀白名单选用例，**新增 spec 时必须把标题编号前缀加进去**，否则该 spec 永远不会在 PR 上跑（`D02-`/`NF-`/`D15-`/`D-11`/`D-12` 就这样漏过 40 条）。当前白名单：`NAV-|FISH-|G2048-|LT-|TRIS-0|D14-|D08-|D02-|D-1[12]|D15-|NF-|CODE-|D22-|D24-`（**2026-11-10 实测：130 条选中 123 条通过 / 2 跳过 / 0 失败**；故意排除 TRIS-10~14/20/21/25/26/ERR 与 smoke 的人工项）；
+- **`test:pr` 是 CI 与本地同源的唯一子集定义**（`.github/workflows/tests.yml` 只调 `npm run test:pr`）。它靠 `--grep` 的前缀白名单选用例，**新增 spec 时必须把标题编号前缀加进去**，否则该 spec 永远不会在 PR 上跑（`D02-`/`NF-`/`D15-`/`D-1[12]` 就这样漏过 40 条）。当前白名单：`NAV-|FISH-|G2048-|LT-|TRIS-0|D14-|D08-|D02-|D-1[12]|D15-|NF-|CODE-|D22-|D24-`（**2026-11-10 实测：132 条选中 130 条通过 / 2 跳过 / 0 失败**；故意排除 TRIS-10~14/20/21/25/26/ERR 与 smoke 的人工项）；
 - 换端口：`BASE_URL=http://localhost:14099 npm run test:lt`；
 - 按用例编号过滤依赖"编号写在 `test()` 标题首段"的约定，例如 `npx playwright test --grep "LT-11"`；
-- **`trace` 默认关闭**（见 §6），失败时 `test-results/` 里只有失败截图；要逐帧复盘就临时加 `--trace on`；
-- HTML 报告在 `playwright-report/index.html`。
+- **`trace` 默认关闭**（见 §6），失败时 `test-results/` 里有失败截图、`error-context.md`（ARIA 快照）与 **`env-snapshot.json`**（环境快照，见 §3.1）；要逐帧复盘就临时加 `--trace on`；
+- HTML 报告在 `playwright-report/index.html`（自包含单文件，**不含截图**）。
+
+### 3.1 失败时的自动观测（C-55 / 诊断《32》v2 §4.A）
+
+`helpers.mjs` 里有三件**纯观测、永不参与红绿**的东西，全部挂在 `open()` 上（幂等，多次 `open()` 只挂一次）：
+
+| 设施 | 作用 |
+|---|---|
+| `trackErrors(page)` | 控制台/页面异常，**每条带来源 URL**：`console: … 404 (Not Found) @ /jtjsym.styles.css`。只加后缀，不改 `length` 语义 |
+| `netFailures(page)` | `http 4xx/5xx: <url>` 与 `requestfailed: <url> — <原因>`，供快照引用。会记到 favicon 之类无关 4xx，**这是刻意的** |
+| `snapshotEnv(page, testInfo)` | 用例**失败时**自动跑（模块级 `test.afterEach`），落 `test-results/<test>/env-snapshot.json`：`fluentUpgraded` / `scopedCssLoaded` / `shadowHost` / `url` / `net` 前 20 条 |
+
+判读速查：`fluentUpgraded=false` → Fluent 自定义元素没升级（D15-9 的 `null`、尺寸/溢出断言全失效）；`scopedCssLoaded=false` → scoped CSS 没加载（D14-10d 的"纵向恒 56px"）；`net` 里出现 `_content/**` 或 `jtjsym.styles.css` 的 404 → 就是 CI 首跑 37 红的那条根因链。
+
+> ⚠ `scopedCssLoaded` 用 `cssRules.length > 0` 判定，不能只数 `<link>` —— 404 的样式表在 `document.styleSheets` 里**仍占一项**。
 
 ## 4. 用例 ↔ 文件映射
 
@@ -96,4 +110,5 @@ dotnet run --project ../../jtjsym/jtjsym --no-launch-profile --environment Devel
 - **同一个 test 里连续 `open()` 多个视口，等于让"上一次的对局"污染下一次**（2026-11-10，D-24b）：`/tetris` 从 D-24b 起会把对局写 `sessionStorage`，第二个 `open()` 就恢复成**暂停态**（面板多一颗按钮，手机档 +46px）。`d14_mobile_layout.spec.mjs` 因此加了 `beforeEach` 的 `addInitScript` 清 `jtjsym.tetris.session` —— 布局类断言要的永远是"运行中"的规范态，暂停态另有 `D14-6` 专门看守。**新增任何"一个 test 里反复导航"的用例前，先想清楚上一次的浏览器侧存储会不会被下一次读到。**
 - **给俄罗斯方块造"顶到天花板"的存档时，别把行填满**：19 行全满会在锁定那一刻被 `ClearRows` 一次清掉（`_ => 100 * rowsCleared` = **1900 分**），棋盘瞬间清空，于是永远到不了 `GameOver`。D24-2 首版就是这么红的（分数 1900 / 难度 1 / 无遮罩），正确姿势是每行留一格空（171 格）。
 - **`click()` 返回 ≠ DOM 已更新（Blazor Server 必踩）**：点击事件要经 SignalR 到服务端、处理完再回传 render batch。`locator.click()` 只保证事件在**浏览器侧**已派发，紧接着读 DOM 拿到的是**点击前**的样子。平时不炸只是因为后面恰好有 `expect.poll` / `sleep` 顶出几十毫秒余量。**2026-11-10 实测**：`D22-5` 把「点重开 → 分数归零」写成点完直读，孤立跑 `test:d22` 绿（7/7）、全量 `test:pr` 红（读到 `score=17`），而失败截图的可访问性快照里分数已是 `0` —— 典型假红。**凡是"点一下 → 断言画面变了"的判据，一律 `expect.poll` 读，不要 `sleep` 也不要点完直读。**
+- **`testInfo.attach()` 不等于"文件在 `test-results/` 里"**（2026-11-10，C-55）：`attach({ body })` 会让条目进 `testInfo.attachments`，但磁盘上没有文件 —— HTML 报告是自包含单文件，附件被压进它自己的 base64 zip，而 CI 的 artifact 收的是 `test-results/`。要给 CI 看到附件，必须**先 `fs.writeFile(testInfo.outputPath(name), body)` 再 attach**。
 - **别指望 `localStorage` 的 poll 顺便充当延时**：`expect.poll(() => stored(page))` 在"值早就在盘上"时会**立刻**返回，一个毫秒都不等。D-25 把 best 的落盘点扩到每个锁定点之后，`D22-5` 里那发 localStorage poll 就从"延时来源"退化成"瞬间通过"，于是紧跟着的 DOM 读取直接吃到上面那条坑。判据顺序上，**先 poll DOM，再 poll 存储**。
