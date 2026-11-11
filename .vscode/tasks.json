@@ -26,27 +26,6 @@
       }
     },
     {
-      // 构建 MineSweeper 桌面程序
-      "label": "build-minesweeper",
-      "type": "process",
-      "command": "dotnet",
-      "args": [
-        "build",
-        "${workspaceFolder}/MineSweeper/MineSweeper.csproj",
-        "/property:GenerateFullPaths=true",
-        "/consoleloggerparameters:NoSummary"
-      ],
-      "options": {
-        "cwd": "${workspaceFolder}/MineSweeper"
-      },
-      "problemMatcher": "$msCompile",
-      "group": "build",
-      "presentation": {
-        "reveal": "silent",
-        "clear": true
-      }
-    },
-    {
       // 不调试直接运行 jtjsym 网站；--no-launch-profile 跳过 launchSettings.json 里缺证书的 https 地址
       "label": "run-jtjsym",
       "type": "process",
@@ -98,10 +77,10 @@
       }
     },
     {
-      // 清理两个工程的输出
+      // 清理网站的编译输出（MineSweeper 已于 H-013 前置清理中删除，原第二条 clean 同步移除）
       "label": "clean-all",
       "type": "shell",
-      "command": "dotnet clean \"${workspaceFolder}/jtjsym/jtjsym.sln\" && dotnet clean \"${workspaceFolder}/MineSweeper/MineSweeper.csproj\"",
+      "command": "dotnet clean \"${workspaceFolder}/jtjsym/jtjsym.sln\"",
       "problemMatcher": []
     },
     {

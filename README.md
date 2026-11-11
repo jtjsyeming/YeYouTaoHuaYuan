@@ -1,6 +1,6 @@
 # 夜游桃花源（YeYouTaoHuaYuan）
 
-个人小站 + 两个独立小游戏的代码仓库。
+个人小站 + 一个独立小游戏（`Mini-game/tetris.py`）的代码仓库。
 
 ## 一、站点 jtjsym（Blazor Server）
 
@@ -43,11 +43,6 @@ npm run test:all              # 全量，约 20 分钟
 
 `.vscode/publish-release.ps1`（或 VS Code 任务 `release-jtjsym`）：publish → 同步发布目录 → 同步部署目录 → 打版本 zip。
 
-## 二、MineSweeper（WinForms）
-
-`MineSweeper/` 是独立的 C# WinForms 扫雷（`net8.0-windows`），主站不引用。用 Visual Studio 打开，
-或 `dotnet run --project MineSweeper`。
-
-## 三、Mini-game/tetris.py
+## 二、Mini-game/tetris.py
 
 pygame 版俄罗斯方块原型，主站不引用，保留作历史参考。

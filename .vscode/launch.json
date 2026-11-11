@@ -29,27 +29,8 @@
         "uriFormat": "%s"
       },
       "justMyCode": true
-    },
-    {
-      // ===== 2. MineSweeper：WinForms 桌面程序 =====
-      "name": "MineSweeper 扫雷 (WinForms)",
-      "type": "coreclr",
-      "request": "launch",
-      "preLaunchTask": "build-minesweeper",
-      "program": "${workspaceFolder}/MineSweeper/bin/Debug/net8.0-windows/MineSweeper.dll",
-      "args": [],
-      "cwd": "${workspaceFolder}/MineSweeper",
-      "console": "internalConsole",
-      "stopAtEntry": false,
-      "justMyCode": true
-    }
-  ],
-  // 想两个一起跑时，选这一项即可（终端/调试器会各开一个）
-  "compounds": [
-    {
-      "name": "同时启动：网站 + 扫雷",
-      "configurations": ["jtjsym 网站 (Blazor Server)", "MineSweeper 扫雷 (WinForms)"],
-      "stopAll": true
     }
   ]
+  // H-013 前置清理：MineSweeper（WinForms）已删除，原第 2 条配置与 compound「同时启动：网站 + 扫雷」
+  // 一并移除（compound 只剩一个成员时没有意义）。
 }
