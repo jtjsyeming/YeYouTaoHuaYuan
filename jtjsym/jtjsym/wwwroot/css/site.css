@@ -279,6 +279,14 @@ body {
     }
 }
 
+/* H-013：第 5 张跳转卡（扫雷）加进来后，4 列网格在 ≥1000px 会让第 5 张独占一行（"孤儿卡"）。
+   ≥1200px 才升到 5 列 —— 1000~1199 那档切 5 列会把卡片压到 127~132px（描述折 3 行）。 */
+@media (min-width: 1200px) {
+    .home-main {
+        grid-template-columns: repeat(5, minmax(0, 1fr));
+    }
+}
+
 @media (max-width: 480px) {
     .home-main {
         grid-template-columns: 1fr;

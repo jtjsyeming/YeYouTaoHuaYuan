@@ -94,7 +94,7 @@ test.describe('CODE 编程挑战', () => {
 });
 
 test.describe('NF 非功能', () => {
-  test('NF-01 Firefox 兼容：5 页导航 + 三个游戏操作', async ({ page, browserName }) => {
+  test('NF-01 Firefox 兼容：6 页导航 + 三个游戏操作', async ({ page, browserName }) => {
     test.skip(browserName !== 'firefox', '仅在 firefox 项目中执行（chromium 下无意义）');
     test.setTimeout(120_000);
     const errs = trackErrors(page);
@@ -105,6 +105,7 @@ test.describe('NF 非功能', () => {
       ['爱情计时器', '/loveTime'],
       ['2048', '/game_2048'],
       ['俄罗斯方块', '/tetris'],
+      ['扫雷', '/minesweeper'],
     ]) {
       await open(page, path, 1200);
       const h1 = ((await page.textContent('h1').catch(() => '')) || '').trim();
@@ -174,13 +175,14 @@ test.describe('NF 非功能', () => {
     check('NF-02', fishCount(fish) === 1 && after >= 2 && toggler && navOpen, detail.join('；'));
   });
 
-  test('NF-02b 全站 6 页 375px / 320px 无横向溢出', async ({ browser }) => {
+  test('NF-02b 全站 7 页 375px / 320px 无横向溢出', async ({ browser }) => {
     const pages = [
       ['首页', '/'],
       ['木鱼', '/counter'],
       ['爱情计时器', '/loveTime'],
       ['2048', '/game_2048'],
       ['俄罗斯方块', '/tetris'],
+      ['扫雷', '/minesweeper'],
       ['编程挑战', '/coding_place'],
     ];
     const overflow = {};
@@ -251,9 +253,9 @@ test.describe('NF 非功能', () => {
     check('NF-04', fishCount(c) === 1 && /分数/.test(g) && t.length === 3, `木鱼="${c}"；2048="${g}"；Tetris 难度/分数/最高分=${JSON.stringify(t)}`);
   });
 
-  test('NF-06 遍历 6 页控制台无红色异常', async ({ page }) => {
+  test('NF-06 遍历 7 页控制台无红色异常', async ({ page }) => {
     const errs = trackErrors(page);
-    for (const path of ['/', '/counter', '/loveTime', '/game_2048', '/tetris', '/coding_place']) {
+    for (const path of ['/', '/counter', '/loveTime', '/game_2048', '/tetris', '/minesweeper', '/coding_place']) {
       await open(page, path, 1200);
       await sleep(900);
     }

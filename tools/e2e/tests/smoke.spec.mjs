@@ -21,11 +21,11 @@ import {
 } from './helpers.mjs';
 
 test.describe('冒烟集（28 条 P0）', () => {
-  test('NAV-01/NAV-02 首页与 5 项导航', async ({ page }) => {
+  test('NAV-01/NAV-02 首页与 6 项导航', async ({ page }) => {
     await open(page, '/');
     const h1 = (await page.textContent('h1').catch(() => '')) || '';
     const cardCount = await page.locator('.home-card').count();
-    check('NAV-01', h1.includes('欢迎来到夜游桃花源') && cardCount === 5, `h1="${h1.trim()}" 入口卡片=${cardCount}`);
+    check('NAV-01', h1.includes('欢迎来到夜游桃花源') && cardCount === 6, `h1="${h1.trim()}" 入口卡片=${cardCount}`);
 
     const navMap = [
       ['jtjsym', '/'],
@@ -33,6 +33,7 @@ test.describe('冒烟集（28 条 P0）', () => {
       ['爱情计时器', '/loveTime'],
       ['2048', '/game_2048'],
       ['俄罗斯方块', '/tetris'],
+      ['扫雷', '/minesweeper'],
     ];
     const bad = [];
     for (const [text, path] of navMap) {
@@ -42,7 +43,7 @@ test.describe('冒烟集（28 条 P0）', () => {
       const url = new URL(page.url()).pathname;
       if (url !== path) bad.push(`${text}→${url}(期望${path})`);
     }
-    check('NAV-02', bad.length === 0, bad.length ? bad.join(' | ') : '5 项路由全部正确');
+    check('NAV-02', bad.length === 0, bad.length ? bad.join(' | ') : '6 项路由全部正确');
   });
 
   test('FISH-01/FISH-02/FISH-03 木鱼计数与装饰', async ({ page }) => {

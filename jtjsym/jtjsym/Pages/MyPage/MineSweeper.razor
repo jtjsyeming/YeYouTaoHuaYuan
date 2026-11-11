@@ -1,0 +1,537 @@
+﻿@page "/minesweeper"
+@using System.Text.Json
+@using System.Timers
+@using Microsoft.FluentUI.AspNetCore.Components
+@using jtjsym.Services
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+<PageTitle>扫雷</PageTitle>
+
+<h1>扫雷</h1>
+
+<div class="ms-container">
+    <div class="ms-controls">
+        @* 难度下拉：切档即重开（对齐 Tetris 重玩语义），并清掉当前局的会话快照 *@
+        <FluentSelect TOption="string"
+                      Label="难度"
+                      @bind-Value="difficultyKey"
+                      @bind-Value:after="OnDifficultyChanged"
+                      class="ms-difficulty"
+                      Width="150px"
+                      Disabled="@isRestoring">
+            @foreach (var lv in MinesweeperLevels.All)
+            {
+                <FluentOption Value="@lv.Key">@lv.Label</FluentOption>
+            }
+        </FluentSelect>
+        <FluentButton Class="ms-restart" @onclick="OnRestartClicked" Disabled="@isRestoring">重新开始</FluentButton>
+    </div>
+
+    <div class="ms-status">
+        <p class="ms-stat ms-mines-left">剩余雷：@game.RemainingMines</p>
+        <p class="ms-stat ms-elapsed">用时：@elapsedSec 秒</p>
+    </div>
+
+    @if (showResumeTip)
+    {
+        <p class="session-tip ms-resume-tip">已恢复上一局（计时已暂停，点棋盘继续）</p>
+    }
+
+    <div class="ms-board-wrap">
+        <div class="ms-scroll">
+            @* 尺寸完全交给 CSS：格子 = min(容器宽/cols, 32px)，窄屏保 24px 由外层横向滚动兜住（《34》§3.3/§3.4 方案 A） *@
+            <div class="ms-board" style="--ms-cols:@game.Cols" role="grid" aria-label="扫雷棋盘">
+                @for (var r = 0; r < game.Rows; r++)
+                {
+                    for (var c = 0; c < game.Cols; c++)
+                    {
+                        // ⚠ 必须先把坐标拷进局部量再进 lambda：`for` 的循环变量是**同一个变量**，
+                        // lambda 捕获的是它本身，等事件触发时它已经是终值 —— 每格都会去翻最后一格。
+                        var row = r;
+                        var col = c;
+                        @* @oncontextmenu 同时承接桌面右键与移动端长按；preventDefault 抑制原生菜单，
+                           长按时的"选择/拷贝"气泡由 CSS 的 user-select / touch-callout 抑制（《34》§4.3） *@
+                        <div class="ms-cell @CellClass(row, col)"
+                             role="gridcell"
+                             data-r="@row"
+                             data-c="@col"
+                             @onclick="() => RevealCellAsync(row, col)"
+                             @oncontextmenu="() => FlagCellAsync(row, col)"
+                             @oncontextmenu:preventDefault="true">@CellText(row, col)</div>
+                    }
+                }
+            </div>
+        </div>
+
+        @if (game.IsOver)
+        {
+            <div class="ms-overlay">
+                <h2 class="ms-overlay-title">@(game.IsWin ? "扫雷成功" : "踩到雷了")</h2>
+                <p class="ms-overlay-sub">用时 @elapsedSec 秒</p>
+                <FluentButton Class="ms-overlay-btn" Appearance="Appearance.Accent" @onclick="OnRestartClicked">再来一局</FluentButton>
+            </div>
+        }
+    </div>
+
+    <div class="ms-best">
+        <p class="best-score" data-diff="beginner">最高分：@(isBestLoaded ? FormatBest(bestBeginner) : "—")</p>
+        <p class="best-score" data-diff="intermediate">最高分：@(isBestLoaded ? FormatBest(bestIntermediate) : "—")</p>
+    </div>
+</div>
+
+<style>
+    /* 类名统一 ms- 前缀：组件的 style 块是全局的（《34》§4.3），不加前缀会与 2048/Tetris 的类撞车 */
+    .ms-container {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+        margin-top: 8px;
+    }
+
+    .ms-controls {
+        display: flex;
+        align-items: flex-end;
+        justify-content: center;
+        gap: 12px;
+        flex-wrap: wrap;
+    }
+
+    .ms-status,
+    .ms-best {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 4px 18px;
+        margin: 0;
+    }
+
+    .ms-stat,
+    .ms-best .best-score {
+        margin: 0;
+        font-size: .95rem;
+    }
+
+    /* 棋盘尺寸的全部秘密在下面三条：轨道 minmax(0,1fr) 让格子自动铺满可用宽，
+       max-width 把格子封顶 32px、min-width 保证不低于 24px（低于它触控必然误触），
+       超出的部分由 .ms-scroll 横向滚动承接 —— 不写任何 vw 算术（《34》§3.3 实测 vw 公式会横向溢出）。 */
+    .ms-board-wrap {
+        position: relative;
+        width: 100%;
+        display: flex;
+        justify-content: center;
+    }
+
+    .ms-scroll {
+        max-width: 100%;
+        overflow-x: auto;
+        -webkit-overflow-scrolling: touch;
+    }
+
+    .ms-board {
+        display: grid;
+        grid-template-columns: repeat(var(--ms-cols), minmax(0, 1fr));
+        gap: 1px;
+        width: 100%;
+        max-width: calc(var(--ms-cols) * 32px + (var(--ms-cols) - 1) * 1px);
+        min-width: calc(var(--ms-cols) * 24px + (var(--ms-cols) - 1) * 1px);
+        margin-inline: auto;
+        background: #b6c2ce;
+        border-radius: 6px;
+        touch-action: manipulation;      /* 长按不要触发双击缩放/滚动 */
+        user-select: none;
+        -webkit-user-select: none;
+        -webkit-touch-callout: none;     /* iOS 长按不弹"选择/拷贝" */
+    }
+
+    .ms-cell {
+        aspect-ratio: 1;
+        min-width: 0;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: .9rem;
+        font-weight: 700;
+        line-height: 1;
+        background: #e9eef3;
+        border-radius: 2px;
+        cursor: pointer;
+    }
+
+    .ms-cell.ms-revealed {
+        background: #f8fafc;
+        cursor: default;
+    }
+
+    .ms-cell.ms-flag { background: #fff3cd; }
+    .ms-cell.ms-mine { background: #ffd9d9; }
+    .ms-cell.ms-hit { background: #e53935; color: #fff; }
+
+    /* 数字配色沿用扫雷的通用约定（1 蓝、2 绿、3 红…）；只做到 8 为止 */
+    .ms-n1 { color: #1976d2; }
+    .ms-n2 { color: #2e7d32; }
+    .ms-n3 { color: #d32f2f; }
+    .ms-n4 { color: #512da8; }
+    .ms-n5 { color: #8d6e63; }
+    .ms-n6 { color: #00838f; }
+    .ms-n7 { color: #37474f; }
+    .ms-n8 { color: #6a1b9a; }
+
+    .ms-overlay {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        background: rgba(255, 255, 255, .88);
+        border-radius: 8px;
+    }
+
+    .ms-overlay-title { margin: 0; font-size: 1.3rem; }
+    .ms-overlay-sub { margin: 0; font-size: .9rem; color: #455a64; }
+
+    .ms-resume-tip { margin: 0; font-size: .85rem; color: #455a64; }
+</style>
+
+@code {
+    // ── 存储键：与 jtjsym.g2048.best / jtjsym.tetris.best 同命名空间（《34》§2.3） ──
+    private const string BestKeyBeginner = "jtjsym.ms.best.beginner";
+    private const string BestKeyIntermediate = "jtjsym.ms.best.intermediate";
+    private const string SessionKey = "jtjsym.ms.session";
+
+    private MinesweeperCore game = MinesweeperCore.NewGame(MinesweeperLevels.Beginner, new Random());
+    private string difficultyKey = MinesweeperLevels.Beginner.Key;
+    private int elapsedSec;
+
+    // 最高分（秒，越小越好）。两个标志刻意拆开（D-25 配方）：isBestReading 是"读只发生一次"的防重入闸，
+    // isBestLoaded 是"读完成"= 占位解锁。挤在一根标志上会在 await 窗口里把「—」画成「0 秒」。
+    private int? bestBeginner;
+    private int? bestIntermediate;
+    private bool isBestReading;
+    private bool isBestLoaded;
+
+    /// <summary>写闸门：恢复流程开始前恒 false —— 预渲染实例与"恢复还没跑完"期间一律不写，
+    /// 否则一次空局就把存档冲掉（与 2048 的 isSessionReady 同语义）。</summary>
+    private bool isSessionReady;
+
+    /// <summary>UI 门闸：初值 true，恢复结束（无论成败）才置 false。预渲染实例不走 OnAfterRenderAsync ⇒ 首屏天然禁用。</summary>
+    private bool isRestoring = true;
+
+    /// <summary>恢复为暂停态（`PeriodicTimer` 不自动起跑），下次翻开时续走。</summary>
+    private bool isPaused;
+    private bool showResumeTip;
+
+    private bool disposed;
+    private System.Timers.Timer? clockTimer;
+    private readonly object timerLock = new();
+
+    private static MinesweeperLevel LevelOf(string key) => MinesweeperLevels.ByKey(key) ?? MinesweeperLevels.Beginner;
+
+    // ───────────────────────── 渲染辅助 ─────────────────────────
+
+    private string FormatBest(int? v) => v is null ? "—" : $"{v} 秒";
+
+    private string CellClass(int r, int c)
+    {
+        var classes = new List<string>(3);
+        if (game.IsRevealed(r, c))
+        {
+            classes.Add("ms-revealed");
+            if (game.IsMine(r, c))
+            {
+                classes.Add("ms-hit");           // 只有踩中的那颗是红的（IsLose 后其余雷也显示，但不是红的）
+            }
+            else if (game.Adjacent(r, c) > 0)
+            {
+                classes.Add("ms-n" + game.Adjacent(r, c));
+            }
+        }
+        else if (game.IsFlagged(r, c))
+        {
+            classes.Add("ms-flag");
+        }
+
+        // 败局把全雷摊开（"全雷现身"），但不动 revealed 语义 —— 快照已清，纯粹是展示
+        if (game.IsLose && game.IsMine(r, c) && !game.IsRevealed(r, c)) classes.Add("ms-mine");
+        return string.Join(' ', classes);
+    }
+
+    private string CellText(int r, int c)
+    {
+        if (game.IsFlagged(r, c) && !game.IsRevealed(r, c)) return "🚩";
+        if (game.IsRevealed(r, c))
+        {
+            if (game.IsMine(r, c)) return "💣";
+            var n = game.Adjacent(r, c);
+            return n == 0 ? "" : n.ToString();
+        }
+        if (game.IsLose && game.IsMine(r, c)) return "💣";
+        return "";
+    }
+
+    // ───────────────────────── 生命周期 ─────────────────────────
+
+    protected override void OnInitialized()
+    {
+        // 只备空盘，不布雷、不起表：开局必须等到 firstRender（只有那里才知道有没有可恢复的对局）。
+        // 附带好处与 Tetris 一致 —— 预渲染实例彻底不碰 timer。
+        game = MinesweeperCore.NewGame(LevelOf(difficultyKey), new Random());
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        // 仅交互实例会走到 firstRender=true，规避 ServerPrerendered 的预渲染实例
+        if (!firstRender) return;
+
+        // ① 读两条最高分（两档各一条）
+        if (!isBestReading)
+        {
+            isBestReading = true;
+            try
+            {
+                bestBeginner = ParseBest(await JS.InvokeAsync<string?>("localStorage.getItem", BestKeyBeginner));
+                bestIntermediate = ParseBest(await JS.InvokeAsync<string?>("localStorage.getItem", BestKeyIntermediate));
+            }
+            catch (JSException) { }            // 隐私模式/存储被禁：保持 null，显示「—」，游戏零降级
+            catch (JSDisconnectedException) { }
+
+            isBestLoaded = true;
+            StateHasChanged();
+        }
+
+        // ② 恢复对局（D-17/D-24 同口径：结构闸 + 内容闸，任一不过整档丢弃）
+        if (!isSessionReady)
+        {
+            isSessionReady = true;             // 先开闸：即使下面全失败，也不能永久不写
+            try
+            {
+                var json = await JS.InvokeAsync<string?>("sessionStorage.getItem", SessionKey);
+                if (json is not null)
+                {
+                    var snap = JsonSerializer.Deserialize<MinesweeperSnapshot>(json);
+                    var restored = MinesweeperCore.TryFrom(snap);
+                    if (restored is null)
+                    {
+                        // 坏档：清掉，避免每次进页面重复拒绝；盘面保持 OnInitialized 的新局
+                        await JS.InvokeVoidAsync("sessionStorage.removeItem", SessionKey);
+                    }
+                    else
+                    {
+                        game = restored;
+                        difficultyKey = restored.Level.Key;
+                        elapsedSec = snap!.ElapsedSec;
+                        isPaused = true;           // 恢复即暂停（与 2048 的 D-17"恢复即玩"刻意不同）
+                        showResumeTip = true;
+                        StateHasChanged();         // 预渲染首帧是新局，这一帧必须刷成恢复态
+                    }
+                }
+            }
+            catch (JSException) { }
+            catch (JsonException) { }          // 半截 JSON
+            catch (JSDisconnectedException) { }
+            catch (ObjectDisposedException) { }
+            finally
+            {
+                // UI 门闸在恢复**结束**才解除；必须放 finally：任何失败路径都不能把页面永久卡在恢复态
+                isRestoring = false;
+                if (!disposed) StateHasChanged();
+            }
+        }
+    }
+
+    private static int? ParseBest(string? raw)
+    {
+        // 坏值（"abc" / 0 / 负数）一律当"没有纪录"→ 显示「—」（《34》§6.2 MS-07 定下的口径）
+        return int.TryParse(raw, out var v) && v > 0 ? v : null;
+    }
+
+    // ───────────────────────── 交互 ─────────────────────────
+
+    private async Task RevealCellAsync(int r, int c)
+    {
+        if (isRestoring || game.IsOver) return;
+        if (!game.Reveal(r, c)) return;         // 已翻/已插旗/越界：无变化，不落盘
+
+        showResumeTip = false;
+        isPaused = false;
+        if (clockTimer is null) StartClock();   // 首次翻开起表；恢复后第一次翻开续走
+
+        if (game.IsWin)
+        {
+            StopClock();
+            UpdateBest(elapsedSec);
+            await PersistBestAsync();           // 落盘点 ①：胜利瞬间（与遮罩同帧）
+            await RemoveSessionAsync();         // 结束态没有可恢复的语义 → 清档（不是"不写"）
+        }
+        else if (game.IsLose)
+        {
+            StopClock();
+            await RemoveSessionAsync();
+        }
+        else
+        {
+            await SaveSessionAsync();
+        }
+
+        if (!disposed) StateHasChanged();
+    }
+
+    private async Task FlagCellAsync(int r, int c)
+    {
+        if (isRestoring || game.IsOver) return;
+        if (!game.ToggleFlag(r, c)) return;
+
+        await SaveSessionAsync();
+        if (!disposed) StateHasChanged();
+    }
+
+    /// <summary>重开的**唯一用户入口**（按钮 + 遮罩按钮共用）。恢复窗口内的程序化点击也必须被挡住。</summary>
+    private async Task OnRestartClicked()
+    {
+        if (isRestoring) return;
+        await StartNewGameAsync(difficultyKey);
+    }
+
+    private async Task OnDifficultyChanged()
+    {
+        // 切档即重开，并清掉上一档的会话快照（否则切档后返回会复活另一档的残局）
+        await StartNewGameAsync(difficultyKey);
+    }
+
+    private async Task StartNewGameAsync(string levelKey)
+    {
+        StopClock();
+        game = MinesweeperCore.NewGame(LevelOf(levelKey), new Random());
+        difficultyKey = game.Level.Key;
+        elapsedSec = 0;
+        isPaused = false;
+        showResumeTip = false;
+
+        await PersistBestAsync();               // 落盘点 ②：重开时顺带把当前纪录再固化一次
+        await RemoveSessionAsync();             // 新局本身没有"值得恢复"的内容，清掉旧档更干净
+        if (!disposed) StateHasChanged();
+    }
+
+    // ───────────────────────── 计时（沿用 Tetris 的 timerLock + isDisposed 双检） ─────────────────────────
+
+    private void StartClock()
+    {
+        lock (timerLock)
+        {
+            if (disposed || clockTimer is not null) return;
+
+            var timer = new System.Timers.Timer(1000) { AutoReset = true };
+            timer.Elapsed += OnClockElapsed;
+            clockTimer = timer;
+            timer.Start();
+        }
+    }
+
+    private void StopClock()
+    {
+        lock (timerLock)
+        {
+            if (clockTimer is null) return;
+            clockTimer.Stop();
+            clockTimer.Elapsed -= OnClockElapsed;
+            clockTimer.Dispose();
+            clockTimer = null;
+        }
+    }
+
+    private async void OnClockElapsed(object? sender, ElapsedEventArgs e)
+    {
+        try
+        {
+            await InvokeAsync(() =>
+            {
+                if (disposed || isPaused || game.IsOver) return;   // 暂停/结束：秒数不再走
+                elapsedSec++;
+                StateHasChanged();
+            });
+        }
+        catch (ObjectDisposedException) { }     // 组件已释放：await 之后的渲染会抛
+        catch (InvalidOperationException) { }   // circuit 已断，InvokeAsync 无法排队
+    }
+
+    // ───────────────────────── 最高分（秒，越小越好） ─────────────────────────
+
+    /// <summary>
+    /// ⚠ 比较方向与 2048/Tetris **相反**：用时越小越好。照抄 <c>Score &gt; Best</c> 会静默地永不刷新。
+    /// </summary>
+    private void UpdateBest(int sec)
+    {
+        if (sec <= 0) return;
+
+        if (difficultyKey == MinesweeperLevels.Intermediate.Key)
+        {
+            if (bestIntermediate is null || sec < bestIntermediate) bestIntermediate = sec;
+        }
+        else
+        {
+            if (bestBeginner is null || sec < bestBeginner) bestBeginner = sec;
+        }
+    }
+
+    private string BestKeyForCurrentLevel() =>
+        difficultyKey == MinesweeperLevels.Intermediate.Key ? BestKeyIntermediate : BestKeyBeginner;
+
+    private async Task PersistBestAsync()
+    {
+        var value = difficultyKey == MinesweeperLevels.Intermediate.Key ? bestIntermediate : bestBeginner;
+        if (value is null) return;
+
+        try
+        {
+            await JS.InvokeVoidAsync("localStorage.setItem", BestKeyForCurrentLevel(), value.Value);
+        }
+        catch (JSException) { }                 // 存储被禁：本次会话内仍有效
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+    }
+
+    // ───────────────────────── 会话快照 ─────────────────────────
+
+    private async Task SaveSessionAsync()
+    {
+        if (!isSessionReady) return;            // 预渲染 / 恢复前：绝不写
+
+        try
+        {
+            // 快照在第一个 await 之前完成 —— fire-and-forget 晚完成也不会读到"后来的盘面"
+            var json = JsonSerializer.Serialize(game.ToSnapshot(elapsedSec));
+            await JS.InvokeVoidAsync("sessionStorage.setItem", SessionKey, json);
+        }
+        catch (JSException) { }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+    }
+
+    private async Task RemoveSessionAsync()
+    {
+        if (!isSessionReady) return;
+
+        try
+        {
+            await JS.InvokeVoidAsync("sessionStorage.removeItem", SessionKey);
+        }
+        catch (JSException) { }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        disposed = true;                        // 先置位：此后任何 await 回来的渲染都不再执行
+        StopClock();
+
+        // 切页/关页前把"已过秒数"固化一次：快照的落盘点只有翻开/插旗，而秒数是 1 秒一拍的，
+        // 不补这一发就会丢掉最后一次操作之后的全部用时（实测 MS-08：走 1 秒后离开，回来变回 0）。
+        // 与 Tetris 的 DisposeAsync 落盘同口径 —— 站内 NavLink 切页时 interop 仍可用（D24-7 已验证）；
+        // 关标签页时会抛 JSDisconnectedException，已在 SaveSessionAsync 内部吞掉。
+        if (!game.IsOver) await SaveSessionAsync();
+    }
+}

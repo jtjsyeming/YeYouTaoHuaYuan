@@ -1,6 +1,6 @@
 # tools/e2e —— 夜游桃花源端到端回归套件
 
-Playwright + `@playwright/test` 驱动的浏览器端回归测试，覆盖《07-测试文档-全量测试用例-v2.0.md》的 NAV / FISH / LT / G2048 / TRIS / CODE / NF 七个模块。
+Playwright + `@playwright/test` 驱动的浏览器端回归测试，覆盖《07-测试文档-全量测试用例-v2.0.md》的 NAV / FISH / LT / G2048 / TRIS / MS / CODE / NF 八个模块。
 
 **仅用于开发期测试**：Node/npm 不进入 `dotnet build` 与发布链路，发布产物里没有这里的任何文件。
 
@@ -50,11 +50,12 @@ dotnet run --project ../../jtjsym/jtjsym --no-launch-profile --environment Devel
 | `npm run test:d14` | D14 移动端俄罗斯方块两栏布局（七档视口 + 桌面零变化回归） | 3~4 分钟 |
 | `npm run test:d22` | D-23 俄罗斯方块最高分（预置读 / 首屏占位 / 不闪 0 / 未落盘 / 重玩固化 / 损坏值 / 跨页隔离） | 20 秒 |
 | `npm run test:d24` | D-24 对局会话保持 + 后台自动暂停 / D-25 最高分落盘加固（切页往返 / 结束清档 / 重玩清档 / 8 种坏档 / 恢复后继续 / 切后台 / 软降零头） | 55 秒 |
+| `npm run test:ms` | H-013 扫雷（首屏 / 首点安全 / 洪泛边界 / 插旗 / 败局 / 胜局纪录 / 坏值 / 会话保持 / 重开切档 / 窄屏 / 无异常） | 65 秒 |
 | `npm run test:fast` | nav + lt + g2048 + code_nf（不含 tris 长时项） | 6 分钟 |
 | `npm run test:pr` | **CI 的 PR/push 子集**（chromium + 编号前缀白名单，见下） | 13 分钟 |
 | `npm run test:all` | 全部 | 17~20 分钟 |
 
-- **`test:pr` 是 CI 与本地同源的唯一子集定义**（`.github/workflows/tests.yml` 只调 `npm run test:pr`）。它靠 `--grep` 的前缀白名单选用例，**新增 spec 时必须把标题编号前缀加进去**，否则该 spec 永远不会在 PR 上跑（`D02-`/`NF-`/`D15-`/`D-1[12]` 就这样漏过 40 条）。当前白名单：`NAV-|FISH-|G2048-|LT-|TRIS-0|D14-|D08-|D02-|D-1[12]|D15-|NF-|CODE-|D22-|D24-`（**2026-11-10 实测：132 条选中 130 条通过 / 2 跳过 / 0 失败**；故意排除 TRIS-10~14/20/21/25/26/ERR 与 smoke 的人工项）；
+- **`test:pr` 是 CI 与本地同源的唯一子集定义**（`.github/workflows/tests.yml` 只调 `npm run test:pr`）。它靠 `--grep` 的前缀白名单选用例，**新增 spec 时必须把标题编号前缀加进去**，否则该 spec 永远不会在 PR 上跑（`D02-`/`NF-`/`D15-`/`D-1[12]` 就这样漏过 40 条）。当前白名单：`NAV-|FISH-|G2048-|LT-|TRIS-0|D14-|D08-|D02-|D-1[12]|D15-|NF-|CODE-|D22-|D24-|MS-`（**2026-11-11 实测：143 条选中 141 条通过 / 2 跳过 / 0 失败**；故意排除 TRIS-10~14/20/21/25/26/ERR 与 smoke 的人工项）；
 - 换端口：`BASE_URL=http://localhost:14099 npm run test:lt`；
 - 按用例编号过滤依赖"编号写在 `test()` 标题首段"的约定，例如 `npx playwright test --grep "LT-11"`；
 - **`trace` 默认关闭**（见 §6），失败时 `test-results/` 里有失败截图、`error-context.md`（ARIA 快照）与 **`env-snapshot.json`**（环境快照，见 §3.1）；要逐帧复盘就临时加 `--trace on`；
@@ -86,6 +87,7 @@ dotnet run --project ../../jtjsym/jtjsym --no-launch-profile --environment Devel
 | `tests/d11_d12.spec.mjs` | D-11-1~3、D-12-1~6 | 《09》§6 新写 |
 | `tests/d14_mobile_layout.spec.mjs` | D14-1~D14-9 + D14-10/10b/10c/10d（横屏四档、桌面四档含 768×1024）（+ 一条控制台错误辅助断言） | 《11》§5.1 新写、《28》P-023 |
 | `tests/smoke.spec.mjs` | 《07》§11.3 的 28 条 P0 | 从上列各文件抽子集，不新增逻辑 |
+| `tests/minesweeper.spec.mjs` | MS-01~MS-11（扫雷，H-013） | 《34》§6.2 新写 |
 
 ## 5. 迁移约定（改脚本前先看）
 
@@ -112,3 +114,5 @@ dotnet run --project ../../jtjsym/jtjsym --no-launch-profile --environment Devel
 - **`click()` 返回 ≠ DOM 已更新（Blazor Server 必踩）**：点击事件要经 SignalR 到服务端、处理完再回传 render batch。`locator.click()` 只保证事件在**浏览器侧**已派发，紧接着读 DOM 拿到的是**点击前**的样子。平时不炸只是因为后面恰好有 `expect.poll` / `sleep` 顶出几十毫秒余量。**2026-11-10 实测**：`D22-5` 把「点重开 → 分数归零」写成点完直读，孤立跑 `test:d22` 绿（7/7）、全量 `test:pr` 红（读到 `score=17`），而失败截图的可访问性快照里分数已是 `0` —— 典型假红。**凡是"点一下 → 断言画面变了"的判据，一律 `expect.poll` 读，不要 `sleep` 也不要点完直读。**
 - **`testInfo.attach()` 不等于"文件在 `test-results/` 里"**（2026-11-10，C-55）：`attach({ body })` 会让条目进 `testInfo.attachments`，但磁盘上没有文件 —— HTML 报告是自包含单文件，附件被压进它自己的 base64 zip，而 CI 的 artifact 收的是 `test-results/`。要给 CI 看到附件，必须**先 `fs.writeFile(testInfo.outputPath(name), body)` 再 attach**。
 - **别指望 `localStorage` 的 poll 顺便充当延时**：`expect.poll(() => stored(page))` 在"值早就在盘上"时会**立刻**返回，一个毫秒都不等。D-25 把 best 的落盘点扩到每个锁定点之后，`D22-5` 里那发 localStorage poll 就从"延时来源"退化成"瞬间通过"，于是紧跟着的 DOM 读取直接吃到上面那条坑。判据顺序上，**先 poll DOM，再 poll 存储**。
+- **Razor 的 `@for` 循环变量不能在 lambda 里直接用**（2026-11-11，扫雷首跑 9 红）：`@onclick="() => RevealCellAsync(r, c)"` 捕获的是**同一个变量**，等事件触发时它已是终值 —— 于是每格都去翻最后一格。首跑表现极具误导性：MS-02/03/04/07/08 全是"点了没反应"（`revealed` 恒为 0），看着像 Blazor 事件没接上，实际是闭包。写法必须先 `var row = r; var col = c;` 再进 lambda。**棋盘/列表类渲染（几十上百个带回调的元素）第一次跑就"全都不响应"时，先查这个。**
+- **扫雷的会话档只在"翻格/插旗"与 `DisposeAsync` 落盘**（2026-11-11）：秒数是 1 秒一拍，若只在翻格时写，离开后回来的用时会把最后一次操作之后的时间全丢掉（MS-08 首版实测 1s → 0s）。`DisposeAsync` 补了一发 `SaveSessionAsync()`（与 Tetris 同口径），所以**站内切页**能精确恢复，**关标签页**仍可能丢最后几秒。判据要留 ±1s 容差：读 `before` 到离开之间可能又跳了一拍，那不是"暂停态在走表"。
