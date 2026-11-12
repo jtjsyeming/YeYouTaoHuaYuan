@@ -415,7 +415,39 @@ public sealed class MinesweeperCore
             }
         }
 
+        // ⑩ 邻值重建（D-26）：_adjacent 必须对**全部非雷格**成立，FloodReveal 才能在正确的位置停住。
+        // 落库那一步把未翻格（-1）的邻值一律写成 0，而 FloodReveal 正是靠 `_adjacent[i] != 0` 停止扩散 ——
+        // 不重建的话恢复局里每个未翻格都像"零格"，点任何一个安全格都会展开整片连通区（连到 71 格即伪胜局）。
+        // ⚠ 位置是硬约束：必须排在 ⑨ 之后。⑨ 的判据是"快照里的数字 vs 实际邻雷数"，
+        //    先重算会让两边恒等、内容闸退化成空操作（Rejects_AdjacentCountMismatch 会当场变红）。
+        for (var r = 0; r < level.Rows; r++)
+        {
+            for (var c = 0; c < level.Cols; c++)
+            {
+                var i = core.Index(r, c);
+                if (!core._mines[i]) core._adjacent[i] = core.CountAdjacentMines(r, c);
+            }
+        }
+
         core.MinesPlaced = s.MinesPlaced;
         return core;
     }
+
+    // ───────────────────────── 最快时间（秒，越小越好） ─────────────────────────
+    // 这两个口径原本写在 MineSweeper.razor 里，只能靠 e2e 撞；下沉到 Core 后一条单测就能钉死（《35》§2.2）。
+
+    /// <summary>
+    /// 解析 localStorage 里的最快时间。比较方向与 2048/Tetris <b>相反</b>（越小越好），
+    /// 所以照抄"越大越好 + 0 无效"会直接写反。
+    /// <para>0 是否有效取决于胜局处的钳位：当前实现把 0 钳成 1（方案 A），故 0 仍是无效值（<c>v &gt; 0</c>）。</para>
+    /// </summary>
+    public static int? TryParseBest(string? raw) =>
+        int.TryParse(raw, out var v) && v > 0 ? v : null;
+
+    /// <summary>
+    /// 返回<b>新的纪录值</b>；不需要刷新时返回 null（页面据此决定遮罩要不要显示「新纪录！」）。
+    /// <para>相等不刷新：给"同一份档重放"一个确定的语义，也避免无谓的写盘。</para>
+    /// </summary>
+    public static int? TryUpdateBest(int? current, int sec) =>
+        sec >= 1 && (current is null || sec < current) ? sec : null;
 }

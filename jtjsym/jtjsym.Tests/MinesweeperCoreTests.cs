@@ -384,6 +384,102 @@ public class MinesweeperCoreTests
         Assert.Null(MinesweeperCore.TryFrom(s));
     }
 
+    // ─────────────────────────── 恢复局的行为（D-26 / C-59） ───────────────────────────
+
+    /// <summary>
+    /// D-26 的最小复现：恢复局点一个**数字格**只该翻它自己。
+    /// <para>根因是落库时把未翻格的邻值写成 0，而 <c>FloodReveal</c> 靠"邻值 != 0"停止扩散 ——
+    /// 于是恢复局里每个未翻格都像零格，点任何安全格都会展开整片连通区（连到 71 格即伪胜局）。
+    /// 修复前本用例的 <c>RevealedSafeCount</c> 会从 2 直接跳到 71。</para>
+    /// <para>⚠ 目标格必须从**原始盘**里挑（恢复盘的未翻格邻值恒 0，扫不出来）：原始盘的邻值由 <c>PlaceMines</c> 算好。</para>
+    /// </summary>
+    [Fact]
+    public void RestoredReveal_OnDigitCell_OnlyRevealsItself()
+    {
+        var origin = NewBeginner();
+        Assert.True(origin.Reveal(4, 4));
+        Assert.False(origin.IsWin, "首点不该直接通关（通关档会被 ⑧ 拒绝）");
+
+        // 在原始盘里找一格"未翻 + 邻雷数 > 0"的数字格（恢复盘的未翻格邻值恒 0，扫不出来）
+        var target = (r: -1, c: -1);
+        for (var r = 0; r < origin.Rows && target.r < 0; r++)
+        {
+            for (var c = 0; c < origin.Cols; c++)
+            {
+                if (!origin.IsRevealed(r, c) && !origin.IsMine(r, c) && origin.Adjacent(r, c) > 0)
+                {
+                    target = (r, c);
+                    break;
+                }
+            }
+        }
+        Assert.True(target.r >= 0, "首点洪泛后应仍存在未翻的数字格");
+
+        var restored = MinesweeperCore.TryFrom(origin.ToSnapshot(5));
+        Assert.NotNull(restored);
+
+        var before = restored!.RevealedSafeCount;
+        Assert.True(restored.Reveal(target.r, target.c));
+        Assert.Equal(before + 1, restored.RevealedSafeCount);
+    }
+
+    /// <summary>
+    /// D-26 的边界版：恢复局的洪泛必须停在正确的位置。
+    /// <para>固定雷位 <c>{0..7,20,29}</c>、只翻 40 号。点 50（零格）后应停在 <b>69</b> 格，
+    /// 未翻的安全格恰好是 <b>{8, 11}</b> 两个数字格 —— 逐个点开才胜。</para>
+    /// <para>数字来自《35》§4.4 的独立控制台实测；修复前点 50 就会到 71 并判胜（伪胜局）。</para>
+    /// </summary>
+    [Fact]
+    public void Restored_FloodStaysBounded()
+    {
+        var mines = new[] { 0, 1, 2, 3, 4, 5, 6, 7, 20, 29 };
+        var s = BuildBeginnerSnapshot(mines, leaveUnrevealed: -1, revealOnly: new[] { 40 });
+
+        var g = MinesweeperCore.TryFrom(s);
+        Assert.NotNull(g);
+        Assert.Equal(1, g!.RevealedSafeCount);
+
+        Assert.True(g.Reveal(5, 5));                        // 50 号：邻雷 0 ⇒ 触发洪泛
+        Assert.Equal(69, g.RevealedSafeCount);
+        Assert.False(g.IsRevealed(0, 8));                   // 8 号：数字格 1
+        Assert.False(g.IsRevealed(1, 2));                   // 11 号：数字格 4
+        Assert.False(g.IsWin);
+
+        Assert.True(g.Reveal(0, 8));
+        Assert.Equal(70, g.RevealedSafeCount);
+        Assert.False(g.IsWin, "还剩 11 号未翻，不该判胜");
+
+        Assert.True(g.Reveal(1, 2));
+        Assert.Equal(71, g.RevealedSafeCount);
+        Assert.True(g.IsWin);
+    }
+
+    // ─────────────────────────── 最快时间口径（D-27 / C-59） ───────────────────────────
+
+    /// <summary>
+    /// 解析侧：坏值与 0 一律当"没有纪录"。方向与 2048/Tetris 相反（越小越好），
+    /// 0 之所以无效是因为胜局处把 0 钳成了 1（方案 A，《35》§2.2）。
+    /// </summary>
+    [Theory]
+    [InlineData("0", null)]
+    [InlineData("abc", null)]
+    [InlineData("-5", null)]
+    [InlineData("", null)]
+    [InlineData(null, null)]
+    [InlineData("12", 12)]
+    public void TryParseBest_RejectsNonPositive(string? raw, int? expected) =>
+        Assert.Equal(expected, MinesweeperCore.TryParseBest(raw));
+
+    /// <summary>刷新侧：只接受更小的合法值，相等不刷新（同一份档重放不该再报「新纪录！」）。</summary>
+    [Theory]
+    [InlineData(null, 1, 1)]        // 首条纪录
+    [InlineData(10, 9, 9)]          // 更小 ⇒ 刷新
+    [InlineData(10, 11, null)]      // 更大 ⇒ 不刷新
+    [InlineData(10, 10, null)]      // 相等 ⇒ 不刷新
+    [InlineData(null, 0, null)]     // 0 秒非法
+    public void TryUpdateBest_KeepsTheSmallest(int? current, int sec, int? expected) =>
+        Assert.Equal(expected, MinesweeperCore.TryUpdateBest(current, sec));
+
     // ─────────────────────────── 构造用具 ───────────────────────────
 
     private static (int, int) FirstUnrevealed(MinesweeperCore g)
@@ -403,10 +499,13 @@ public class MinesweeperCoreTests
     }
 
     /// <summary>
-    /// 手工构造一份 9×9 初级档：雷位给定，安全格全部标成"已翻 + 正确数字"，
-    /// <paramref name="leaveUnrevealed"/> 指定的那一格留成未翻（&gt;= 0 时），-1 表示全部翻开（= 胜局档）。
+    /// 手工构造一份 9×9 初级档：雷位给定，安全格按两种口径决定"已翻 / 未翻"。
+    /// <para><paramref name="revealOnly"/> 为 null 时用 <paramref name="leaveUnrevealed"/>：指定的那一格留成未翻
+    /// （&gt;= 0 时），-1 表示全部翻开（= 胜局档）。</para>
+    /// <para><paramref name="revealOnly"/> 非 null 时**只翻这些格**，忽略 <paramref name="leaveUnrevealed"/> ——
+    /// D-26 的"只翻 40 号"档这么写不出来，否则洪泛用例无从构造。</para>
     /// </summary>
-    private static MinesweeperSnapshot BuildBeginnerSnapshot(int[] mineIndexes, int leaveUnrevealed)
+    private static MinesweeperSnapshot BuildBeginnerSnapshot(int[] mineIndexes, int leaveUnrevealed, int[]? revealOnly = null)
     {
         const int rows = 9, cols = 9;
         var isMine = new bool[rows * cols];
@@ -423,7 +522,15 @@ public class MinesweeperCoreTests
                     cells[i] = -2;
                     continue;
                 }
-                if (i == leaveUnrevealed)
+                if (revealOnly is not null)
+                {
+                    if (!revealOnly.Contains(i))
+                    {
+                        cells[i] = -1;
+                        continue;
+                    }
+                }
+                else if (i == leaveUnrevealed)
                 {
                     cells[i] = -1;
                     continue;

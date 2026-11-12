@@ -68,15 +68,15 @@
         {
             <div class="ms-overlay">
                 <h2 class="ms-overlay-title">@(game.IsWin ? "扫雷成功" : "踩到雷了")</h2>
-                <p class="ms-overlay-sub">用时 @elapsedSec 秒</p>
+                <p class="ms-overlay-sub">@(isNewRecord ? $"新纪录！用时 {elapsedSec} 秒" : $"用时 {elapsedSec} 秒")</p>
                 <FluentButton Class="ms-overlay-btn" Appearance="Appearance.Accent" @onclick="OnRestartClicked">再来一局</FluentButton>
             </div>
         }
     </div>
 
     <div class="ms-best">
-        <p class="best-score" data-diff="beginner">最高分：@(isBestLoaded ? FormatBest(bestBeginner) : "—")</p>
-        <p class="best-score" data-diff="intermediate">最高分：@(isBestLoaded ? FormatBest(bestIntermediate) : "—")</p>
+        <p class="best-score" data-diff="beginner">最快时间：@(isBestLoaded ? FormatBest(bestBeginner) : "—")</p>
+        <p class="best-score" data-diff="intermediate">最快时间：@(isBestLoaded ? FormatBest(bestIntermediate) : "—")</p>
     </div>
 </div>
 
@@ -198,20 +198,29 @@
 
 @code {
     // ── 存储键：与 jtjsym.g2048.best / jtjsym.tetris.best 同命名空间（《34》§2.3） ──
-    private const string BestKeyBeginner = "jtjsym.ms.best.beginner";
-    private const string BestKeyIntermediate = "jtjsym.ms.best.intermediate";
+    // 扫雷的指标是「用时秒数，越小越好」，叫 best 会与 2048/Tetris 的"分数越高越好"混同，
+    // 故键与文案统一改 fastest（《35》§2.3，C-59）。
+    private const string BestKeyBeginner = "jtjsym.ms.fastest.beginner";
+    private const string BestKeyIntermediate = "jtjsym.ms.fastest.intermediate";
     private const string SessionKey = "jtjsym.ms.session";
+
+    /// <summary>改名前的旧键（D-26 期间写的值大概率是伪胜局冻住的秒数）。读完新键即删，不留语义已死的键。</summary>
+    private const string LegacyBestKeyBeginner = "jtjsym.ms.best.beginner";
+    private const string LegacyBestKeyIntermediate = "jtjsym.ms.best.intermediate";
 
     private MinesweeperCore game = MinesweeperCore.NewGame(MinesweeperLevels.Beginner, new Random());
     private string difficultyKey = MinesweeperLevels.Beginner.Key;
     private int elapsedSec;
 
-    // 最高分（秒，越小越好）。两个标志刻意拆开（D-25 配方）：isBestReading 是"读只发生一次"的防重入闸，
+    // 最快时间（秒，越小越好）。两个标志刻意拆开（D-25 配方）：isBestReading 是"读只发生一次"的防重入闸，
     // isBestLoaded 是"读完成"= 占位解锁。挤在一根标志上会在 await 窗口里把「—」画成「0 秒」。
     private int? bestBeginner;
     private int? bestIntermediate;
     private bool isBestReading;
     private bool isBestLoaded;
+
+    /// <summary>本局是否刷新了纪录 —— 遮罩副行据此二选一。必须在重开时清零，否则上一局的「新纪录！」会残留。</summary>
+    private bool isNewRecord;
 
     /// <summary>写闸门：恢复流程开始前恒 false —— 预渲染实例与"恢复还没跑完"期间一律不写，
     /// 否则一次空局就把存档冲掉（与 2048 的 isSessionReady 同语义）。</summary>
@@ -286,17 +295,22 @@
         // 仅交互实例会走到 firstRender=true，规避 ServerPrerendered 的预渲染实例
         if (!firstRender) return;
 
-        // ① 读两条最高分（两档各一条）
+        // ① 读两条最快时间（两档各一条）
         if (!isBestReading)
         {
             isBestReading = true;
             try
             {
-                bestBeginner = ParseBest(await JS.InvokeAsync<string?>("localStorage.getItem", BestKeyBeginner));
-                bestIntermediate = ParseBest(await JS.InvokeAsync<string?>("localStorage.getItem", BestKeyIntermediate));
+                bestBeginner = MinesweeperCore.TryParseBest(await JS.InvokeAsync<string?>("localStorage.getItem", BestKeyBeginner));
+                bestIntermediate = MinesweeperCore.TryParseBest(await JS.InvokeAsync<string?>("localStorage.getItem", BestKeyIntermediate));
+
+                // 顺带清掉改名前的旧键（幂等）：旧值大概率是 D-26 伪胜局冻住的秒数，不清会让用户以为纪录还在
+                await JS.InvokeVoidAsync("localStorage.removeItem", LegacyBestKeyBeginner);
+                await JS.InvokeVoidAsync("localStorage.removeItem", LegacyBestKeyIntermediate);
             }
             catch (JSException) { }            // 隐私模式/存储被禁：保持 null，显示「—」，游戏零降级
             catch (JSDisconnectedException) { }
+            catch (ObjectDisposedException) { }
 
             isBestLoaded = true;
             StateHasChanged();
@@ -342,12 +356,6 @@
         }
     }
 
-    private static int? ParseBest(string? raw)
-    {
-        // 坏值（"abc" / 0 / 负数）一律当"没有纪录"→ 显示「—」（《34》§6.2 MS-07 定下的口径）
-        return int.TryParse(raw, out var v) && v > 0 ? v : null;
-    }
-
     // ───────────────────────── 交互 ─────────────────────────
 
     private async Task RevealCellAsync(int r, int c)
@@ -362,7 +370,11 @@
         if (game.IsWin)
         {
             StopClock();
-            UpdateBest(elapsedSec);
+            // 方案 A（《35》§2.2）：0 秒只可能来自"恢复局第一秒内切页 → 回来点完最后几格"。
+            // 不钳位就会把该难度纪录永久锁死在 0、再也打不破；钳到 1 秒既让成绩落盘，又保住了"还能再破"。
+            // 代价只是把 1 秒一拍的量化的误差明确成"最短合法成绩 1 秒"。
+            if (elapsedSec < 1) elapsedSec = 1;
+            isNewRecord = UpdateBest(elapsedSec);
             await PersistBestAsync();           // 落盘点 ①：胜利瞬间（与遮罩同帧）
             await RemoveSessionAsync();         // 结束态没有可恢复的语义 → 清档（不是"不写"）
         }
@@ -408,6 +420,7 @@
         difficultyKey = game.Level.Key;
         elapsedSec = 0;
         isPaused = false;
+        isNewRecord = false;                    // 新一局不该继承上一局的「新纪录！」提示
         showResumeTip = false;
 
         await PersistBestAsync();               // 落盘点 ②：重开时顺带把当前纪录再固化一次
@@ -457,23 +470,21 @@
         catch (InvalidOperationException) { }   // circuit 已断，InvokeAsync 无法排队
     }
 
-    // ───────────────────────── 最高分（秒，越小越好） ─────────────────────────
+    // ───────────────────────── 最快时间（秒，越小越好） ─────────────────────────
 
     /// <summary>
     /// ⚠ 比较方向与 2048/Tetris **相反**：用时越小越好。照抄 <c>Score &gt; Best</c> 会静默地永不刷新。
+    /// 返回"是否刷新了纪录"（遮罩据此决定要不要显示「新纪录！」）。口径已下沉到 Core，这里只做分档。
     /// </summary>
-    private void UpdateBest(int sec)
+    private bool UpdateBest(int sec)
     {
-        if (sec <= 0) return;
+        var isIntermediate = difficultyKey == MinesweeperLevels.Intermediate.Key;
+        var next = MinesweeperCore.TryUpdateBest(isIntermediate ? bestIntermediate : bestBeginner, sec);
+        if (next is null) return false;
 
-        if (difficultyKey == MinesweeperLevels.Intermediate.Key)
-        {
-            if (bestIntermediate is null || sec < bestIntermediate) bestIntermediate = sec;
-        }
-        else
-        {
-            if (bestBeginner is null || sec < bestBeginner) bestBeginner = sec;
-        }
+        if (isIntermediate) bestIntermediate = next;
+        else bestBeginner = next;
+        return true;
     }
 
     private string BestKeyForCurrentLevel() =>

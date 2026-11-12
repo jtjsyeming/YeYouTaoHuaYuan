@@ -1,8 +1,10 @@
-// H-013：网站扫雷（MS-01~MS-11）。
+// H-013：网站扫雷（MS-01~MS-13）。
 // 存储键全部带 jtjsym. 命名空间（与 jtjsym.g2048.* / jtjsym.tetris.* 同一约定，《34》§2.3）：
-//   sessionStorage['jtjsym.ms.session']          对局进度
-//   localStorage['jtjsym.ms.best.beginner']      初级最高分（**秒**，越小越好）
-//   localStorage['jtjsym.ms.best.intermediate']  中级最高分
+//   sessionStorage['jtjsym.ms.session']            对局进度
+//   localStorage['jtjsym.ms.fastest.beginner']     初级最快时间（**秒**，越小越好）
+//   localStorage['jtjsym.ms.fastest.intermediate'] 中级最快时间
+// ⚠ 键名是 fastest 而不是 best（C-59 改名）：扫雷的指标方向与 2048/Tetris 相反，
+//   别用 helpers.readBest（它的正则锚的是「最高分」，对扫雷恒返回 -1）。
 //
 // 三条判据纪律（沿用 C-53/54 的教训）：
 //   ① 点击后一律 `expect.poll` 读 DOM —— Blazor Server 的 click 在服务端处理，`click()` resolve ≠ DOM 已更新。
@@ -20,8 +22,8 @@ import {
 } from './helpers.mjs';
 
 const SK = 'jtjsym.ms.session';
-const BK_BEGINNER = 'jtjsym.ms.best.beginner';
-const BK_INTERMEDIATE = 'jtjsym.ms.best.intermediate';
+const BK_BEGINNER = 'jtjsym.ms.fastest.beginner';
+const BK_INTERMEDIATE = 'jtjsym.ms.fastest.intermediate';
 
 const sessionRaw = page => page.evaluate(k => sessionStorage.getItem(k), SK);
 const storedBest = (page, key = BK_BEGINNER) => page.evaluate(k => localStorage.getItem(k), key);
@@ -71,6 +73,11 @@ async function seedSession(page, payload) {
 
 const clearSession = async page => {
   await page.evaluate(k => sessionStorage.removeItem(k), SK);
+};
+
+/** 清掉初级的最快时间（MS-13 要一个"盘上还没有纪录"的起点）。 */
+const clearFastest = async page => {
+  await page.evaluate(k => localStorage.removeItem(k), BK_BEGINNER);
 };
 
 /**
@@ -128,10 +135,16 @@ function msSnapshot({ rows = 9, cols = 9, mineIdx, reveal = 'all', leave = -1, e
 /** 第 0 行整排 10 雷：下标 0 是雷（MS-05 踩它），(8,8)=80 永远是安全格（MS-06 留它）。 */
 const ROW0_MINES = [0, 1, 2, 3, 4, 5, 6, 7, 8, 9];
 
+/**
+ * D-26 的确定性雷位（《35》§4.4）：安全格 71 个，洪泛从 50 号连通出去**不会**覆盖 8 号与 11 号。
+ * 邻雷数：30→2、50→0、8→1、11→4（11 号邻域有 4 颗雷，是数字边界格）。
+ */
+const SEED_D26 = [0, 1, 2, 3, 4, 5, 6, 7, 20, 29];
+
 const idxOf = (r, c, cols = 9) => r * cols + c;
 
 test.describe('MS 扫雷', () => {
-  test('MS-01 首屏：81 格、难度两档、两行最高分、剩余雷 10；预渲染占位为「—」', async ({ page, request }) => {
+  test('MS-01 首屏：81 格、难度两档、两行最快时间、剩余雷 10；预渲染占位为「—」', async ({ page, request }) => {
     // 占位只能读原始 HTML：open() 之后 hydrate 早已把它换掉了
     const html = await (await request.get('/minesweeper')).text();
     check(
@@ -146,9 +159,9 @@ test.describe('MS 扫雷', () => {
     const optionCount = await page.locator('fluent-option').count();
     check('MS-01', st.count === 81 && optionCount === 2 && st.minesLeft === 10, `格子=${st.count} 难度选项=${optionCount} 剩余雷=${st.minesLeft}`);
     check(
-      'MS-01-最高分',
-      st.bests.length === 2 && st.bests.every(t => t.startsWith('最高分：')),
-      `两条最高分=${JSON.stringify(st.bests)}`,
+      'MS-01-最快时间',
+      st.bests.length === 2 && st.bests.every(t => t.startsWith('最快时间：')),
+      `两条最快时间=${JSON.stringify(st.bests)}`,
     );
     check('MS-01-未开局', st.revealed === 0 && !st.over && st.elapsed === 0, `已翻=${st.revealed} 遮罩=${st.over} 用时=${st.elapsed}`);
   });
@@ -295,7 +308,7 @@ test.describe('MS 扫雷', () => {
     await expect.poll(() => sessionRaw(page), { timeout: 5000 }).toBeNull();
   });
 
-  test('MS-06 胜局 + 纪录：遮罩、最高分落盘（秒，越小越好）', async ({ page }) => {
+  test('MS-06 胜局 + 纪录：遮罩、最快时间落盘（秒，越小越好）', async ({ page }) => {
     await open(page, '/minesweeper');
     // 全部安全格已翻，只留 (8,8)=80 未翻 ⇒ 点开即胜
     await seedSession(page, msSnapshot({ mineIdx: ROW0_MINES, reveal: 'all', leave: 80, elapsed: 3 }));
@@ -306,7 +319,7 @@ test.describe('MS 扫雷', () => {
     const st = await readMs(page);
     check('MS-06', st.overlayTitle.includes('扫雷成功'), `遮罩="${st.overlayTitle}"`);
 
-    await expect.poll(() => bestText(page), { timeout: 6000 }).toContain('最高分：3 秒');
+    await expect.poll(() => bestText(page), { timeout: 6000 }).toContain('最快时间：3 秒');
     await expect.poll(() => storedBest(page), { timeout: 6000 }).toBe('3');
     checkEq('MS-06-清档', await sessionRaw(page), null);
   });
@@ -319,14 +332,14 @@ test.describe('MS 扫雷', () => {
     await sleep(1400);
 
     const st = await readMs(page);
-    check('MS-07', (await bestText(page)) === '最高分：—', `最高分文案="${await bestText(page)}"`);
+    check('MS-07', (await bestText(page)) === '最快时间：—', `最快时间文案="${await bestText(page)}"`);
 
     await page.locator('.ms-cell').nth(40).click();
     await expect.poll(() => readMs(page).then(s => s.revealed)).toBeGreaterThan(1);
     check('MS-07-可玩', (await readMs(page)).revealed > 1 && errs.length === 0, `翻开=${(await readMs(page)).revealed} 异常=${errs.length} ${errs.slice(0, 2).join(' | ')}`);
   });
 
-  test('MS-08 会话保持：切页回来盘面/旗/剩余雷一致、提示恢复、计时续走', async ({ page }) => {
+  test('MS-08 会话保持：切页回来盘面/旗/剩余雷一致、提示恢复、计时续走（含 D-26 洪泛闸）', async ({ page }) => {
     await open(page, '/minesweeper');
     await clearSession(page);
     await page.reload({ waitUntil: 'domcontentloaded' });
@@ -353,14 +366,23 @@ test.describe('MS 扫雷', () => {
     check('MS-08-暂停', after.resumeTip && Math.abs(after.elapsed - before.elapsed) <= 1,
       `恢复提示=${after.resumeTip} 用时=${before.elapsed}s→${after.elapsed}s（暂停态不该继续走表，容差 ±1s）`);
 
-    // 继续玩：计时从已过秒数续走
-    const hidden = after.cells.findIndex(c => !c.cls.includes('ms-revealed') && !c.cls.includes('ms-flag'));
-    await page.locator('.ms-cell').nth(hidden).click();
-    await expect.poll(() => readMs(page).then(s => s.elapsed), { timeout: 6000 }).toBeGreaterThan(after.elapsed);
-    check('MS-08-续走', (await readMs(page)).elapsed > after.elapsed, `续走后用时=${(await readMs(page)).elapsed}s（应 > ${after.elapsed}）`);
+    // 续走段改成**确定性 seed**（《35》§4.1）：前半段的真实对局布雷是随机的，"洪泛是否连通全盘"
+    // 取决于运气 —— D-26 期间这条就是这么变成 flaky 的（实测 5 跑 1 红）。雷位固定后，
+    // 30 号是邻雷 2 的数字格，恢复局点它**只该翻自己**（D-26 回归闸），用时续走仍按原来的量看。
+    await seedSession(page, msSnapshot({ mineIdx: SEED_D26, reveal: [40], elapsed: 5 }));
+    const rs = await readMs(page);
+    check('MS-08-恢复', rs.revealed === 1 && rs.elapsed === 5 && rs.resumeTip,
+      `已翻=${rs.revealed} 用时=${rs.elapsed} 提示=${rs.resumeTip}`);
+
+    await page.locator('.ms-cell').nth(30).click();
+    await expect.poll(() => readMs(page).then(s => s.revealed), { timeout: 6000 }).toBe(2);
+    const rs2 = await readMs(page);
+    checkEq('MS-08-D26闸', { revealed: rs2.revealed, over: rs2.over }, { revealed: 2, over: false });
+    await expect.poll(() => readMs(page).then(s => s.elapsed), { timeout: 6000 }).toBeGreaterThan(5);
+    check('MS-08-续走', (await readMs(page)).elapsed > 5, `续走后用时=${(await readMs(page)).elapsed}s（应 > 5）`);
   });
 
-  test('MS-09 重开与切档：重开归零、最高分保留；切中级 256 格 / 40 雷 / 清档', async ({ page }) => {
+  test('MS-09 重开与切档：重开归零、最快时间保留；切中级 256 格 / 40 雷 / 清档', async ({ page }) => {
     await open(page, '/minesweeper');
     await page.evaluate(([k, v]) => localStorage.setItem(k, v), [BK_BEGINNER, '9']);
     await page.reload({ waitUntil: 'domcontentloaded' });
@@ -374,7 +396,7 @@ test.describe('MS 扫雷', () => {
     await expect.poll(() => readMs(page).then(s => s.revealed), { timeout: 5000 }).toBe(0);
     const st = await readMs(page);
     checkEq('MS-09-重开', { elapsed: st.elapsed, left: st.minesLeft }, { elapsed: 0, left: 10 });
-    check('MS-09-保留纪录', (await bestText(page)) === '最高分：9 秒', `最高分="${await bestText(page)}"`);
+    check('MS-09-保留纪录', (await bestText(page)) === '最快时间：9 秒', `最快时间="${await bestText(page)}"`);
     await expect.poll(() => sessionRaw(page), { timeout: 5000 }).toBeNull();
 
     // 切中级：16×16 / 40 雷
@@ -431,5 +453,58 @@ test.describe('MS 扫雷', () => {
     await expect.poll(() => readMs(page).then(s => s.over)).toBe(true);
 
     check('MS-11', errs.length === 0, errs.length ? errs.slice(0, 4).join(' | ') : '恢复/切档/翻开/败局四条路径均无 console error');
+  });
+
+  test('MS-12 恢复局洪泛边界：点零格停在 69 格，还剩 {8,11}，逐个点开才胜', async ({ page }) => {
+    await open(page, '/minesweeper');
+    await seedSession(page, msSnapshot({ mineIdx: SEED_D26, reveal: [40], elapsed: 5 }));
+
+    const restored = await readMs(page);
+    check('MS-12-前置', restored.revealed === 1 && restored.resumeTip, `恢复后已翻=${restored.revealed} 恢复提示=${restored.resumeTip}`);
+
+    // 50 号是零格（邻雷 0）⇒ 触发洪泛；修复后必须停在 69 格，而不是一口气展开到 71 判胜
+    await page.locator('.ms-cell').nth(50).click();
+    await expect.poll(() => readMs(page).then(s => s.revealed), { timeout: 6000 }).toBeGreaterThan(1);
+
+    const a = await readMs(page);
+    checkEq(
+      'MS-12-点50',
+      { revealed: a.revealed, c8: a.cells[8].cls.includes('ms-revealed'), c11: a.cells[11].cls.includes('ms-revealed'), over: a.over },
+      { revealed: 69, c8: false, c11: false, over: false },
+    );
+
+    // 8 号（(0,8)，数字 1）与 11 号（(1,2)，数字 4）是两个孤岛：逐个点开才到胜局
+    await page.locator('.ms-cell').nth(8).click();
+    await expect.poll(() => readMs(page).then(s => s.revealed), { timeout: 6000 }).toBe(70);
+    const b = await readMs(page);
+    checkEq('MS-12-点8', { revealed: b.revealed, over: b.over }, { revealed: 70, over: false });
+
+    await page.locator('.ms-cell').nth(11).click();
+    await expect.poll(() => readMs(page).then(s => s.over), { timeout: 6000 }).toBe(true);
+    const c = await readMs(page);
+    check('MS-12-点11胜', c.overlayTitle.includes('扫雷成功') && c.revealed === 71, `遮罩="${c.overlayTitle}" 已翻=${c.revealed}`);
+  });
+
+  test('MS-13 0 秒成绩：恢复局 elapsed=0 通关 → 遮罩/纪录/存储都是 1 秒；相等不再报新纪录', async ({ page }) => {
+    await open(page, '/minesweeper');
+    await clearFastest(page);
+    await seedSession(page, msSnapshot({ mineIdx: ROW0_MINES, reveal: 'all', leave: 80, elapsed: 0 }));
+
+    await page.locator('.ms-cell').nth(80).click();
+    await expect.poll(() => readMs(page).then(s => s.over), { timeout: 6000 }).toBe(true);
+
+    // 方案 A（《35》§2.2）：0 秒只来自"恢复局第一秒内切页"，胜局处钳成 1 秒 —— 否则纪录会被永久锁死在 0
+    const sub = ((await page.locator('.ms-overlay-sub').textContent()) || '').trim();
+    check('MS-13-遮罩', sub === '新纪录！用时 1 秒', `遮罩副行="${sub}"`);
+    await expect.poll(() => bestText(page), { timeout: 6000 }).toContain('最快时间：1 秒');
+    await expect.poll(() => storedBest(page), { timeout: 6000 }).toBe('1');
+
+    // 相等不刷新：同一份档再赢一次，盘上已是 1 ⇒ 副行回到「用时 1 秒」，不再报「新纪录！」
+    await seedSession(page, msSnapshot({ mineIdx: ROW0_MINES, reveal: 'all', leave: 80, elapsed: 0 }));
+    await page.locator('.ms-cell').nth(80).click();
+    await expect.poll(() => readMs(page).then(s => s.over), { timeout: 6000 }).toBe(true);
+
+    const sub2 = ((await page.locator('.ms-overlay-sub').textContent()) || '').trim();
+    check('MS-13-相等不刷新', sub2 === '用时 1 秒', `第二次遮罩副行="${sub2}"（相等不该刷新纪录）`);
   });
 });
