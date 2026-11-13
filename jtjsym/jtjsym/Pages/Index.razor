@@ -1,11 +1,13 @@
 ﻿@page "/"
 @using Microsoft.FluentUI.AspNetCore.Components
+@using jtjsym.Services
+@inject IJSRuntime JS
 
 <PageTitle>夜游桃花源</PageTitle>
 
 <header class="home-header">
     <h1>欢迎来到夜游桃花源</h1>
-    <p class="home-subtitle">木鱼、计时器、三款小游戏——用来打发时间的小站。</p>
+    <p class="home-subtitle">木鱼、计时器、四款小游戏——用来打发时间的小站。</p>
 </header>
 
 <main class="home-main">
@@ -67,8 +69,46 @@
             </div>
         </FluentCard>
     </NavLink>
+
+    <NavLink class="home-card" href="lianliankan">
+        <FluentCard Style="width:100%;height:100%">
+            <div class="card-body">
+                <FluentIcon Value="@(new Icons.Regular.Size32.PuzzlePiece())" />
+                <h3 class="card-title">连连看</h3>
+                @* 副行读的是本地榜（方案 A）：预渲染先画"今日还没通关"，交互实例读到纪录再改 *@
+                <p class="card-desc llk-card-desc">@llkSubtitle</p>
+            </div>
+        </FluentCard>
+    </NavLink>
 </main>
 
 <footer class="site-footer">
     <a href="https://beian.miit.gov.cn/" target="_blank" rel="noopener">陕ICP备2024056488号</a>
 </footer>
+
+@code {
+    private readonly int issue = LianliankanCore.IssueFor(DateTimeOffset.UtcNow);
+
+    /// <summary>副行默认文案。期号文案统一由 <see cref="LlkCopy"/> 拼（与页面标题同一处来源）。</summary>
+    private string llkSubtitle = LlkCopy.HomeNoBest(LianliankanCore.IssueFor(DateTimeOffset.UtcNow));
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;                      // 只由交互实例读盘（预渲染实例没有 JSRuntime）
+
+        try
+        {
+            var raw = await JS.InvokeAsync<string?>("localStorage.getItem", LlkKeys.Best);
+            var best = LianliankanCore.TryParseBest(raw, issue);
+            var next = best is null ? LlkCopy.HomeNoBest(issue) : LlkCopy.HomeWithBest(issue, best.Value);
+            if (next != llkSubtitle)
+            {
+                llkSubtitle = next;
+                StateHasChanged();
+            }
+        }
+        catch (JSException) { }                        // 存储被禁：保持"今日还没通关"，卡片仍然可点
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+    }
+}

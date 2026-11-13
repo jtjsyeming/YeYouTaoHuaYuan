@@ -21,11 +21,11 @@ import {
 } from './helpers.mjs';
 
 test.describe('冒烟集（28 条 P0）', () => {
-  test('NAV-01/NAV-02 首页与 6 项导航', async ({ page }) => {
+  test('NAV-01/NAV-02 首页与 7 项导航', async ({ page }) => {
     await open(page, '/');
     const h1 = (await page.textContent('h1').catch(() => '')) || '';
     const cardCount = await page.locator('.home-card').count();
-    check('NAV-01', h1.includes('欢迎来到夜游桃花源') && cardCount === 6, `h1="${h1.trim()}" 入口卡片=${cardCount}`);
+    check('NAV-01', h1.includes('欢迎来到夜游桃花源') && cardCount === 7, `h1="${h1.trim()}" 入口卡片=${cardCount}`);
 
     const navMap = [
       ['jtjsym', '/'],
@@ -34,6 +34,7 @@ test.describe('冒烟集（28 条 P0）', () => {
       ['2048', '/game_2048'],
       ['俄罗斯方块', '/tetris'],
       ['扫雷', '/minesweeper'],
+      ['连连看', '/lianliankan'],
     ];
     const bad = [];
     for (const [text, path] of navMap) {

@@ -1,0 +1,563 @@
+﻿@page "/lianliankan"
+@using System.Text.Json
+@using Microsoft.FluentUI.AspNetCore.Components
+@using jtjsym.Services
+@inject IJSRuntime JS
+@implements IAsyncDisposable
+
+<PageTitle>连连看 · 每日一关</PageTitle>
+
+@* 期号文案只由 LlkCopy 拼一次（《36》v2.1 §3.5）：要改"地球日"这个说法，改常量即可 *@
+<h1 class="llk-title">@LlkCopy.IssueLabel(issue)</h1>
+
+<div class="llk-container">
+    <div class="llk-status">
+        <p class="llk-stat llk-elapsed">用时：@elapsedSec 秒</p>
+        <p class="llk-stat llk-best">本次最快：@(isBestLoaded ? FormatBest(best) : LlkCopy.NoRecord)</p>
+    </div>
+
+    @if (showResumeTip)
+    {
+        <p class="session-tip llk-resume-tip">@LlkCopy.ResumeTip</p>
+    }
+
+    @if (showReshuffleTip)
+    {
+        <p class="session-tip llk-reshuffle-tip">@LlkCopy.ReshuffleTip</p>
+    }
+
+    <div class="llk-board-wrap">
+        @* 48 格恒定存在：消除只是加 .is-gone（透明 + 缩小），不移除节点 ——
+           盘面不会因为消除而重排，e2e 的 data-idx 也就永远指同一格 *@
+        <div class="llk-board" role="grid" aria-label="连连看棋盘">
+            @for (var i = 0; i < LianliankanCore.CellCount; i++)
+            {
+                // ⚠ 先拷进局部量：Razor 的 @for 循环变量是同一个变量，lambda 捕获到的是终值
+                //   （《34》C-58 实测：每格都去翻最后一格）
+                var idx = i;
+                var face = game.Cells[idx];
+                var pos = face > 0 ? LianliankanThemes.Position(face) : (Col: 0, Row: 0);
+                var name = face > 0 ? LianliankanThemes.ById(face)?.Name : null;
+
+                @* data-face 只在非空格上出现：它是"这张脸还在不在盘上"的唯一判据，
+                   写成 data-face="0" 会让 LL-12 的 {1..24} 集合断言多出一个 0 *@
+                <div class="llk-cell @CellClass(idx, face)"
+                     role="gridcell"
+                     data-idx="@idx"
+                     data-face="@(face > 0 ? face.ToString() : null)"
+                     style="--c:@pos.Col;--r:@pos.Row"
+                     aria-label="@(name ?? "空")"
+                     @onclick="() => OnCellClickedAsync(idx)"></div>
+            }
+        </div>
+
+        @if (game.IsCleared)
+        {
+            <div class="llk-overlay">
+                <h2 class="llk-overlay-title">全部消除</h2>
+                <p class="llk-overlay-sub">用时 @elapsedSec 秒 · 本次最快 @FormatBest(best) 秒</p>
+                <FluentButton Class="llk-overlay-btn" Appearance="Appearance.Accent" @onclick="OnRestartClicked">再来一局</FluentButton>
+            </div>
+        }
+    </div>
+</div>
+
+<style>
+    /* 类名统一 llk- 前缀：组件 style 块是全局的（《34》§4.3），不加前缀会与 2048/Tetris/扫雷 的类撞车 */
+    .llk-container {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+        margin-top: 8px;
+    }
+
+    .llk-status {
+        display: flex;
+        flex-wrap: wrap;
+        justify-content: center;
+        gap: 4px 18px;
+        margin: 0;
+    }
+
+    .llk-stat {
+        margin: 0;
+        font-size: .95rem;
+    }
+
+    .llk-board-wrap {
+        position: relative;
+        width: 100%;
+        display: flex;
+        justify-content: center;
+    }
+
+    /* 棋盘尺寸零 vw 算术（《36》v2.1 §3.1）：轨道等分 ⇒ 格宽 = min(容器宽/6, 64px)，
+       max-width 封顶后桌面上最多 384px 宽（格 59px），375 屏约 49px、320 屏约 42px。
+       不写 min(32px, (100vw − 侧栏)/6) —— 那个公式把 250px 侧栏算成了可用宽（《34》实测溢出 14~115px）。 */
+    .llk-board {
+        display: grid;
+        grid-template-columns: repeat(6, minmax(0, 1fr));
+        gap: 6px;
+        width: 100%;
+        max-width: min(100%, 384px);
+        margin: 0 auto;
+        touch-action: manipulation;
+        user-select: none;
+        -webkit-user-select: none;
+    }
+
+    /* 头像走 sprite：1 次请求 + 1 次 decode（vs 24 个文件 24 次），且 background-position 是纯 CSS，
+       预渲染阶段就定好了，不需要 JS 参与（对 LL-01「预渲染 HTML 已含 48 格」友好）。
+       背景色兜底：图挂了格子也不塌成透明。 */
+    .llk-cell {
+        position: relative;
+        aspect-ratio: 1;
+        min-width: 0;
+        border-radius: 6px;
+        overflow: hidden;
+        border: 1px solid #C9B7A8;
+        cursor: pointer;
+        background-color: #F3ECE1;
+        background-image: url('/Images/llk/faces.png');
+        background-size: 600% 400%;                    /* 6 列 × 4 行 */
+        background-repeat: no-repeat;
+        background-position: calc(var(--c) * 20%) calc(var(--r) * 33.3333%);
+    }
+
+    .llk-cell.is-selected {
+        outline: 3px solid #B3423C;
+        outline-offset: -3px;
+    }
+
+    /* 逻辑立即消除、视觉延迟消失：点中即改 Cells 并重渲染，这里只是 300ms 的过渡。
+       若让状态等动画结束再改，连点第二对就会撞上"半消除态"（一次 render batch = 一个状态）。 */
+    .llk-cell.is-gone {
+        opacity: 0;
+        transform: scale(.6);
+        transition: opacity .25s, transform .25s;
+        pointer-events: none;
+    }
+
+    .llk-overlay {
+        position: absolute;
+        inset: 0;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+        background: rgba(255, 255, 255, .88);
+        border-radius: 8px;
+    }
+
+    .llk-overlay-title {
+        margin: 0;
+        font-size: 1.3rem;
+    }
+
+    .llk-overlay-sub {
+        margin: 0;
+        font-size: .9rem;
+        color: #455a64;
+    }
+
+    .llk-resume-tip,
+    .llk-reshuffle-tip {
+        margin: 0;
+        font-size: .85rem;
+        color: #455a64;
+    }
+
+    /* 紧凑档（《36》v2.1 §3.2）：320×568 靠这三条才不溢出 ——
+       h1 收到单行（省 38px）、状态行收到一行 18px、棋盘 gap 4（省 14px）。
+       逐项加法：navbar 56 + pad 17.6 + 标题 22 + 状态 18 + 棋盘 364 + 页脚 30 ≈ 508 ≤ 568。 */
+    @@media (max-width: 400px), (max-height: 620px) {
+        .llk-title {
+            font-size: 18px;
+            line-height: 22px;
+            margin: 0 0 4px;
+        }
+
+        .llk-status {
+            gap: 10px;
+            font-size: 13px;
+            line-height: 18px;
+        }
+
+        .llk-board {
+            gap: 4px;
+        }
+    }
+</style>
+
+@code {
+    /// <summary>今日期号。预渲染实例与交互实例都按"此刻"算，同一天必一致（跨日那一秒的极端情况由期号闸兜住）。</summary>
+    private int issue = LianliankanCore.IssueFor(DateTimeOffset.UtcNow);
+
+    private LianliankanCore game = LianliankanCore.NewDaily(LianliankanCore.IssueFor(DateTimeOffset.UtcNow));
+
+    private int elapsedSec;
+    private int? best;
+
+    /// <summary>读盘的两个标志（D-25 配方）：防重入闸 + 占位解锁，挤在一根上会在 await 窗口里把「—」画成「0 秒」。</summary>
+    private bool isBestReading;
+    private bool isBestLoaded;
+
+    private int selectedIdx = -1;
+
+    /// <summary>计时暂停：初值 true（首次点击才起表），恢复即暂停，切后台也置 true。</summary>
+    private bool isPaused = true;
+
+    private bool showResumeTip;
+    private bool showReshuffleTip;
+
+    /// <summary>写闸门：预渲染实例与"恢复还没跑完"期间一律不写，否则一次空局就把存档冲掉。</summary>
+    private bool isSessionReady;
+
+    /// <summary>UI 门闸：初值 true，恢复结束（无论成败）才置 false。</summary>
+    private bool isRestoring = true;
+
+    private bool disposed;
+    private CancellationTokenSource? clockCts;
+    private readonly object timerLock = new();
+    private IJSObjectReference? visibilityModule;
+    private DotNetObjectReference<LianLianKan>? selfRef;
+
+    private string FormatBest(int? v) => v is null ? LlkCopy.NoRecord : $"{v}";
+
+    private string CellClass(int idx, int face)
+    {
+        var classes = new List<string>(2);
+        if (face == 0) classes.Add("is-gone");
+        else if (idx == selectedIdx) classes.Add("is-selected");
+        return string.Join(' ', classes);
+    }
+
+    // ───────────────────────── 生命周期 ─────────────────────────
+
+    protected override void OnInitialized()
+    {
+        // 预渲染阶段就要有 48 格（服务端确定性生成 ⇒ SSR 天然带盘面，LL-01 靠这条）。
+        // 计时器与存储一律等到 firstRender（只有交互实例才有 JSRuntime）。
+        issue = LianliankanCore.IssueFor(DateTimeOffset.UtcNow);
+        game = LianliankanCore.NewDaily(issue);
+    }
+
+    protected override async Task OnAfterRenderAsync(bool firstRender)
+    {
+        if (!firstRender) return;                       // 规避 ServerPrerendered 的预渲染实例
+
+        // ① 今日最快
+        if (!isBestReading)
+        {
+            isBestReading = true;
+            try
+            {
+                var raw = await JS.InvokeAsync<string?>("localStorage.getItem", LlkKeys.Best);
+                best = LianliankanCore.TryParseBest(raw, issue);
+            }
+            catch (JSException) { }                     // 隐私模式/存储被禁：保持 null，显示「—」，游戏零降级
+            catch (JSDisconnectedException) { }
+            catch (ObjectDisposedException) { }
+
+            isBestLoaded = true;
+            StateHasChanged();
+        }
+
+        // ② 恢复对局（结构闸 + 期号闸；死局交给重排，不丢档）
+        if (!isSessionReady)
+        {
+            isSessionReady = true;                      // 先开闸：即使下面全失败，也不能永久不写
+            try
+            {
+                var json = await JS.InvokeAsync<string?>("sessionStorage.getItem", LlkKeys.Session);
+                if (json is not null)
+                {
+                    var snap = JsonSerializer.Deserialize<LianliankanSnapshot>(json);
+                    var restored = LianliankanCore.TryFrom(snap, issue);
+                    if (restored is null)
+                    {
+                        await JS.InvokeVoidAsync("sessionStorage.removeItem", LlkKeys.Session);
+                    }
+                    else
+                    {
+                        game = restored;
+                        elapsedSec = snap!.ElapsedSec;
+                        selectedIdx = -1;
+                        isPaused = true;                // 恢复即暂停（与扫雷同口径）
+                        showResumeTip = true;
+
+                        // 死局档不丢弃：恢复后第一帧就重排（v2.0 §0 #7 —— 丢弃等于把玩家打回第 1 关）
+                        if (!game.HasAnyPair())
+                        {
+                            game.Reshuffle();
+                            showReshuffleTip = true;
+                        }
+
+                        StateHasChanged();
+                    }
+                }
+            }
+            catch (JSException) { }
+            catch (JsonException) { }                   // 半截 JSON
+            catch (JSDisconnectedException) { }
+            catch (ObjectDisposedException) { }
+            finally
+            {
+                isRestoring = false;                    // 任何失败路径都不能把页面永久卡在恢复态
+                if (!disposed) StateHasChanged();
+            }
+        }
+
+        // ③ 切后台暂停（服务端计时器不会因为标签页隐藏而停，切 5 分钟回来"用时"直接 +300 秒）
+        try
+        {
+            visibilityModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/llkvisibility.js");
+            selfRef ??= DotNetObjectReference.Create(this);
+            await visibilityModule.InvokeVoidAsync("register", selfRef);
+        }
+        catch (JSException) { }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+    }
+
+    // ───────────────────────── 交互 ─────────────────────────
+
+    private async Task OnCellClickedAsync(int idx)
+    {
+        if (isRestoring || game.IsCleared) return;
+
+        var face = game.Cells[idx];
+        if (face == 0) return;                          // 空格：不参与选中
+
+        showResumeTip = false;
+
+        if (selectedIdx < 0)
+        {
+            selectedIdx = idx;
+            ResumeClock();
+            if (!disposed) StateHasChanged();
+            return;
+        }
+
+        if (selectedIdx == idx)                         // 再点一次 = 取消选中
+        {
+            selectedIdx = -1;
+            if (!disposed) StateHasChanged();
+            return;
+        }
+
+        var first = selectedIdx;
+        var r1 = first / LianliankanCore.Cols;
+        var c1 = first % LianliankanCore.Cols;
+        var r2 = idx / LianliankanCore.Cols;
+        var c2 = idx % LianliankanCore.Cols;
+
+        if (!game.CanConnect(r1, c1, r2, c2))
+        {
+            // 连不上：把选中挪到新格（经典操作手感），不报错、不落盘
+            selectedIdx = idx;
+            if (!disposed) StateHasChanged();
+            return;
+        }
+
+        game.Remove(r1, c1);
+        game.Remove(r2, c2);
+        selectedIdx = -1;
+        showReshuffleTip = false;
+        ResumeClock();
+
+        if (game.IsCleared)
+        {
+            StopClock();
+            // 0 秒会被永久锁死（同《35》D-27 口径）：首点起表 + 1 秒一拍，理论上仍可能同秒清空
+            if (elapsedSec < 1) elapsedSec = 1;
+            var next = LianliankanCore.TryUpdateBest(best, elapsedSec);
+            if (next is not null) best = next;
+            await PersistBestAsync();                   // 落盘点 ①：胜利瞬间（与遮罩同帧）
+            await RemoveSessionAsync();                 // 已通关的盘没有可恢复的语义
+        }
+        else
+        {
+            if (!game.HasAnyPair())                     // 死局：自动重排，别让玩家卡死
+            {
+                game.Reshuffle();
+                showReshuffleTip = true;
+            }
+            await SaveSessionAsync();                   // 落盘点 ②：每次消除
+        }
+
+        if (!disposed) StateHasChanged();
+    }
+
+    /// <summary>重开的唯一用户入口（遮罩按钮）。</summary>
+    private async Task OnRestartClicked()
+    {
+        if (isRestoring) return;
+
+        StopClock();
+        issue = LianliankanCore.IssueFor(DateTimeOffset.UtcNow);
+        game = LianliankanCore.NewDaily(issue);
+        elapsedSec = 0;
+        selectedIdx = -1;
+        isPaused = true;
+        showResumeTip = false;
+        showReshuffleTip = false;
+
+        best = await ReadBestAsync();                   // 跨日时纪录要跟着换（同键不同 issue ⇒ 视为无记录）
+        await RemoveSessionAsync();
+        if (!disposed) StateHasChanged();
+    }
+
+    // ───────────────────────── 计时（PeriodicTimer + 互斥 + 双检） ─────────────────────────
+
+    /// <summary>起表 / 续走。首次点击与"恢复后第一次点击"走同一条。</summary>
+    private void ResumeClock()
+    {
+        isPaused = false;
+        StartClock();
+    }
+
+    private void StartClock()
+    {
+        lock (timerLock)
+        {
+            if (disposed || clockCts is not null) return;
+            clockCts = new CancellationTokenSource();
+            _ = RunClockAsync(clockCts.Token);
+        }
+    }
+
+    private void StopClock()
+    {
+        lock (timerLock)
+        {
+            if (clockCts is null) return;
+            try
+            {
+                clockCts.Cancel();
+            }
+            catch (ObjectDisposedException) { }
+            clockCts.Dispose();
+            clockCts = null;
+        }
+    }
+
+    private async Task RunClockAsync(CancellationToken token)
+    {
+        using var timer = new PeriodicTimer(TimeSpan.FromSeconds(1));
+        try
+        {
+            while (await timer.WaitForNextTickAsync(token))
+            {
+                if (disposed || isPaused || game.IsCleared) continue;
+
+                await InvokeAsync(() =>
+                {
+                    if (disposed || isPaused || game.IsCleared) return;
+                    elapsedSec++;
+                    StateHasChanged();
+                });
+            }
+        }
+        catch (OperationCanceledException) { }          // 停表 / Dispose：正常路径
+        catch (ObjectDisposedException) { }             // 组件已释放
+        catch (InvalidOperationException) { }           // circuit 已断，InvokeAsync 无法排队
+    }
+
+    /// <summary>切后台暂停（由 <c>wwwroot/js/llkvisibility.js</c> 调用）。</summary>
+    [JSInvokable]
+    public void PauseTimer()
+    {
+        if (game.IsCleared) return;
+        isPaused = true;
+        if (!disposed) StateHasChanged();
+    }
+
+    // ───────────────────────── 今日最快（秒，越小越好） ─────────────────────────
+
+    private async Task<int?> ReadBestAsync()
+    {
+        try
+        {
+            var raw = await JS.InvokeAsync<string?>("localStorage.getItem", LlkKeys.Best);
+            return LianliankanCore.TryParseBest(raw, issue);
+        }
+        catch (JSException) { }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+        return null;
+    }
+
+    private async Task PersistBestAsync()
+    {
+        if (best is null) return;
+
+        try
+        {
+            // 载荷由 Core 序列化（键名/字段名只有一处），页面不手拼 JSON
+            await JS.InvokeVoidAsync("localStorage.setItem", LlkKeys.Best, LianliankanCore.BestJson(issue, best.Value));
+        }
+        catch (JSException) { }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+    }
+
+    // ───────────────────────── 会话快照 ─────────────────────────
+
+    private async Task SaveSessionAsync()
+    {
+        if (!isSessionReady) return;                    // 预渲染 / 恢复前：绝不写
+
+        try
+        {
+            var json = JsonSerializer.Serialize(game.ToSnapshot(elapsedSec));
+            await JS.InvokeVoidAsync("sessionStorage.setItem", LlkKeys.Session, json);
+        }
+        catch (JSException) { }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+    }
+
+    private async Task RemoveSessionAsync()
+    {
+        if (!isSessionReady) return;
+
+        try
+        {
+            await JS.InvokeVoidAsync("sessionStorage.removeItem", LlkKeys.Session);
+        }
+        catch (JSException) { }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+    }
+
+    public async ValueTask DisposeAsync()
+    {
+        disposed = true;
+        StopClock();
+
+        // 切页/关页前把"已过秒数"固化一次（MS-08 的教训：秒数只在消除时写会丢掉最后一次操作之后的用时）。
+        // 站内 NavLink 切页时 interop 仍可用；关标签页会抛 JSDisconnectedException，已在内部吞掉。
+        if (!game.IsCleared) await SaveSessionAsync();
+
+        try
+        {
+            if (visibilityModule is not null) await visibilityModule.InvokeVoidAsync("unregister");
+        }
+        catch (JSException) { }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+
+        try
+        {
+            if (visibilityModule is not null) await visibilityModule.DisposeAsync();
+        }
+        catch (JSException) { }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+
+        selfRef?.Dispose();
+    }
+}

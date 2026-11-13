@@ -6,14 +6,14 @@ const MOBILE = { width: 375, height: 667 };
 const DESKTOP = { width: 1280, height: 900 };
 
 test.describe('D15 首页卡片化与 Fluent 统一', () => {
-  test('D15-1/D15-2 首页 6 张卡片与 5 个跳转 href', async ({ page }) => {
+  test('D15-1/D15-2 首页 7 张卡片与 6 个跳转 href', async ({ page }) => {
     await open(page, '/', 1200);
     const h1 = ((await page.textContent('h1').catch(() => '')) || '').trim();
     const hrefs = await page.$$eval('main a.home-card', as => as.map(a => a.getAttribute('href')));
-    check('D15-1', h1.includes('欢迎来到夜游桃花源') && (await page.locator('.home-card').count()) === 6, `h1="${h1}"；.home-card=${await page.locator('.home-card').count()}`);
+    check('D15-1', h1.includes('欢迎来到夜游桃花源') && (await page.locator('.home-card').count()) === 7, `h1="${h1}"；.home-card=${await page.locator('.home-card').count()}`);
     check(
       'D15-2',
-      JSON.stringify(hrefs) === JSON.stringify(['counter', 'loveTime', 'game_2048', 'tetris', 'minesweeper']),
+      JSON.stringify(hrefs) === JSON.stringify(['counter', 'loveTime', 'game_2048', 'tetris', 'minesweeper', 'lianliankan']),
       `链接卡 href=${JSON.stringify(hrefs)}`,
     );
   });

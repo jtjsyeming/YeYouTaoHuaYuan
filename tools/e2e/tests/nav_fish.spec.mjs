@@ -5,15 +5,15 @@ import { test, expect } from '@playwright/test';
 import { check, checkEq, fishCount, open, sleep, trackErrors } from './helpers.mjs';
 
 test.describe('NAV 站点框架', () => {
-  test('NAV-01~NAV-03 首页内容、6 项导航与高亮', async ({ page }) => {
+  test('NAV-01~NAV-03 首页内容、7 项导航与高亮', async ({ page }) => {
     await open(page, '/');
 
     const h1 = (await page.textContent('h1').catch(() => '')) || '';
     const cardCount = await page.locator('.home-card').count();
     check(
       'NAV-01',
-      h1.includes('欢迎来到夜游桃花源') && cardCount === 6,
-      `h1="${h1.trim()}" 入口卡片=${cardCount}（1 简介 + 5 链接，原 main h2「你好！」已随卡片化取消）`,
+      h1.includes('欢迎来到夜游桃花源') && cardCount === 7,
+      `h1="${h1.trim()}" 入口卡片=${cardCount}（1 简介 + 6 链接，原 main h2「你好！」已随卡片化取消）`,
     );
 
     const navMap = [
@@ -23,6 +23,7 @@ test.describe('NAV 站点框架', () => {
       ['2048', '/game_2048'],
       ['俄罗斯方块', '/tetris'],
       ['扫雷', '/minesweeper'],
+      ['连连看', '/lianliankan'],
     ];
     const navResults = [];
     for (const [text, expectPath] of navMap) {
@@ -32,7 +33,7 @@ test.describe('NAV 站点框架', () => {
       const url = new URL(page.url()).pathname;
       navResults.push(`${text}→${url}${url === expectPath ? '' : '✗期望' + expectPath}`);
     }
-    check('NAV-02', navResults.every(r => !r.includes('✗')), `6 项跳转：${navResults.join(' | ')}`);
+    check('NAV-02', navResults.every(r => !r.includes('✗')), `7 项跳转：${navResults.join(' | ')}`);
 
     await open(page, '/tetris');
     const activeText = await page.textContent('nav a.fluent-nav-link.active').catch(() => '');
@@ -92,6 +93,7 @@ test.describe('NAV 站点框架', () => {
       '/game_2048': '2048',
       '/tetris': '俄罗斯方块',
       '/minesweeper': '扫雷',
+      '/lianliankan': '连连看 · 每日一关',
       '/coding_place': '编程挑战',
     };
     const actual = {};
