@@ -75,8 +75,9 @@
     </div>
 
     <div class="ms-best">
-        <p class="best-score" data-diff="beginner">最快时间：@(isBestLoaded ? FormatBest(bestBeginner) : "—")</p>
-        <p class="best-score" data-diff="intermediate">最快时间：@(isBestLoaded ? FormatBest(bestIntermediate) : "—")</p>
+        @* D-29：只显示**当前难度**那一段。原来是把初级、中级两段并排输出且都没有难度标签，
+           用户在中级视图看到左边的初级纪录会读成"我的中级纪录"，是必然而非偶发的误读。 *@
+        <p class="best-score" data-diff="@difficultyKey">最快时间：@(isBestLoaded ? FormatBest(BestOf()) : "—")</p>
     </div>
 </div>
 
@@ -243,6 +244,13 @@
 
     private string FormatBest(int? v) => v is null ? "—" : $"{v} 秒";
 
+    /// <summary>
+    /// 按当前难度取"最快时间"纪录（D-29：界面只显示当前档那一段）。
+    /// 存储仍是两键独立，这里只负责"读哪个字段"这一个知识，三处取用点共用。
+    /// </summary>
+    private int? BestOf() =>
+        difficultyKey == MinesweeperLevels.Intermediate.Key ? bestIntermediate : bestBeginner;
+
     private string CellClass(int r, int c)
     {
         var classes = new List<string>(3);
@@ -295,7 +303,7 @@
         // 仅交互实例会走到 firstRender=true，规避 ServerPrerendered 的预渲染实例
         if (!firstRender) return;
 
-        // ① 读两条最快时间（两档各一条）
+        // ① 读两档最快时间（各存一条；界面只渲染当前档那一段，见 D-29）
         if (!isBestReading)
         {
             isBestReading = true;
@@ -479,7 +487,7 @@
     private bool UpdateBest(int sec)
     {
         var isIntermediate = difficultyKey == MinesweeperLevels.Intermediate.Key;
-        var next = MinesweeperCore.TryUpdateBest(isIntermediate ? bestIntermediate : bestBeginner, sec);
+        var next = MinesweeperCore.TryUpdateBest(BestOf(), sec);
         if (next is null) return false;
 
         if (isIntermediate) bestIntermediate = next;
@@ -492,7 +500,7 @@
 
     private async Task PersistBestAsync()
     {
-        var value = difficultyKey == MinesweeperLevels.Intermediate.Key ? bestIntermediate : bestBeginner;
+        var value = BestOf();
         if (value is null) return;
 
         try

@@ -59,8 +59,19 @@ const readMs = page =>
     };
   });
 
-const bestText = (page, diff = 'beginner') =>
-  page.evaluate(d => (document.querySelector(`.best-score[data-diff="${d}"]`)?.textContent || '').trim(), diff);
+/**
+ * 读「最快时间」那一行。
+ * D-29 之前页面上是**两段并排**（初级恒在前、中级恒在后，都没有难度标签），必须点名 data-diff；
+ * 单行化之后默认取那唯一一行即可 —— 不传 diff 反而更稳：写死 'beginner' 在中级视图下会命中不到元素、
+ * **静默返回空串**，后面 `toContain('最快时间')` 就变成一句莫名其妙的失败。
+ * 需要点名某档时（如断言"中级自己没有纪录"）传 'intermediate' 仍然精确。
+ * ⚠ 不要"统一取数口径"改用 helpers.readBest：它的正则锚「最高分」，对扫雷恒返回 -1（《现状》§3.2 已写明）。
+ */
+const bestText = (page, diff) =>
+  page.evaluate(d => {
+    const sel = d ? `.best-score[data-diff="${d}"]` : '.best-score';
+    return (document.querySelector(sel)?.textContent || '').trim();
+  }, diff);
 
 /** 直写会话档 + reload。⚠ 不要用 addInitScript：它每次导航都会重跑，会冲掉"恢复后新写的档"。 */
 async function seedSession(page, payload) {
@@ -75,9 +86,10 @@ const clearSession = async page => {
   await page.evaluate(k => sessionStorage.removeItem(k), SK);
 };
 
-/** 清掉初级的最快时间（MS-13 要一个"盘上还没有纪录"的起点）。 */
+/** 清掉两档的最快时间（MS-13 要一个"盘上还没有纪录"的起点，MS-09 要"中级档确实是空的"）。 */
 const clearFastest = async page => {
   await page.evaluate(k => localStorage.removeItem(k), BK_BEGINNER);
+  await page.evaluate(k => localStorage.removeItem(k), BK_INTERMEDIATE);
 };
 
 /**
@@ -144,7 +156,7 @@ const SEED_D26 = [0, 1, 2, 3, 4, 5, 6, 7, 20, 29];
 const idxOf = (r, c, cols = 9) => r * cols + c;
 
 test.describe('MS 扫雷', () => {
-  test('MS-01 首屏：81 格、难度两档、两行最快时间、剩余雷 10；预渲染占位为「—」', async ({ page, request }) => {
+  test('MS-01 首屏：81 格、难度两档、单行最快时间（跟随难度）、剩余雷 10；预渲染占位为「—」', async ({ page, request }) => {
     // 占位只能读原始 HTML：open() 之后 hydrate 早已把它换掉了
     const html = await (await request.get('/minesweeper')).text();
     check(
@@ -160,8 +172,8 @@ test.describe('MS 扫雷', () => {
     check('MS-01', st.count === 81 && optionCount === 2 && st.minesLeft === 10, `格子=${st.count} 难度选项=${optionCount} 剩余雷=${st.minesLeft}`);
     check(
       'MS-01-最快时间',
-      st.bests.length === 2 && st.bests.every(t => t.startsWith('最快时间：')),
-      `两条最快时间=${JSON.stringify(st.bests)}`,
+      st.bests.length === 1 && st.bests[0].startsWith('最快时间：'),
+      `最快时间行数=${st.bests.length} 内容=${JSON.stringify(st.bests)}（D-29 后只显示当前难度一段）`,
     );
     check('MS-01-未开局', st.revealed === 0 && !st.over && st.elapsed === 0, `已翻=${st.revealed} 遮罩=${st.over} 用时=${st.elapsed}`);
   });
@@ -405,6 +417,28 @@ test.describe('MS 扫雷', () => {
     const mid = await readMs(page);
     checkEq('MS-09-切档', { count: mid.count, left: mid.minesLeft, revealed: mid.revealed }, { count: 256, left: 40, revealed: 0 });
     await expect.poll(() => sessionRaw(page), { timeout: 5000 }).toBeNull();
+
+    // ── D-29：单行跟随难度 ──
+    // ① 同一行标的现在是中级（不是并排两段、也不是恒 beginner）
+    await expect.poll(() => page.getAttribute('.best-score', 'data-diff'), { timeout: 6000 }).toBe('intermediate');
+    // ② 中级档自己没有纪录时显示「—」，**不能**把初级的 9 秒顶上来
+    await expect.poll(() => bestText(page, 'intermediate'), { timeout: 6000 }).toBe('最快时间：—');
+    // ③ 存储层：切档不许误清另一档。PersistBestAsync 用**改过之后的** difficultyKey 选键，
+    //    一旦切档那两步顺序被调换，初级纪录就可能被写成中级值 —— 显示层断言看不见这种坏。
+    await expect.poll(() => storedBest(page), { timeout: 6000 }).toBe('9');
+
+    const midDiff = await page.getAttribute('.best-score', 'data-diff');
+    const midText = await bestText(page, 'intermediate');
+    const beginnerStored = await storedBest(page);
+    check('MS-09-单行跟随', midDiff === 'intermediate', `切中级后 data-diff="${midDiff}"（应随难度变化）`);
+    check('MS-09-中级无纪录', midText === '最快时间：—', `中级最快时间="${midText}"（不是把初级纪录顶上来）`);
+    check('MS-09-初级未被误清', beginnerStored === '9', `初级存储=${beginnerStored}（切档不许误清另一档）`);
+
+    // ④ 用户真实路径：再切回初级，纪录必须还在。这条同时钉住"单行跟随"与"两档独立"。
+    await pickSelect(page, 0, '初级 9×9');
+    await expect.poll(() => readMs(page).then(s => s.count), { timeout: 6000 }).toBe(81);
+    await expect.poll(() => bestText(page), { timeout: 6000 }).toBe('最快时间：9 秒');
+    check('MS-09-切回初级', (await bestText(page)) === '最快时间：9 秒', `切回初级后最快时间="${await bestText(page)}"`);
   });
 
   test('MS-10 窄屏：375/320 无文档级横向溢出，初级格 ≥ 24px', async ({ browser }) => {
