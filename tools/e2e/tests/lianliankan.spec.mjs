@@ -1,4 +1,4 @@
-// H-014：每日一关连连看（LL-01~LL-12）
+// H-014：每日一关连连看（LL-01~LL-14）
 // 存储键（全部带 jtjsym. 命名空间，且都收在 LlkKeys 里）：
 //   sessionStorage['jtjsym.llk.session']  = {v:1, issue, cells[48], elapsedSec}
 //   localStorage['jtjsym.llk.best']      = {"issue":20261112,"sec":87}   ← 单键单条，越小越好
@@ -7,7 +7,12 @@
 // 判据纪律（沿用 C-53/54 的教训）：
 //   ① 点击后一律 expect.poll 读 DOM —— Blazor Server 的 click 在服务端处理，click() resolve ≠ DOM 已更新；
 //   ② 存档用 setItem + reload 注入，**不用 addInitScript**（后者每次导航都重跑，会把"玩了一半"的新档冲掉）；
-//   ③ 盘面一律用 data-face 编号断言，不看图片内容（"两张图长得一样"是 e2e 的盲区，见手工清单 §7）。
+//   ③ 盘面一律用 data-face 编号断言，不看图片内容（"两张图长得一样"是 e2e 的盲区，见手工清单 §7）；
+//   ④ **凡是 seedSession 造盘，每种头像的张数必须是偶数** —— LianliankanCore.TryFrom 的成对闸
+//      会整档丢弃奇数档，页面静默回落"真实每日盘"，用例照样绿但点的不是你以为的格子。
+//      症状指纹：seedSession 传了 elapsed: 5，页面读到的却是「用时：0 秒」、也没有恢复提示。
+//      造盘一律"两个头像各两张"，别写"两格不同脸"（1+1 是奇数）。这条比"重排"那条更隐蔽 ——
+//      重排会让盘面变、至少看得出来；成对闸是整档替换成一张合法的每日盘，看起来一切正常。
 import { expect, test } from '@playwright/test';
 import { check, checkEq, open, sleep, trackErrors } from './helpers.mjs';
 
@@ -52,6 +57,14 @@ const storedSec = raw => {
 };
 
 const sessionRaw = page => page.evaluate(k => sessionStorage.getItem(k), SK);
+
+/** 失败反馈（D-30）的文案。节点不存在时返回空串 —— 直接 textContent('.llk-click-tip') 会抛。 */
+const readClickTip = page =>
+  page.evaluate(() => (document.querySelector('.llk-click-tip')?.textContent ?? '').trim());
+
+/** 正在抖的格子（DOM 顺序 = idx 顺序）。 */
+const shakeIdx = page =>
+  page.$$eval('.llk-cell.is-shake', els => els.map(e => Number(e.getAttribute('data-idx'))));
 
 /** 注入一份会话档并 reload（reload 后 sessionStorage 仍在，正是"切页/刷新回来"的真实路径）。 */
 const seedSession = async (page, { cells, elapsed = 5, issue = todayIssue() }) => {
@@ -363,5 +376,147 @@ test.describe('LL 连连看', () => {
     const positions = [...byFace.values()];
     check('LL-12-格位', positions.length === 24 && new Set(positions).size === 24,
       `24 张脸对应 ${new Set(positions).size} 个不同的格位；示例=${JSON.stringify(positions.slice(0, 3))}`);
+  });
+
+  test('LL-13 点错有反馈：两张不同脸 → 提示带两个角色名 + 抖动，1.6s 后自动消失', async ({ page, browser }) => {
+    await open(page, '/lianliankan', 1600);
+
+    // ⚠ 盘必须过成对闸（LianliankanCore.TryFrom：每种头像的剩余数须为偶数）：1、2 各两张。
+    //   只放"两张不同脸"（1 张 + 1 张）会被整档丢弃、页面回落真实每日盘 —— 用例照样能绿，
+    //   但点的不是你钉住的格子，明天换期号就可能点到两张同脸。LL-04 那句注释讲的是"重排"，这是另一个闸。
+    //   四点两两不相邻、只共享盘边绕行 ⇒ HasAnyPair() 为真，不触发自动重排。
+    await seedSession(page, {
+      cells: cellsWith([
+        [idx(0, 0), 1], [idx(0, 1), 2],
+        [idx(7, 4), 1], [idx(7, 5), 2],
+      ]),
+      elapsed: 5,
+    });
+
+    // 前置：档真被接受了。「用时 5 秒」是没被丢弃的指纹 —— 干净的每日盘恒为 0 秒。
+    check('LL-13-前置', (await readElapsed(page)) === 5, `用时=${await readElapsed(page)}（5=档已恢复；0=被成对闸丢弃、回落每日盘）`);
+
+    // 角色名从 aria-label 反查，不写死中文：换角色（LianliankanThemes）时这条断言不用跟着改，
+    // 顺带交叉校验了「提示里的名字」与「格子自己的无障碍名」是同一套。
+    const nameA = await page.getAttribute(`.llk-cell[data-idx="${idx(0, 0)}"]`, 'aria-label');
+    const nameB = await page.getAttribute(`.llk-cell[data-idx="${idx(0, 1)}"]`, 'aria-label');
+
+    await clickCell(page, idx(0, 0));
+    await clickCell(page, idx(0, 1));
+
+    await expect.poll(() => readClickTip(page), { timeout: 4000 }).toContain('图案不同');
+    const tip = await readClickTip(page);
+    check('LL-13-文案', tip.includes(nameA) && tip.includes(nameB), `提示="${tip}"，两格是「${nameA}」「${nameB}」`);
+
+    const cells = await readCells(page);
+    const filled = cells.filter(v => v > 0).length;
+    // ⚠ 别照抄《38》里的「is-gone 数为 0」：那张判据是按满盘（48 块）写的，而这张盘只有 4 块，
+    //   另外 44 格**本来就**是 is-gone（空格）。这里要的是"这两格没被消除"：data-face 还在、块数仍是 4。
+    check('LL-13-未消除', cells[idx(0, 0)] === 1 && cells[idx(0, 1)] === 2 && filled === 4,
+      `两格=${cells[idx(0, 0)]}/${cells[idx(0, 1)]}，剩余块数=${filled}（应 4；少一块就是被消了）`);
+
+    // 抖动：class 活满 1.6s（CSS 动画只播 300ms）⇒ click() + sleep(220) 有 1.4s 余量抓它
+    await expect.poll(() => shakeIdx(page), { timeout: 3000 }).toEqual([idx(0, 0), idx(0, 1)]);
+    checkEq('LL-13-抖动', await shakeIdx(page), [idx(0, 0), idx(0, 1)]);
+
+    // 1.6s 后自动清（本站第一个"会自己消失"的提示，没有现成模式可抄）
+    await expect.poll(() => readClickTip(page), { timeout: 4000 }).toBe('');
+    const tipNodes = await page.locator('.llk-click-tip').count();
+    check('LL-13-自清', tipNodes === 0, `1.6s 后提示节点数=${tipNodes}，文案="${await readClickTip(page)}"`);
+
+    // 320×568：反馈行出现时不能把页面顶出纵向滚动。
+    // LL-11 打开的是干净页面、永远看不见这一行，所以这条必须在这里补 —— 提示槽的纵向预算只有 58px。
+    const ctx = await browser.newContext({ viewport: { width: 320, height: 568 }, isMobile: true, hasTouch: true });
+    const mp = await ctx.newPage();
+    await open(mp, '/lianliankan', 1400);
+    await seedSession(mp, {
+      cells: cellsWith([
+        [idx(0, 0), 1], [idx(0, 1), 2],
+        [idx(7, 4), 1], [idx(7, 5), 2],
+      ]),
+      elapsed: 5,
+    });
+    await clickCell(mp, idx(0, 0));
+    await clickCell(mp, idx(0, 1));
+    await expect.poll(() => mp.locator('.llk-click-tip').count(), { timeout: 4000 }).toBe(1);
+    const m = await mp.evaluate(() => {
+      const t = document.querySelector('.llk-click-tip');
+      const r = t ? t.getBoundingClientRect() : null;
+      return {
+        scrollH: document.documentElement.scrollHeight,
+        clientH: document.documentElement.clientHeight,
+        tipH: Math.round(r?.height ?? 0),
+        tipW: Math.round(r?.width ?? 0),
+      };
+    });
+    await ctx.close();
+    check('LL-13-窄屏', m.scrollH <= m.clientH,
+      `320 下 scrollHeight=${m.scrollH} clientHeight=${m.clientH}，提示行 ${m.tipW}×${m.tipH}（高度 > 21 说明折行了）`);
+  });
+
+  test('LL-14 同脸不可连：提示「连不上」且不消除；紧接着消掉一对 → 提示同时收掉', async ({ page }) => {
+    await open(page, '/lianliankan', 1600);
+
+    // 造盘计数：1 号 ×4、2 号 ×2、3 号 ×2 —— 全偶数，过成对闸。
+    //   (3,2)/(4,3) 同脸 1，被 (3,3)/(4,2) 的 2 夹住 ⇒ 只能绕，2 拐内没有通路（同 LL-04 的死局几何）
+    //   (0,0)/(0,1) 一对 1：既让 1 号凑成 4 张，又是第 3 步"成功后提示必须收掉"要消的那一对
+    //   (7,4)/(7,5) 兜底一对：第 3 步消完盘上仍有一对 ⇒ 不跳「无解自动重排」，
+    //               少了这对，第 3 步会让 showReshuffleTip 变真、提示槽被重排文案占据，"提示变空"必假红
+    await seedSession(page, {
+      cells: cellsWith([
+        [idx(0, 0), 1], [idx(0, 1), 1],
+        [idx(3, 2), 1], [idx(4, 3), 1],
+        [idx(3, 3), 2], [idx(4, 2), 2],
+        [idx(7, 4), 3], [idx(7, 5), 3],
+      ]),
+    });
+
+    const blocks = (await readCells(page)).filter(v => v > 0).length;
+    const reshuffle0 = await page.locator('.llk-reshuffle-tip').count();
+    check('LL-14-前置', blocks === 8 && reshuffle0 === 0, `块数=${blocks}（应 8）重排提示=${reshuffle0} 个（应 0）`);
+
+    // ① 同脸但拐不过去
+    await clickCell(page, idx(3, 2));
+    await clickCell(page, idx(4, 3));
+    await expect.poll(() => readClickTip(page), { timeout: 4000 }).toContain('连不上');
+    const cells1 = await readCells(page);
+    check('LL-14-未消除', cells1[idx(3, 2)] === 1 && cells1[idx(4, 3)] === 1,
+      `两格=${cells1[idx(3, 2)]}/${cells1[idx(4, 3)]}（应都还是 1）`);
+    checkEq('LL-14-抖动', await shakeIdx(page), [idx(3, 2), idx(4, 3)]);
+
+    // ② 再点一次第二格 = 取消选中。
+    //    ⚠ 不能省：失败后选中会挪到第二格，紧接着点 (0,0) 会被当成「(4,3) ↔ (0,0)」那一对
+    //    （同脸、绕得过去）直接消掉，第 3 步就测不到"成功后收提示"了。
+    await clickCell(page, idx(4, 3));
+    await expect.poll(() => page.locator('.llk-cell.is-selected').count(), { timeout: 4000 }).toBe(0);
+
+    // ③ 紧接着消掉一对：提示必须跟这一次成功的渲染**同批**消失，而不是等 1.6s 定时器到期。
+    //    判据取"同一次 DOM 快照"里的 cleared + tip，才能区分"主动清零"与"定时器到点"。
+    //    （失败发生在 ~1.5s，定时器在 ~3.1s 才到；这一段不额外 sleep，快照落在定时器之前。）
+    await clickCell(page, idx(0, 0));
+    await clickCell(page, idx(0, 1));
+
+    let snap = { cleared: false, tip: '?' };
+    await expect.poll(async () => {
+      snap = await page.evaluate(sel => {
+        const a = document.querySelector(sel.a);
+        const b = document.querySelector(sel.b);
+        return {
+          cleared: !a.getAttribute('data-face') && !b.getAttribute('data-face'),
+          tip: (document.querySelector('.llk-click-tip')?.textContent ?? '').trim(),
+        };
+      }, { a: `.llk-cell[data-idx="${idx(0, 0)}"]`, b: `.llk-cell[data-idx="${idx(0, 1)}"]` });
+      return snap.cleared;
+    }, { timeout: 6000 }).toBe(true);
+
+    const after = await readCells(page);
+    check('LL-14-消除', after[idx(0, 0)] === 0 && after[idx(0, 1)] === 0 && after.filter(v => v > 0).length === 6,
+      `两格=${after[idx(0, 0)]}/${after[idx(0, 1)]}，剩余块数=${after.filter(v => v > 0).length}（应 6）`);
+    check('LL-14-清提示', snap.tip === '', `同一次快照里提示="${snap.tip}"（应为空；非空说明只在等定时器到点）`);
+
+    // ④ 成功消除的格子不该抖（is-shake 只属于第 ① 步那两格，且已随提示一起清掉）
+    checkEq('LL-14-消后不抖', await shakeIdx(page), []);
+    check('LL-14-不跳重排', (await page.locator('.llk-reshuffle-tip').count()) === 0,
+      `兜底对还在盘上，不该出重排提示（实际 ${await page.locator('.llk-reshuffle-tip').count()} 个）`);
   });
 });

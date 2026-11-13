@@ -16,14 +16,22 @@
         <p class="llk-stat llk-best">本次最快：@(isBestLoaded ? FormatBest(best) : LlkCopy.NoRecord)</p>
     </div>
 
-    @if (showResumeTip)
+    @* 三条提示共用这一个槽：任何时刻最多一行（D-30）。
+       各写一个 @if 会叠加 —— 恢复死局档时「已恢复上一局」与「无解自动重排」本来就同时为真，
+       再叠一条失败反馈就是 3 行 / 73px，320×568 直接溢出 15px（实测内容高 510 + 73 = 583）。
+       优先级：失败反馈 > 重排 > 恢复。重排是最紧急的信息，"计时已暂停"是点一下就知道的事。
+       ⚠ 文案必须 ≤ 1 行（320px 下约 18 字）：LL-11 打开的是干净页面，看不见这一行。 *@
+    @if (clickFeedback is not null)
     {
-        <p class="session-tip llk-resume-tip">@LlkCopy.ResumeTip</p>
+        <p class="session-tip llk-click-tip" role="status">@clickFeedback</p>
     }
-
-    @if (showReshuffleTip)
+    else if (showReshuffleTip)
     {
-        <p class="session-tip llk-reshuffle-tip">@LlkCopy.ReshuffleTip</p>
+        <p class="session-tip llk-reshuffle-tip" role="status">@LlkCopy.ReshuffleTip</p>
+    }
+    else if (showResumeTip)
+    {
+        <p class="session-tip llk-resume-tip" role="status">@LlkCopy.ResumeTip</p>
     }
 
     <div class="llk-board-wrap">
@@ -139,6 +147,29 @@
         pointer-events: none;
     }
 
+    /* 点错抖动（D-30）：动画只播 300ms，但 class 生命周期跟提示一致（1.6s）——
+       若 class 也只活 300ms，e2e 的 click() + sleep(220) 只剩 80ms 窗口抓它。
+       动画播完后 class 还在、动画已结束，无害（animation 默认只跑一次，
+       连点同一格两次不会重播——接受，第一次抖动已构成反馈）。 */
+    .llk-cell.is-shake {
+        animation: llk-shake .3s ease-in-out;
+    }
+
+    /* 用 translate 独立属性，不碰 transform —— .llk-cell.is-gone 的 transform: scale(.6)
+       会被 transform 动画覆盖，让半消除的格子闪回来（同 site.css 里 gongde-rise 的写法）。 */
+    @@keyframes llk-shake {
+        0%, 100% { translate: 0 0; }
+        25% { translate: -4px 0; }
+        75% { translate: 4px 0; }
+    }
+
+    /* 减少动效偏好：抖动退化为"无动画"，文字提示仍在（site.css:433 同款兜底） */
+    @@media (prefers-reduced-motion: reduce) {
+        .llk-cell.is-shake {
+            animation: none;
+        }
+    }
+
     .llk-overlay {
         position: absolute;
         inset: 0;
@@ -163,7 +194,8 @@
     }
 
     .llk-resume-tip,
-    .llk-reshuffle-tip {
+    .llk-reshuffle-tip,
+    .llk-click-tip {
         margin: 0;
         font-size: .85rem;
         color: #455a64;
@@ -212,6 +244,23 @@
     private bool showResumeTip;
     private bool showReshuffleTip;
 
+    /// <summary>失败反馈自身占用的时长（D-30）。抖动与文案共用这一个计时。</summary>
+    private const int FeedbackMs = 1600;
+
+    /// <summary>失败反馈文案。非 null 时独占提示槽，并盖过重排/恢复两条。</summary>
+    private string? clickFeedback;
+
+    /// <summary>要抖的两格（-1 = 无）。和 <see cref="clickFeedback"/> 同一个 timer 一起清。</summary>
+    private int shakeA = -1;
+    private int shakeB = -1;
+
+    /// <summary>
+    /// 反馈代际号：1.2s 内连点两次失败时，只有最新一次的延时才有权清屏。
+    /// 没有它的话 t=0 点错（1.6s 清）、t=0.9 再点错（2.5s 清）→ 第一次的延时会在 1.6s
+    /// 把第二次的提示提前 0.9s 掐掉，第二条只显示 0.7s。
+    /// </summary>
+    private int feedbackSeq;
+
     /// <summary>写闸门：预渲染实例与"恢复还没跑完"期间一律不写，否则一次空局就把存档冲掉。</summary>
     private bool isSessionReady;
 
@@ -228,10 +277,49 @@
 
     private string CellClass(int idx, int face)
     {
-        var classes = new List<string>(2);
-        if (face == 0) classes.Add("is-gone");
-        else if (idx == selectedIdx) classes.Add("is-selected");
+        var classes = new List<string>(3);
+        if (face == 0) classes.Add("is-gone");          // 已消除的格子不抖（face>0 才加 is-shake）
+        else
+        {
+            if (idx == selectedIdx) classes.Add("is-selected");
+            if (idx == shakeA || idx == shakeB) classes.Add("is-shake");
+        }
         return string.Join(' ', classes);
+    }
+
+    // ───────────────────────── 失败反馈（D-30） ─────────────────────────
+
+    /// <summary>
+    /// 提示一条失败反馈，<see cref="FeedbackMs"/> 后自动清屏。
+    /// <para>抖动与文案同生同灭：CSS 动画只播 300ms，class 留满 1.6s，
+    /// 否则 e2e 的 <c>click() + sleep(220)</c> 只剩 80ms 窗口抓它。</para>
+    /// <para><c>Task.Delay</c> 不会抛 <c>ObjectDisposedException</c>（那是 JS interop 的脾气），
+    /// 这里只需要 <see cref="disposed"/> 双检 + 代际号。</para>
+    /// </summary>
+    private async Task ShowFeedbackAsync(string text, int a, int b)
+    {
+        clickFeedback = text;
+        shakeA = a;
+        shakeB = b;
+        var seq = ++feedbackSeq;
+        if (!disposed) StateHasChanged();               // 先把提示画出来，再等 1.6s
+
+        await Task.Delay(FeedbackMs);
+        if (disposed || seq != feedbackSeq) return;     // 已被更新的一次接管，或已主动清零
+        ClearFeedback();
+        if (!disposed) StateHasChanged();
+    }
+
+    /// <summary>
+    /// 清掉反馈与抖动。<b>成功消除必须调</b> —— 否则那句错误提示要等 1.6s 定时器到期才消失，
+    /// 玩家看到的是"都消掉了还在报错"。
+    /// </summary>
+    private void ClearFeedback()
+    {
+        feedbackSeq++;                                  // 让在跑的延时回调失效（seq != feedbackSeq）
+        clickFeedback = null;
+        shakeA = -1;
+        shakeB = -1;
     }
 
     // ───────────────────────── 生命周期 ─────────────────────────
@@ -335,6 +423,9 @@
 
         if (selectedIdx < 0)
         {
+            // 玩家已经开始操作，两条通知的使命都结束了。只清 showResumeTip 的话，
+            // 反馈的 1.6s 过后被"盖住"的重排提示会再冒出来，文字闪一下（D-30）。
+            showReshuffleTip = false;
             selectedIdx = idx;
             ResumeClock();
             if (!disposed) StateHasChanged();
@@ -356,9 +447,16 @@
 
         if (!game.CanConnect(r1, c1, r2, c2))
         {
-            // 连不上：把选中挪到新格（经典操作手感），不报错、不落盘
+            // CanConnect 内部已含 face 判等（LianliankanCore.cs:282），所以要紧的是先比 face 再分流文案 ——
+            // 「两张不一样的图」和「一样的图但拐不过去」是两件事，前者是新手最常犯的错。
+            var firstFace = game.Cells[first];
+            var msg = firstFace != face
+                ? LlkCopy.DifferentFaces(firstFace, face)
+                : LlkCopy.NotConnectable;
+
+            // 选中挪到新格（经典操作手感），不报错、不落盘；反馈走"提示槽 + 1.6s 自清"
             selectedIdx = idx;
-            if (!disposed) StateHasChanged();
+            _ = ShowFeedbackAsync(msg, first, idx);     // 内部已同步 StateHasChanged，这里不必再调
             return;
         }
 
@@ -366,6 +464,7 @@
         game.Remove(r2, c2);
         selectedIdx = -1;
         showReshuffleTip = false;
+        ClearFeedback();                                // 消成功就把失败提示收掉，别等 1.6s 定时器（D-30 / F8）
         ResumeClock();
 
         if (game.IsCleared)
@@ -404,6 +503,7 @@
         isPaused = true;
         showResumeTip = false;
         showReshuffleTip = false;
+        ClearFeedback();
 
         best = await ReadBestAsync();                   // 跨日时纪录要跟着换（同键不同 issue ⇒ 视为无记录）
         await RemoveSessionAsync();

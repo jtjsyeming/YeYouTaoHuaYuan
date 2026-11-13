@@ -6,10 +6,13 @@ namespace jtjsym.Tests;
 /// <summary>
 /// CanConnect 差分回归闸（D-30 排查产物，永久保留）：
 /// BFS 版 <see cref="LianliankanCore.CanConnect"/> vs 朴素递归全路径枚举（扩一圈全空网格）。
-/// <para>用户报"点两个一样的不会消除"后做的排除法实证：38 条既有单测 + 12 条 e2e + 本差分
-/// 全绿 ⇒ 算法无误判，故障在展示层反馈缺失（详见《38》§2）。本闸钉住两件事：
-/// ① BFS 与参照在任何密度/几何下逐对一致；② 外圈绕行语义（第一个差分版本的参照就是
-/// 写错了"外圈只能站住不能走"才误报 BFS 偏宽松）。</para>
+/// <para>用户报"点两个一样的不会消除"后做的排除法实证：<b>既有的 38 条</b>连连看单测 + 12 条 e2e + 本条差分
+/// 全绿 ⇒ 算法无误判，故障在展示层反馈缺失（详见《38》§2）。本闸钉住的是一件具体的事：
+/// <b>BFS 与朴素全路径枚举在任意密度/几何下逐对等价</b>（300 盘、&gt;5000 对）。</para>
+/// <para>⚠ 它<b>证明不了</b>"外圈可以绕行"这条语义 —— 随机盘不保证出现"整行占满、只能绕盘外"
+/// 那种极端几何。外绕由 <c>LianliankanCoreTests.CanConnect_TwoTurns_OuterRing_True</c> 正面专管。
+/// （当初把这里当成外绕看守是误判：第一个差分版本的参照写错了"外圈只能站住不能走"，
+/// 于是误报 BFS 偏宽松 —— 真正的教训是<b>参照自己会写错</b>，这句话写在这儿比多加一条 [Fact] 有用。）</para>
 /// </summary>
 public class LlkDifferentialProbe
 {
@@ -69,6 +72,9 @@ public class LlkDifferentialProbe
     [Fact]
     public void CanConnect_MatchesReference_OnRandomBoards()
     {
+        // 这里用 System.Random 是<b>故意的</b>，与产品代码"禁用 System.Random、改自实现 SplitMix64"
+        // 的规则不冲突：那条规则要的是**盘面可复现**（今天是哪一关对全世界都一样），
+        // 而测试数据不构成产品契约 —— 本断言只看 got == want，换个 .NET 版本重排一遍照样成立。
         var rng = new Random(20261113);
         long checkedPairs = 0;
         for (var iter = 0; iter < 300; iter++)

@@ -20,6 +20,28 @@ public static class LlkCopy
     /// <summary>死局重排飘字。</summary>
     public const string ReshuffleTip = "无解自动重排";
 
+    /// <summary>同脸但拐不过去（>2 拐）。10 字，320px 下单行。</summary>
+    public const string NotConnectable = "连不上：最多拐两次弯";
+
+    /// <summary>「图案不同」的裸文案：角色名取不到（编号越界）时退化用它，不拼空名。</summary>
+    public const string DifferentFacesBare = "图案不同";
+
+    /// <summary>
+    /// 点了两张不同的脸（D-30 的失败反馈）。
+    /// <para>带角色名是刻意的：新手最常犯的错就是"以为长得像就是一对"，把两个名字并排说出来，
+    /// 比只说"图案不同"有用。名字本来就已在格子的 <c>aria-label</c> 里，不构成新暴露。</para>
+    /// <para>最长一条是「图案不同：英国公夫人 ≠ 魏老夫人」= 17 字，实测 320px 下仍单行（213px / 容器 272px）。
+    /// <b>这条文案的长度是一等约束</b>：超过约 18 字会在 320 下折成两行，而 LL-11 打开的是干净页面、看不见提示行。</para>
+    /// </summary>
+    public static string DifferentFaces(int a, int b)
+    {
+        var na = LianliankanThemes.ById(a)?.Name;
+        var nb = LianliankanThemes.ById(b)?.Name;
+        return string.IsNullOrEmpty(na) || string.IsNullOrEmpty(nb)
+            ? DifferentFacesBare
+            : $"{DifferentFacesBare}：{na} ≠ {nb}";
+    }
+
     /// <summary>无纪录时的占位（对齐 2048/扫雷的「—」，不是「0 秒」）。</summary>
     public const string NoRecord = "—";
 

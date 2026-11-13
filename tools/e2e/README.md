@@ -51,7 +51,7 @@ dotnet run --project ../../jtjsym/jtjsym --no-launch-profile --environment Devel
 | `npm run test:d22` | D-23 俄罗斯方块最高分（预置读 / 首屏占位 / 不闪 0 / 未落盘 / 重玩固化 / 损坏值 / 跨页隔离） | 20 秒 |
 | `npm run test:d24` | D-24 对局会话保持 + 后台自动暂停 / D-25 最高分落盘加固（切页往返 / 结束清档 / 重玩清档 / 8 种坏档 / 恢复后继续 / 切后台 / 软降零头） | 55 秒 |
 | `npm run test:ms` | H-013 扫雷（首屏 / 首点安全 / 洪泛边界 / 插旗 / 败局 / 胜局纪录 / 坏值 / 会话保持 / 重开切档 / 窄屏 / 无异常） | 65 秒 |
-| `npm run test:llk` | H-014 连连看每日一关（首屏 / 每日确定性 / 消除与不可连 / 死局重排 / 胜局 / 纪录口径 / 会话保持 / 切后台 / 窄屏横纵 / 资产完整） | 65 秒 |
+| `npm run test:llk` | H-014 连连看每日一关（首屏 / 每日确定性 / 消除与不可连 / 死局重排 / 胜局 / 纪录口径 / 会话保持 / 切后台 / 窄屏横纵 / 资产完整 / **点错反馈**） | 75 秒 |
 | `npm run test:fast` | nav + lt + g2048 + code_nf（不含 tris 长时项） | 6 分钟 |
 | `npm run test:pr` | **CI 的 PR/push 子集**（chromium + 编号前缀白名单，见下） | 16 分钟 |
 | `npm run test:all` | 全部 | 17~20 分钟 |
@@ -89,7 +89,7 @@ dotnet run --project ../../jtjsym/jtjsym --no-launch-profile --environment Devel
 | `tests/d14_mobile_layout.spec.mjs` | D14-1~D14-9 + D14-10/10b/10c/10d（横屏四档、桌面四档含 768×1024）（+ 一条控制台错误辅助断言） | 《11》§5.1 新写、《28》P-023 |
 | `tests/smoke.spec.mjs` | 《07》§11.3 的 28 条 P0 | 从上列各文件抽子集，不新增逻辑 |
 | `tests/minesweeper.spec.mjs` | MS-01~MS-13（扫雷，H-013） | 《34》§6.2 新写；C-59（D-26/D-27）与 C-65（D-29）各改过判据，条数未变 |
-| `tests/lianliankan.spec.mjs` | LL-01~LL-12（连连看每日一关，H-014） | 《36》§6 新写 |
+| `tests/lianliankan.spec.mjs` | LL-01~LL-14（连连看每日一关，H-014；LL-13/14 为点错反馈，D-30） | 《36》§6 新写、《38》§7 补两条 |
 
 ## 5. 迁移约定（改脚本前先看）
 
