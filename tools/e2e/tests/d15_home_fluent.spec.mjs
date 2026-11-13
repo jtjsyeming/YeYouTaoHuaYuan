@@ -154,6 +154,12 @@ test.describe('D15 首页卡片化与 Fluent 统一', () => {
       `.dir-btn=${counts.dir}、.replay-btn=${counts.replay}、标签=${counts.tags.join('/')}`,
     );
 
+    // 开局两块是随机的：若恰好都已在第 0 列，⬅️ 是**合法但无位移**的一步（两块各占一行、值不同时
+    // 既不能位移也不能合并）。2026-11-13 全量首跑与 --repeat-each=8 各撞到一次，随后用会话存档确定性复现
+    // （b0 === b1、分数 0→0）。先按一次 ➡️ 把块推到最右 —— 它自己可能也无位移，但两种情况都保证块在最右列，
+    // 此后 ⬅️ 必然位移，判据与随机数无关。
+    await page.locator('.controls fluent-button:has-text("➡️")').click();
+    await sleep(420);
     const b0 = await readBoard(page);
     const s0 = await readScore(page);
     await page.locator('.controls fluent-button:has-text("⬅️")').click();
