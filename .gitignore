@@ -30,6 +30,9 @@ node_modules/
 playwright-report/
 test-results/
 
+# 手动起站点做门禁时的 tee 日志（<模块>-site.log，随用随删，不入库）
+*-site.log
+
 # WorkBuddy workspace data
 .workbuddy/
 
