@@ -304,4 +304,285 @@ public class LianliankanCoreTests
         var json = LianliankanCore.BestJson(Today, 87);
         Assert.Equal(87, LianliankanCore.TryParseBest(json, Today));
     }
+
+    // ─────────────────────── 带路径的连通判定（H-015 / 《39》§8.1） ───────────────────────
+    //
+    // ⚠ 布局全部出自《39》§9 的 C# 实测，**不是手工推演**：v2.0 的布局 C 就是推演产物
+    //   （"外圈 2 拐"），实测路径却在盘内。人脑枚举外圈岔路必漏，所以下面每条盘面都当成"钉子"用。
+
+    /// <summary>U3 用的布局 C'：外圈 2 拐。<b>(1,1) 那个 9 是关键</b> —— 抽掉它，盘内 2 拐就通了。</summary>
+    private static readonly int[] LayoutOuterTwoTurns =
+    {
+        1, 2, 3, 2, 3, 1,
+        0, 9, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 9,
+    };
+
+    /// <summary>U4 用的布局 A'：盘内 3 拐（(3,2)↔(3,5)）。</summary>
+    private static readonly int[] LayoutInnerThreeTurns =
+    {
+        11, 0, 8, 0, 0, 0,
+        0, 12, 0, 0, 11, 0,
+        12, 0, 0, 0, 13, 0,
+        0, 0, 1, 0, 14, 1,
+        0, 0, 13, 0, 0, 0,
+        0, 14, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0,
+        8, 0, 0, 0, 0, 0,
+    };
+
+    /// <summary>U5 / LL-18 用的布局 B：彻底没路（但不限拐数也是 null）。</summary>
+    private static readonly int[] LayoutDeadEnd =
+    {
+        3, 3, 2, 6, 6, 0,
+        5, 1, 2, 1, 8, 8,
+        4, 4, 0, 7, 7, 0,
+        0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 5,
+        0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0,
+    };
+
+    /// <summary>LL-17 用的布局 D：外圈 3 拐（(0,0)↔(5,5)），12 块 1~6 各两张。</summary>
+    private static readonly int[] LayoutOuterThreeTurns =
+    {
+        1, 2, 3, 4, 5, 6,
+        2, 0, 0, 0, 0, 0,
+        3, 0, 0, 0, 0, 0,
+        4, 0, 0, 0, 0, 0,
+        5, 0, 0, 0, 0, 0,
+        6, 0, 0, 0, 0, 1,
+        0, 0, 0, 0, 0, 0,
+        0, 0, 0, 0, 0, 0,
+    };
+
+    /// <summary>从裸数组造盘：走 <c>TryFrom</c>，顺带把"结构闸放行"一起验了。</summary>
+    private static LianliankanCore FromCells(int[] cells) => LlkDifferentialProbe.RestoreCore(cells);
+
+    /// <summary>
+    /// U1：<c>TryFindPath(TurnLimit) != null</c> ⟺ <c>CanConnect</c>。
+    /// <para><b>复用 <see cref="LlkDifferentialProbe.Boards"/> 的盘源</b>，不另写随机构造 ——
+    /// 两处盘源一漂，两个差分就不是同一个命题了。这条钉住的是"一次搜索按 Turns 分流"可替代
+    /// 页面里的二次 <c>CanConnect</c> 调用（《39》§6.1）。</para>
+    /// </summary>
+    [Fact]
+    public void TryFindPath_MatchesCanConnect_Differential()
+    {
+        long compared = 0;
+        var iter = 0;
+        foreach (var cells in LlkDifferentialProbe.Boards())
+        {
+            iter++;
+            var core = FromCells(cells);
+            for (var a = 0; a < LianliankanCore.CellCount; a++)
+            {
+                if (cells[a] == 0) continue;
+                for (var b = a + 1; b < LianliankanCore.CellCount; b++)
+                {
+                    if (cells[b] != cells[a]) continue;
+                    var got = core.TryFindPath(a / 6, a % 6, b / 6, b % 6, LianliankanCore.TurnLimit) is not null;
+                    var want = core.CanConnect(a / 6, a % 6, b / 6, b % 6);
+                    compared++;
+                    Assert.True(got == want,
+                        $"iter={iter} 格 {a}({a / 6},{a % 6})↔{b}({b / 6},{b % 6}) face={cells[a]}：TryFindPath={got} CanConnect={want} 盘={string.Join(',', cells)}");
+                }
+            }
+        }
+        Assert.True(compared > 5000, $"对拍样本过少：{compared}");
+    }
+
+    /// <summary>
+    /// U2：路径自洽 —— 相邻点必同行或同列、<c>Turns == Points.Count - 2</c>、首尾是两端格子、
+    /// 盘内中间点必须是空格。
+    /// <para>首点断言<b>专守《39》§3.2 的"回溯补起点"</b>：起点状态记 <c>-1</c> 哨兵、不在 parent 链里，
+    /// 少写 <c>Insert(0, …)</c> 就会从起点旁边那一格开始（实测《39》作者首版 5 个布局有 4 个缺起点）。</para>
+    /// </summary>
+    [Fact]
+    public void TryFindPath_PointsAreValid()
+    {
+        var hits = 0;
+        var iter = 0;
+        foreach (var cells in LlkDifferentialProbe.Boards())
+        {
+            iter++;
+            var core = FromCells(cells);
+            for (var a = 0; a < LianliankanCore.CellCount; a++)
+            {
+                if (cells[a] == 0) continue;
+                for (var b = a + 1; b < LianliankanCore.CellCount; b++)
+                {
+                    if (cells[b] != cells[a]) continue;
+
+                    var path = core.TryFindPath(a / 6, a % 6, b / 6, b % 6, int.MaxValue);
+                    if (path is null) continue;
+                    hits++;
+
+                    Assert.True(path.Points.Count >= 2, $"iter={iter} 路径点太少：{path.Points.Count}");
+                    Assert.Equal(path.Points.Count - 2, path.Turns);
+                    Assert.Equal((a / 6, a % 6), path.Points[0]);       // ← 补起点
+                    Assert.Equal((b / 6, b % 6), path.Points[^1]);
+
+                    for (var k = 1; k < path.Points.Count; k++)
+                    {
+                        var p = path.Points[k - 1];
+                        var q = path.Points[k];
+                        Assert.True(p.R == q.R || p.C == q.C, $"iter={iter} 出现斜线段 {p}→{q}");
+                    }
+
+                    for (var k = 1; k < path.Points.Count - 1; k++)
+                    {
+                        var p = path.Points[k];
+                        if (!LianliankanCore.InBoard(p.R, p.C)) continue;
+                        Assert.Equal(0, core.FaceAt(p.R, p.C));
+                    }
+                }
+            }
+        }
+        Assert.True(hits > 3000, $"样本过少：{hits}");
+    }
+
+    /// <summary>
+    /// U3：外圈 2 拐。
+    /// <para><b>不要抄既有的 <c>CanConnect_TwoTurns_OuterRing_True</c> 的盘面</b> —— 那张盘第 1 行是空行，
+    /// 实测盘内 2 拐就通了，名字有误导（《39》§0 新硬错）。布局 C' 靠 (1,1) 的 9 把盘内路堵死。</para>
+    /// </summary>
+    [Fact]
+    public void TryFindPath_OuterRing_GoesOutside()
+    {
+        var core = FromCells(LayoutOuterTwoTurns);
+
+        Assert.True(core.CanConnect(0, 0, 0, 5));                   // 判定口径：通
+        var path = core.TryFindPath(0, 0, 0, 5, int.MaxValue);
+        Assert.NotNull(path);
+        Assert.Equal(2, path!.Turns);
+        Assert.Contains(path.Points, p =>
+            !LianliankanCore.InBoard(p.R, p.C));                    // 必须真走出盘外
+    }
+
+    /// <summary>U4：盘内 3 拐 —— 判定口径判死，不限拐能拿到 3 拐且全程在盘内。</summary>
+    [Fact]
+    public void TryFindPath_ThreeTurnsInBoard()
+    {
+        var core = FromCells(LayoutInnerThreeTurns);
+
+        Assert.False(core.CanConnect(3, 2, 3, 5));
+        Assert.Null(core.TryFindPath(3, 2, 3, 5, LianliankanCore.TurnLimit));
+
+        var path = core.TryFindPath(3, 2, 3, 5, int.MaxValue);
+        Assert.NotNull(path);
+        Assert.Equal(3, path!.Turns);
+        Assert.All(path.Points, p => Assert.True(LianliankanCore.InBoard(p.R, p.C), $"{p} 跑出了盘外"));
+    }
+
+    /// <summary>U5：彻底没路 —— 不限拐也是 null（④ 层抖动的唯一入口）。</summary>
+    [Fact]
+    public void TryFindPath_DeadEnd_Null()
+    {
+        var core = FromCells(LayoutDeadEnd);
+
+        Assert.True(core.HasAnyPair());                             // 盘上仍有别的对，不是死局
+        Assert.Null(core.TryFindPath(1, 1, 1, 3, int.MaxValue));
+    }
+
+    /// <summary>U3/U4 的布局顺带钉住"页面上要画成几条线"（LL-17 依赖 Turns 分层）。</summary>
+    [Fact]
+    public void TryFindPath_LayoutD_IsThreeTurnsOutside()
+    {
+        var core = FromCells(LayoutOuterThreeTurns);
+
+        Assert.False(core.CanConnect(0, 0, 5, 5));
+        var path = core.TryFindPath(0, 0, 5, 5, int.MaxValue);
+        Assert.NotNull(path);
+        Assert.Equal(3, path!.Turns);
+        Assert.Contains(path.Points, p => !LianliankanCore.InBoard(p.R, p.C));
+    }
+
+    /// <summary>U6：提示对 —— 可连、行优先确定性、<paramref name="excludeIdx"/> 生效、全堵返回 null。</summary>
+    [Fact]
+    public void FindHintPair_FirstConnectable_Deterministic()
+    {
+        // 四块、两对都可连：(0,0)/(0,1) 是行优先的第一对，(7,4)/(7,5) 是第二对
+        var core = NewCore((0, 0, 1), (0, 1, 1), (7, 4, 2), (7, 5, 2));
+
+        var first = core.FindHintPair();
+        Assert.NotNull(first);
+        Assert.Equal((0, 0, 0, 1), first!.Value);
+        Assert.True(core.CanConnect(first.Value.R1, first.Value.C1, first.Value.R2, first.Value.C2));
+
+        Assert.Equal(first, core.FindHintPair());                   // 连扫两次一致
+
+        // excludeIdx：跳过含该格的对 ⇒ 落到第二对
+        var skipped = core.FindHintPair(excludeIdx: 0);
+        Assert.NotNull(skipped);
+        Assert.Equal((7, 4, 7, 5), skipped!.Value);
+
+        // 全堵盘（2×2 交错死局）⇒ null
+        Assert.Null(FromCells(new[]
+        {
+            0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0,
+            0, 0, 1, 2, 0, 0,
+            0, 0, 2, 1, 0, 0,
+            0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0,
+        }).FindHintPair());
+    }
+
+    /// <summary>
+    /// U7：快照里的提示次数 —— 旧档补满、越界夹回、写出去与读回来一致，且 <c>V</c> 仍是 1。
+    /// <para><b>不升版</b>是《39》§4 拍板 4：结构没变（可选字段向后兼容），
+    /// 升 v2 就得把"只认当前版本"改成白名单，以后每加一版回来改一次。</para>
+    /// </summary>
+    [Fact]
+    public void TryFrom_HintsDefaultAndClamp()
+    {
+        var good = LianliankanCore.NewDaily(Today).ToSnapshot(3);
+
+        LianliankanSnapshot With(int? hints) => new()
+        {
+            V = good.V,
+            Issue = good.Issue,
+            Cells = (int[])good.Cells!.Clone(),
+            ElapsedSec = good.ElapsedSec,
+            Hints = hints,
+        };
+
+        Assert.Equal(3, LianliankanCore.TryFrom(With(null), Today)!.HintsLeft);      // 旧档：补满
+        Assert.Equal(1, LianliankanCore.TryFrom(With(1), Today)!.HintsLeft);
+        Assert.Equal(3, LianliankanCore.TryFrom(With(9), Today)!.HintsLeft);         // 上界夹回
+        Assert.Equal(0, LianliankanCore.TryFrom(With(-2), Today)!.HintsLeft);        // 下界夹回
+
+        var core = LianliankanCore.TryFrom(With(2), Today)!;
+        Assert.Equal(2, core.ToSnapshot(3).Hints);                                   // 写出去了
+        Assert.Equal(LianliankanSnapshot.CurrentVersion, core.ToSnapshot(3).V);      // V 仍为 1
+        Assert.Equal(1, LianliankanSnapshot.CurrentVersion);
+    }
+
+    /// <summary>提示次数的扣减口径：0 次或已通关都不扣、都返回 false。</summary>
+    [Fact]
+    public void UseHint_StopsAtZeroAndOnCleared()
+    {
+        var core = NewCore((0, 0, 1), (0, 1, 1), (7, 4, 2), (7, 5, 2));
+        Assert.Equal(LianliankanCore.HintTotal, core.HintsLeft);
+
+        for (var i = 0; i < LianliankanCore.HintTotal; i++) Assert.True(core.UseHint());
+        Assert.Equal(0, core.HintsLeft);
+        Assert.False(core.UseHint());                                // 0 次：false 且不变成 -1
+        Assert.Equal(0, core.HintsLeft);
+
+        var cleared = NewCore((0, 0, 5), (0, 1, 5));
+        cleared.Remove(0, 0);
+        cleared.Remove(0, 1);
+        Assert.True(cleared.IsCleared);
+        Assert.False(cleared.UseHint());                             // 已通关：不扣
+        Assert.Equal(LianliankanCore.HintTotal, cleared.HintsLeft);
+    }
 }

@@ -13,6 +13,12 @@
 <div class="llk-container">
     <div class="llk-status">
         <p class="llk-stat llk-elapsed">用时：@elapsedSec 秒</p>
+        @* 提示按钮进状态行（H-015）：整行 +4px（18 → 22），LL-11 的余量 58 → 54。
+           用原生 <button> 而不是 FluentButton —— 后者 32px 高会把状态行直接撑到 32。
+           次数由 Core 给（HintButton），页面不自己减。 *@
+        <button class="llk-hint-btn" type="button"
+                disabled="@HintDisabled"
+                @onclick="OnHintClicked">@LlkCopy.HintButton(game.HintsLeft)</button>
         <p class="llk-stat llk-best">本次最快：@(isBestLoaded ? FormatBest(best) : LlkCopy.NoRecord)</p>
     </div>
 
@@ -37,7 +43,13 @@
     <div class="llk-board-wrap">
         @* 48 格恒定存在：消除只是加 .is-gone（透明 + 缩小），不移除节点 ——
            盘面不会因为消除而重排，e2e 的 data-idx 也就永远指同一格 *@
-        <div class="llk-board" role="grid" aria-label="连连看棋盘">
+        @* D-31：重排动画的两个挂点。data-llk-reshuffling 给 e2e 当"动画中"的唯一锚，
+           aria-busy 给读屏软件同一语义（两者都不改布局）。
+           ⚠ 属性名带 llk 前缀：《39》已建立 data-llk-* 专门标识"状态机标记"
+           （data-llk-mode / data-llk-bend），而 data-idx / data-face 是"结构数据"那一族。 *@
+        <div class="llk-board" role="grid" aria-label="连连看棋盘"
+             data-llk-reshuffling="@(isReshuffling ? "1" : null)"
+             aria-busy="@(isReshuffling ? "true" : null)">
             @for (var i = 0; i < LianliankanCore.CellCount; i++)
             {
                 // ⚠ 先拷进局部量：Razor 的 @for 循环变量是同一个变量，lambda 捕获到的是终值
@@ -58,6 +70,38 @@
                      @onclick="() => OnCellClickedAsync(idx)"></div>
             }
         </div>
+
+        @* 首访玩法遮罩（H-015）：复用 .llk-overlay 骨架 —— absolute + inset:0，
+           零纵向预算、天然挡点击。320 下内容高约 229 < wrap 364。
+           只弹一次：rulesSeen 写 localStorage，点「开始」才写（关掉标签页算没看过）。 *@
+        @if (showRules)
+        {
+            <div class="llk-overlay llk-rules" role="dialog" aria-label="连连看玩法">
+                <h2 class="llk-overlay-title">@LlkCopy.RulesTitle</h2>
+                @* 静态 mini 示例（3×2 小格 + 一条 2 拐虚线）：不引额外 JS，也不需要动画 *@
+                <svg class="llk-rules-mini" viewBox="0 0 96 68" aria-hidden="true">
+                    @for (var r = 0; r < 2; r++)
+                    {
+                        @for (var c = 0; c < 3; c++)
+                        {
+                            <rect x="@(8 + c * 26)" y="@(12 + r * 26)" width="22" height="22" rx="3"
+                                  fill="#F3ECE1" stroke="#C9B7A8" stroke-width="1" />
+                        }
+                    }
+                    <rect x="8" y="12" width="22" height="22" rx="3" fill="#E8C9A0" stroke="#B3423C" stroke-width="1.5" />
+                    <rect x="60" y="38" width="22" height="22" rx="3" fill="#E8C9A0" stroke="#B3423C" stroke-width="1.5" />
+                    <polyline points="19,23 19,4 71,4 71,49" fill="none" stroke="#B3423C"
+                              stroke-width="2" stroke-dasharray="5 4" stroke-linejoin="round" stroke-linecap="round" />
+                    <circle cx="19" cy="4" r="3" fill="#B3423C" />
+                    <circle cx="71" cy="4" r="3" fill="#B3423C" />
+                </svg>
+                <p class="llk-rules-line">@LlkCopy.RulePair</p>
+                <p class="llk-rules-line">@LlkCopy.RuleTurns</p>
+                <p class="llk-rules-line">@LlkCopy.RuleHintLine</p>
+                <p class="llk-rules-line">@LlkCopy.RuleHints</p>
+                <FluentButton Class="llk-overlay-btn" Appearance="Appearance.Accent" @onclick="OnRulesStartClicked">@LlkCopy.RulesStart</FluentButton>
+            </div>
+        }
 
         @if (game.IsCleared)
         {
@@ -104,6 +148,9 @@
        max-width 封顶后桌面上最多 384px 宽（格 59px），375 屏约 49px、320 屏约 42px。
        不写 min(32px, (100vw − 侧栏)/6) —— 那个公式把 250px 侧栏算成了可用宽（《34》实测溢出 14~115px）。 */
     .llk-board {
+        /* H-015：连接线 SVG 以棋盘为原点。不加 relative 会挂到 .llk-board-wrap 上，
+           而棋盘在 wrap 里是 margin:0 auto 居中的 —— 两套坐标差一个横向偏移，线会整条跑偏。 */
+        position: relative;
         display: grid;
         grid-template-columns: repeat(6, minmax(0, 1fr));
         gap: 6px;
@@ -144,7 +191,33 @@
         opacity: 0;
         transform: scale(.6);
         transition: opacity .25s, transform .25s;
+        /* H-015：只在「进入 is-gone」时延迟 —— transition-* 取的是**变化后**的 computed style：
+           加 is-gone 时用这里的 340ms（= success 描线时长），重开一局（去掉 is-gone）读的是基类的无 delay。
+           ⚠ 别把 delay 写进 .llk-cell 基类：那样重开一局 48 格淡入都会卡 340ms。 */
+        transition-delay: 340ms;
         pointer-events: none;
+    }
+
+    /* 重排过渡（D-31）两阶段渲染的 CSS 侧。
+       out **必须 forwards** —— 否则 .22s 一到动画结束就回弹 opacity 1，旧脸在那 220ms 的
+       await 窗口里整段闪回，比不做动画更怪（《40》v2.0 §1.3 / §3.5 实测）。
+       只动 opacity、不碰 transform：.is-gone 的 transform: scale(.6) 与这里不同格，但别给将来留坑。 */
+    .llk-cell.is-shuffle-out {
+        animation: llk-fade-out .22s ease-in forwards;
+    }
+
+    .llk-cell.is-shuffle-in {
+        animation: llk-fade-in .25s ease-out;
+    }
+
+    /* 两段时长必须与 shuffleOutMs / shuffleInMs 对齐：动画比 Task.Delay 短会露出"淡完停着"，
+       比它长则 class 被摘掉时淡到一半（reduced-motion 时两个 class 根本不会被加上，无需 @@media 兜底）。 */
+    @@keyframes llk-fade-out {
+        to { opacity: 0; }
+    }
+
+    @@keyframes llk-fade-in {
+        from { opacity: 0; }
     }
 
     /* 点错抖动（D-30）：动画只播 300ms，但 class 生命周期跟提示一致（1.6s）——
@@ -168,6 +241,45 @@
         .llk-cell.is-shake {
             animation: none;
         }
+
+        .llk-cell.is-hint {
+            animation: none;             /* 静态虚线框仍在，只是不呼吸 */
+        }
+    }
+
+    /* 提示高亮（H-015）：虚线框 + 呼吸。**写在 .is-selected 之后** —— 两者同特异性，
+       后者胜，万一同格命中，提示样式不会被选中框盖掉（excludeIdx 已尽量避免，这里是兜底）。 */
+    .llk-cell.is-hint {
+        outline: 2px dashed #B3423C;      /* 选中是 3px solid ⇒ 线型 + 粗细双区分 */
+        outline-offset: -5px;             /* 选中是 -3px ⇒ 内缩量再区分一档 */
+        animation: llk-hint-breathe 1s ease-in-out 2;   /* 2 拍 = 2s = is-hint 的生命周期 */
+    }
+
+    /* 呼吸的是**颜色**，不碰 opacity：格子背景是 sprite，opacity 会把头像一起淡掉 */
+    @@keyframes llk-hint-breathe {
+        0%, 100% { outline-color: #B3423C; }
+        50% { outline-color: #EFCFCB; }
+    }
+
+    /* 提示按钮（H-015）：原生 button，按 .llk-stat 的字号对齐，1px 边框 + 圆角胶囊。
+       高度 18 + 1×2 + 1×2 = 22px ⇒ 状态行 18 → 22，这是本轮唯一的纵向预算增量。 */
+    .llk-hint-btn {
+        margin: 0;
+        padding: 1px 10px;
+        font-family: inherit;
+        font-size: .95rem;
+        line-height: 18px;
+        color: inherit;
+        background: transparent;
+        border: 1px solid #C9B7A8;
+        border-radius: 999px;
+        cursor: pointer;
+    }
+
+    .llk-hint-btn:disabled {
+        color: #9E9E9E;
+        border-color: #DCD3C8;
+        cursor: default;
     }
 
     .llk-overlay {
@@ -190,6 +302,25 @@
     .llk-overlay-sub {
         margin: 0;
         font-size: .9rem;
+        color: #455a64;
+    }
+
+    /* 玩法遮罩（H-015）：比胜局遮罩多四行文案 + 一张小图，所以 gap 收到 6、上下留 6px 内边距。
+       320 下实测内容高约 229，wrap 364 —— 余量足够，不动紧凑档。 */
+    .llk-rules {
+        gap: 6px;
+        padding: 6px 12px;
+    }
+
+    .llk-rules-mini {
+        width: 88px;
+        height: 62px;
+    }
+
+    .llk-rules-line {
+        margin: 0;
+        font-size: .85rem;
+        line-height: 18px;
         color: #455a64;
     }
 
@@ -261,6 +392,53 @@
     /// </summary>
     private int feedbackSeq;
 
+    // ───────────────────── 提示高亮（H-015） ─────────────────────
+
+    /// <summary>is-hint 的高亮时长。<b>必须等于 CSS 呼吸的 2 拍 × 1s</b>，否则会看到"呼吸到一半被掐断"。</summary>
+    private const int HintPulseMs = 2000;
+
+    /// <summary>要高亮的两格（-1 = 无）。与 <see cref="shakeA"/> 平行的一组，但生命周期是 2s 不是 1.6s。</summary>
+    private int hintA = -1;
+    private int hintB = -1;
+
+    /// <summary>提示代际号：连点提示时只有最新一次有权清屏（同 <see cref="feedbackSeq"/> 的道理）。</summary>
+    private int hintSeq;
+
+    /// <summary>玩法遮罩开关（首访一次）。</summary>
+    private bool showRules;
+
+    /// <summary>读闸：只读一次 rulesSeen，避免每次 firstRender 都跑一遍 JS。</summary>
+    private bool isRulesChecked;
+
+    /// <summary>
+    /// 提示按钮的禁用口径。
+    /// <para>遮罩期也必须禁用：遮罩只盖 <c>.llk-board-wrap</c>，状态行在它上方仍可点 ——
+    /// 否则遮罩期间点提示会起表 + 白扣一次，而高亮被遮住根本看不见。</para>
+    /// </summary>
+    private bool HintDisabled => isRestoring || showRules || game.IsCleared || game.HintsLeft <= 0;
+
+    // ───────────────────── 重排过渡（D-31） ─────────────────────
+
+    /// <summary>重排动画阶段：0 = 无动画；1 = 旧盘淡出中；2 = 新盘淡入中。</summary>
+    private int reshufflePhase;
+
+    /// <summary>true = 动画窗口内（约 470ms），棋盘输入一律吞掉。也是 <c>data-llk-reshuffling</c> 的来源。</summary>
+    private bool isReshuffling;
+
+    /// <summary>
+    /// 两阶段时长（ms）。<b>用户偏好"减少动效"时压到 0</b>。
+    /// <para>压到 0 ⇒ <see cref="ReshuffleWithTransitionAsync"/> 的两个分支都短路 ⇒ 一次渲染直接换脸，
+    /// 与加动画之前一模一样。<b>不是</b>在 CSS 里写 <c>animation: none</c>：那会连 forwards 一起取消，
+    /// 旧盘停在 opacity 1 长达 220ms 再瞬变，比不做动画更怪（《40》v2.0 §3.5 三组实测）。</para>
+    /// </summary>
+    private int shuffleOutMs = 220;
+
+    /// <summary>新盘淡入时长（ms），与 <see cref="shuffleOutMs"/> 同一套语义。</summary>
+    private int shuffleInMs = 250;
+
+    /// <summary>读闸：偏好只读一次；读失败也不重试（降级为"有动画"，不阻塞恢复）。</summary>
+    private bool motionPrefRead;
+
     /// <summary>写闸门：预渲染实例与"恢复还没跑完"期间一律不写，否则一次空局就把存档冲掉。</summary>
     private bool isSessionReady;
 
@@ -271,18 +449,24 @@
     private CancellationTokenSource? clockCts;
     private readonly object timerLock = new();
     private IJSObjectReference? visibilityModule;
+    private IJSObjectReference? lineModule;
     private DotNetObjectReference<LianLianKan>? selfRef;
 
     private string FormatBest(int? v) => v is null ? LlkCopy.NoRecord : $"{v}";
 
     private string CellClass(int idx, int face)
     {
-        var classes = new List<string>(3);
+        var classes = new List<string>(6);
         if (face == 0) classes.Add("is-gone");          // 已消除的格子不抖（face>0 才加 is-shake）
         else
         {
+            // 重排淡出/淡入（D-31）只作用于**还在盘上的格**：is-gone 格拿不到，
+            // 否则"消掉的格缩小淡出"与"剩余格整盘淡出"会互相盖 opacity。
+            if (reshufflePhase == 1) classes.Add("is-shuffle-out");
+            else if (reshufflePhase == 2) classes.Add("is-shuffle-in");
             if (idx == selectedIdx) classes.Add("is-selected");
             if (idx == shakeA || idx == shakeB) classes.Add("is-shake");
+            if (idx == hintA || idx == hintB) classes.Add("is-hint");
         }
         return string.Join(' ', classes);
     }
@@ -296,11 +480,13 @@
     /// <para><c>Task.Delay</c> 不会抛 <c>ObjectDisposedException</c>（那是 JS interop 的脾气），
     /// 这里只需要 <see cref="disposed"/> 双检 + 代际号。</para>
     /// </summary>
-    private async Task ShowFeedbackAsync(string text, int a, int b)
+    private async Task ShowFeedbackAsync(string text, int a, int b, bool shake = true)
     {
         clickFeedback = text;
-        shakeA = a;
-        shakeB = b;
+        // shake:false 时必须显式写 -1，不能"不赋值" —— 否则上一次的抖动会残留在新提示上
+        // （③ 层是"有线但拐太多"，画面已经给了答案，再抖就是两个信号打架）
+        shakeA = shake ? a : -1;
+        shakeB = shake ? b : -1;
         var seq = ++feedbackSeq;
         if (!disposed) StateHasChanged();               // 先把提示画出来，再等 1.6s
 
@@ -311,8 +497,10 @@
     }
 
     /// <summary>
-    /// 清掉反馈与抖动。<b>成功消除必须调</b> —— 否则那句错误提示要等 1.6s 定时器到期才消失，
+    /// 清掉反馈、抖动与提示高亮。<b>成功消除必须调</b> —— 否则那句错误提示要等 1.6s 定时器到期才消失，
     /// 玩家看到的是"都消掉了还在报错"。
+    /// <para><c>hintSeq++</c> 不能省：只把 <see cref="hintA"/> 置 -1 的话，在跑的 2s 延时到期时
+    /// 还会再刷一次屏（无害但多一次渲染）；更要紧的是不递增就无法让"更早那一次"的延时失效。</para>
     /// </summary>
     private void ClearFeedback()
     {
@@ -320,6 +508,106 @@
         clickFeedback = null;
         shakeA = -1;
         shakeB = -1;
+
+        hintSeq++;
+        hintA = -1;
+        hintB = -1;
+    }
+
+    // ───────────────────────── 提示高亮（H-015） ─────────────────────────
+
+    /// <summary>
+    /// 把提示对的两格点亮 <see cref="HintPulseMs"/>。
+    /// <para>时长与 CSS 的 <c>llk-hint-breathe 1s … 2</c> <b>严格对齐</b>：
+    /// 动画自然结束的同时 class 被移除，不会看到"呼吸到一半被掐断"。</para>
+    /// </summary>
+    private async Task ShowHintPulseAsync((int R1, int C1, int R2, int C2) pair)
+    {
+        hintA = pair.R1 * LianliankanCore.Cols + pair.C1;
+        hintB = pair.R2 * LianliankanCore.Cols + pair.C2;
+        var seq = ++hintSeq;
+        if (!disposed) StateHasChanged();
+
+        await Task.Delay(HintPulseMs);
+        if (disposed || seq != hintSeq) return;
+        hintA = -1;
+        hintB = -1;
+        if (!disposed) StateHasChanged();
+    }
+
+    private async Task OnHintClicked()
+    {
+        if (HintDisabled) return;
+
+        // ★ 先找对、找到才扣：反过来会在"死局瞬间点提示"白扣一次（理论死角，但扣了就是扣了）
+        var pair = game.FindHintPair(selectedIdx >= 0 ? selectedIdx : null);
+        if (pair is null)
+        {
+            showReshuffleTip = true;                    // 理论死角：不扣次数，给一条别的提示
+            if (!disposed) StateHasChanged();
+            return;
+        }
+
+        game.UseHint();
+        ClearFeedback();                                // 上一条失败提示不该和"点亮新对"同屏
+        ResumeClock();                                  // 会去点提示 = 已经在玩了，表走起来
+        _ = ShowHintPulseAsync(pair.Value);
+
+        await SaveSessionAsync();                       // 次数要落盘：刷新后仍是扣过的值（LL-19）
+        if (!disposed) StateHasChanged();
+    }
+
+    // ───────────────────────── 连接线（H-015） ─────────────────────────
+
+    /// <summary>
+    /// 画一条连接线。<b>② 可连分支必须在 <c>game.Remove</c> 之前 await 这里</b> ——
+    /// <c>.llk-cell.is-gone</c> 的 <c>transform: scale(.6)</c> 会让
+    /// <c>getBoundingClientRect</c> 返回缩小后的矩形，先删再画会把线连到格子内侧 40%。
+    /// </summary>
+    private async Task DrawLineAsync(LlkPath path, string mode)
+    {
+        try
+        {
+            lineModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/llkline.js");
+            // 传 int[][] 而不是元组：ValueTuple 的 Item1/Item2 是**字段**，
+            // System.Text.Json 默认只序列化属性 ⇒ 元组过来会变成 [{}]（老坑，别试）
+            var pts = path.Points.Select(p => new[] { p.R, p.C }).ToArray();
+            await lineModule.InvokeVoidAsync("drawPath", ".llk-board", pts, mode);
+        }
+        catch (JSException) { }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+    }
+
+    /// <summary>清掉还在飘的线（④ 层用）。模块没加载过就不必调。</summary>
+    private async Task ClearLinesAsync()
+    {
+        if (lineModule is null) return;
+
+        try
+        {
+            await lineModule.InvokeVoidAsync("clear");
+        }
+        catch (JSException) { }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+    }
+
+    // ───────────────────────── 玩法遮罩（H-015） ─────────────────────────
+
+    private async Task OnRulesStartClicked()
+    {
+        showRules = false;
+
+        try
+        {
+            await JS.InvokeVoidAsync("localStorage.setItem", LlkKeys.RulesSeen, "1");
+        }
+        catch (JSException) { }                         // 隐私模式：这次照样开局，下次再弹一次
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+
+        if (!disposed) StateHasChanged();
     }
 
     // ───────────────────────── 生命周期 ─────────────────────────
@@ -353,6 +641,26 @@
             StateHasChanged();
         }
 
+        // ①.5 减少动效偏好（D-31）。**必须排在 ② 之前** —— 恢复死局档的重排就发生在 ② 里，
+        //      读到时长得为 0 才能正确短路两阶段。visibilityModule 在这里先加载好，
+        //      ④ 的 ??= 于是变成空操作（同一 URL 的 import 本来也只请求一次）。
+        if (!motionPrefRead)
+        {
+            motionPrefRead = true;                      // 先置位：读失败也不重试、不阻塞恢复
+            try
+            {
+                visibilityModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/llkvisibility.js");
+                if (await visibilityModule.InvokeAsync<bool>("prefersReducedMotion"))
+                {
+                    shuffleOutMs = 0;
+                    shuffleInMs = 0;
+                }
+            }
+            catch (JSException) { }                     // 降级：保留 220/250（有动画，但流程正常）
+            catch (JSDisconnectedException) { }
+            catch (ObjectDisposedException) { }
+        }
+
         // ② 恢复对局（结构闸 + 期号闸；死局交给重排，不丢档）
         if (!isSessionReady)
         {
@@ -377,10 +685,11 @@
                         showResumeTip = true;
 
                         // 死局档不丢弃：恢复后第一帧就重排（v2.0 §0 #7 —— 丢弃等于把玩家打回第 1 关）
+                        // 这里用 await：它在 try 内，finally 的 isRestoring = false 自然排在动画之后
+                        // ⇒ 恢复场景 isRestoring 与 isReshuffling 双闸挡输入，不必额外处理。
                         if (!game.HasAnyPair())
                         {
-                            game.Reshuffle();
-                            showReshuffleTip = true;
+                            await ReshuffleWithTransitionAsync();
                         }
 
                         StateHasChanged();
@@ -398,7 +707,23 @@
             }
         }
 
-        // ③ 切后台暂停（服务端计时器不会因为标签页隐藏而停，切 5 分钟回来"用时"直接 +300 秒）
+        // ③ 首访玩法遮罩（H-015）。放在恢复之后：恢复失败也不该挡住"先看规则"。
+        if (!isRulesChecked)
+        {
+            isRulesChecked = true;
+            try
+            {
+                var seen = await JS.InvokeAsync<string?>("localStorage.getItem", LlkKeys.RulesSeen);
+                showRules = string.IsNullOrEmpty(seen);
+            }
+            catch (JSException) { showRules = true; }   // 隐私模式：宁可每次弹一次，也别让人无从下手
+            catch (JSDisconnectedException) { showRules = true; }
+            catch (ObjectDisposedException) { }
+
+            if (!disposed) StateHasChanged();
+        }
+
+        // ④ 切后台暂停（服务端计时器不会因为标签页隐藏而停，切 5 分钟回来"用时"直接 +300 秒）
         try
         {
             visibilityModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/llkvisibility.js");
@@ -410,11 +735,72 @@
         catch (ObjectDisposedException) { }
     }
 
+    // ───────────────────────── 重排过渡（D-31） ─────────────────────────
+
+    /// <summary>
+    /// 重排 + 两阶段淡出淡入。
+    /// <para><b>为什么必须分两次渲染</b>：CSS 没法在 face 变化的那一帧"先淡出旧脸"——旧脸在 DOM 里
+    /// 已经被新脸替换，没有东西可淡出。所以先渲染【旧脸 + <c>is-shuffle-out</c>】、等 220ms，
+    /// 再改状态渲染【新脸 + <c>is-shuffle-in</c>】。</para>
+    /// <para>唯一要守的纪律：<b>两次 <c>StateHasChanged</c> 之间必须有真 await</b>。
+    /// 写成同一个同步块（或 <c>Task.Delay(0)</c> 走同步完成快路径）会被 Blazor 合并成一次渲染，
+    /// 阶段 1 根本不进 DOM。下面的分支写法就是为这条服务 —— reduced-motion 时反而故意让它合并。</para>
+    /// <para>算法、触发条件、判定精度全部零改动：这里只是把 <c>game.Reshuffle()</c> 包进两段延时。</para>
+    /// </summary>
+    private async Task ReshuffleWithTransitionAsync()
+    {
+        isReshuffling = true;
+        showReshuffleTip = true;                    // 与动画同帧出现
+
+        if (shuffleOutMs > 0)                       // reduced-motion 时短路，不进入阶段 1
+        {
+            reshufflePhase = 1;
+            RenderSafe();
+            await Task.Delay(shuffleOutMs);
+            if (disposed) return;
+        }
+
+        game.Reshuffle();
+
+        if (shuffleInMs > 0)
+        {
+            reshufflePhase = 2;
+            RenderSafe();                           // 换脸与换 class 落在同一次 render batch
+            await Task.Delay(shuffleInMs);
+            if (disposed) return;
+        }
+
+        reshufflePhase = 0;
+        isReshuffling = false;
+        await SaveSessionAsync();                   // 存重排后的可解盘（死局盘已被主流程先存过一次）
+        RenderSafe();
+    }
+
+    /// <summary>
+    /// <c>StateHasChanged</c> 的兜底版。动画把"渲染窗口"从 0 拉到 470ms，
+    /// 期间 circuit 断开的概率比同步路径高，直接调会抛 <see cref="InvalidOperationException"/>
+    /// （渲染队列已关；同 <c>RunClockAsync</c> 收的那条）。
+    /// </summary>
+    private void RenderSafe()
+    {
+        if (disposed) return;
+
+        try
+        {
+            StateHasChanged();
+        }
+        catch (ObjectDisposedException) { }             // 须排在前面：它是 InvalidOperationException 的子类
+        catch (InvalidOperationException) { }
+    }
+
     // ───────────────────────── 交互 ─────────────────────────
 
     private async Task OnCellClickedAsync(int idx)
     {
-        if (isRestoring || game.IsCleared) return;
+        // isReshuffling：动画 470ms 内的输入一律"吞"掉，不排队 —— 死局瞬间玩家没有有效操作可丢，
+        // 排队要存点击参数 + 去重 + 动画后重放，复杂度不值。代价：窗口内第一击无反馈（与 isRestoring 同手感）。
+        // reduced-motion 时这条自动失效（isReshuffling 从 true 到 false 之间没有 await 让出，从未被渲染）。
+        if (isRestoring || isReshuffling || showRules || game.IsCleared) return;
 
         var face = game.Cells[idx];
         if (face == 0) return;                          // 空格：不参与选中
@@ -444,50 +830,75 @@
         var c1 = first % LianliankanCore.Cols;
         var r2 = idx / LianliankanCore.Cols;
         var c2 = idx % LianliankanCore.Cols;
+        var firstFace = game.Cells[first];
 
-        if (!game.CanConnect(r1, c1, r2, c2))
+        // ① 异脸：**不画线**。线的语义是"该连"，和「图案不同」正好打架；
+        //    这一层的教学重点是"认图案"，不是"路怎么走"（《39》§2.1）。
+        if (firstFace != face)
         {
-            // CanConnect 内部已含 face 判等（LianliankanCore.cs:282），所以要紧的是先比 face 再分流文案 ——
-            // 「两张不一样的图」和「一样的图但拐不过去」是两件事，前者是新手最常犯的错。
-            var firstFace = game.Cells[first];
-            var msg = firstFace != face
-                ? LlkCopy.DifferentFaces(firstFace, face)
-                : LlkCopy.NotConnectable;
-
-            // 选中挪到新格（经典操作手感），不报错、不落盘；反馈走"提示槽 + 1.6s 自清"
             selectedIdx = idx;
-            _ = ShowFeedbackAsync(msg, first, idx);     // 内部已同步 StateHasChanged，这里不必再调
+            _ = ShowFeedbackAsync(LlkCopy.DifferentFaces(firstFace, face), first, idx);
             return;
         }
 
-        game.Remove(r1, c1);
-        game.Remove(r2, c2);
-        selectedIdx = -1;
-        showReshuffleTip = false;
-        ClearFeedback();                                // 消成功就把失败提示收掉，别等 1.6s 定时器（D-30 / F8）
-        ResumeClock();
+        // 一次搜索拿全部信息：最省拐 ≤2 ⟺ 存在 ≤2 拐的路（U1 差分钉住这条等价），
+        // 页面不再二次调 CanConnect。
+        var path = game.TryFindPath(r1, c1, r2, c2, int.MaxValue);
 
-        if (game.IsCleared)
+        if (path is not null && path.Turns <= LianliankanCore.TurnLimit)
         {
-            StopClock();
-            // 0 秒会被永久锁死（同《35》D-27 口径）：首点起表 + 1 秒一拍，理论上仍可能同秒清空
-            if (elapsedSec < 1) elapsedSec = 1;
-            var next = LianliankanCore.TryUpdateBest(best, elapsedSec);
-            if (next is not null) best = next;
-            await PersistBestAsync();                   // 落盘点 ①：胜利瞬间（与遮罩同帧）
-            await RemoveSessionAsync();                 // 已通关的盘没有可恢复的语义
-        }
-        else
-        {
-            if (!game.HasAnyPair())                     // 死局：自动重排，别让玩家卡死
+            // ② 可连：★ 必须在 Remove 之前画 —— is-gone 的 scale(.6) 会让
+            //    getBoundingClientRect 返回缩小后的矩形，先删再画会把线连到格子内侧 40%。
+            await DrawLineAsync(path, "success");
+            if (disposed) return;
+
+            game.Remove(r1, c1);
+            game.Remove(r2, c2);
+            selectedIdx = -1;
+            showReshuffleTip = false;
+            ClearFeedback();                            // 消成功就把失败提示与提示高亮一起收掉
+            ResumeClock();
+
+            if (game.IsCleared)
             {
-                game.Reshuffle();
-                showReshuffleTip = true;
+                StopClock();
+                // 0 秒会被永久锁死（同《35》D-27 口径）：首点起表 + 1 秒一拍，理论上仍可能同秒清空
+                if (elapsedSec < 1) elapsedSec = 1;
+                var next = LianliankanCore.TryUpdateBest(best, elapsedSec);
+                if (next is not null) best = next;
+                await PersistBestAsync();               // 落盘点 ①：胜利瞬间（与遮罩同帧）
+                await RemoveSessionAsync();             // 已通关的盘没有可恢复的语义
             }
-            await SaveSessionAsync();                   // 落盘点 ②：每次消除
+            else
+            {
+                if (!game.HasAnyPair())                 // 死局：自动重排，别让玩家卡死
+                {
+                    // fire-and-forget：主流程不等这 470ms（否则"消除 → 存档 → 渲染"整条链一起被推迟）。
+                    // 下面那行 SaveSessionAsync 存的是【死局盘】，动画结束时再存一次【重排盘】覆盖；
+                    // 中间态即使被恢复流程读到也有"恢复即重排"兜底（《40》v2.0 §3.3）。
+                    _ = ReshuffleWithTransitionAsync();
+                }
+                await SaveSessionAsync();               // 落盘点 ②：每次消除
+            }
+
+            if (!disposed) StateHasChanged();
+            return;
         }
 
-        if (!disposed) StateHasChanged();
+        if (path is not null)
+        {
+            // ③ 同脸、有路但 >2 拐：虚线 + 拐点呼吸 + 文案，**不抖**。
+            //    画面已经画出"路是有的、只是拐太多"，再抖就是两个信号打架。
+            _ = DrawLineAsync(path, "hint");
+            selectedIdx = idx;
+            _ = ShowFeedbackAsync(LlkCopy.NotConnectable, first, idx, shake: false);
+            return;
+        }
+
+        // ④ 彻底没路：先清掉还在飘的旧虚线，再抖 + 独立文案（与 ③ 的"拐数不够"是两件事）
+        _ = ClearLinesAsync();
+        selectedIdx = idx;
+        _ = ShowFeedbackAsync(LlkCopy.NoRoute, first, idx);
     }
 
     /// <summary>重开的唯一用户入口（遮罩按钮）。</summary>
@@ -503,6 +914,10 @@
         isPaused = true;
         showResumeTip = false;
         showReshuffleTip = false;
+        // 重排动画的理论窗口不会横跨重开（重开只在 IsCleared 时，重排只在未清盘时）——
+        // 但重置成本为零，且能防"动画中途被 fire-and-forget 启动、随后遮罩出现"这类将来才有的组合。
+        reshufflePhase = 0;
+        isReshuffling = false;
         ClearFeedback();
 
         best = await ReadBestAsync();                   // 跨日时纪录要跟着换（同键不同 issue ⇒ 视为无记录）
@@ -653,6 +1068,14 @@
         try
         {
             if (visibilityModule is not null) await visibilityModule.DisposeAsync();
+        }
+        catch (JSException) { }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+
+        try
+        {
+            if (lineModule is not null) await lineModule.DisposeAsync();
         }
         catch (JSException) { }
         catch (JSDisconnectedException) { }

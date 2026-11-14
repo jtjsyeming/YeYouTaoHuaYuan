@@ -148,6 +148,21 @@ export async function open(page, path, settle = 1500) {
   await sleep(settle);
 }
 
+/**
+ * 打开连连看并顺手标记「玩法已看过」。
+ * <p>H-015 的首访遮罩 <c>inset: 0</c> 会盖住棋盘：Playwright 每个 test 都是新 context ⇒
+ * <c>localStorage</c> 恒空 ⇒ 遮罩必弹 ⇒ 所有 <c>locator.click()</c> 直接 3.5s 超时（实测一次撞红 9 条）。</p>
+ * <p>⚠ 别用 <c>addInitScript</c> 预置：它每次导航都重跑，会把 LL-15 的"二次访问不再弹"冲掉。
+ * 测首访的那条用例自己 <c>removeItem</c> 再导航。</p>
+ */
+export async function openLlk(page, settle = 1600) {
+  await open(page, '/lianliankan', settle);
+  await page.evaluate(() => localStorage.setItem('jtjsym.llk.rulesSeen', '1'));
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => !!window.Blazor, null, { timeout: 15000 }).catch(() => {});
+  await sleep(settle);
+}
+
 export const boardUrl = '/game_2048';
 
 // ───────────────────────────── 2048 ─────────────────────────────

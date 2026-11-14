@@ -69,14 +69,17 @@ public class LlkDifferentialProbe
         return false;
     }
 
-    [Fact]
-    public void CanConnect_MatchesReference_OnRandomBoards()
+    /// <summary>
+    /// 差分盘源（300 张、密度从稀疏到全满、48 格填 24 对与真实盘同构）。
+    /// <para><b>抽成方法是为了让 U1（<c>TryFindPath</c> 差分）复用同一批盘</b> —— 两处各写一份随机构造，
+    /// 盘源一旦漂移，两个差分就不再是同一个命题（《39》§8.1 U1）。<b>参照实现一个字不动。</b></para>
+    /// <para>这里用 <c>System.Random</c> 是<b>故意的</b>，与产品代码"禁用 System.Random、改自实现 SplitMix64"
+    /// 的规则不冲突：那条规则要的是**盘面可复现**（今天是哪一关对全世界都一样），
+    /// 而测试数据不构成产品契约 —— 断言只看 got == want，换个 .NET 版本重排一遍照样成立。</para>
+    /// </summary>
+    internal static IEnumerable<int[]> Boards()
     {
-        // 这里用 System.Random 是<b>故意的</b>，与产品代码"禁用 System.Random、改自实现 SplitMix64"
-        // 的规则不冲突：那条规则要的是**盘面可复现**（今天是哪一关对全世界都一样），
-        // 而测试数据不构成产品契约 —— 本断言只看 got == want，换个 .NET 版本重排一遍照样成立。
         var rng = new Random(20261113);
-        long checkedPairs = 0;
         for (var iter = 0; iter < 300; iter++)
         {
             // 随机密度盘：48 格填 24 对（与真实盘同构），密度从稀疏到全满
@@ -100,6 +103,18 @@ public class LlkDifferentialProbe
             }
             for (var i = 0; i < slots.Count; i++) cells[slots[i]] = values[i];
 
+            yield return cells;
+        }
+    }
+
+    [Fact]
+    public void CanConnect_MatchesReference_OnRandomBoards()
+    {
+        long checkedPairs = 0;
+        var iter = 0;
+        foreach (var cells in Boards())
+        {
+            iter++;
             var core = RestoreCore(cells);
             for (var a = 0; a < 48; a++)
             {
@@ -118,7 +133,7 @@ public class LlkDifferentialProbe
         Assert.True(checkedPairs > 5000, $"对拍样本过少：{checkedPairs}");
     }
 
-    private static LianliankanCore RestoreCore(int[] cells)
+    internal static LianliankanCore RestoreCore(int[] cells)
     {
         var snap = new LianliankanSnapshot { V = 1, Issue = 20261113, Cells = cells, ElapsedSec = 1 };
         var core = LianliankanCore.TryFrom(snap, 20261113);

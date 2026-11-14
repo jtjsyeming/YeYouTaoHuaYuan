@@ -44,6 +44,15 @@ export function register(dotNetRef) {
   return currentId;
 }
 
+/**
+ * 用户是否偏好减少动效（D-31）。
+ * 放在这里而不是走 `eval`：`matchMedia` 返回 MediaQueryList 对象，IJSRuntime 序列化不成 bool，
+ * 而 `eval` 在严格 CSP 下会被拦（且不该为一个布尔值开这个口子）。反正本模块本来就要加载。
+ */
+export function prefersReducedMotion() {
+  return window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+}
+
 /** 仅在 id 仍是当前注册时拆除（跨页导航时新旧页的先后顺序没有保证）。 */
 export function unregister(id) {
   if (id !== undefined && id !== currentId) return;

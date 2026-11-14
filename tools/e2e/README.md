@@ -51,12 +51,12 @@ dotnet run --project ../../jtjsym/jtjsym --no-launch-profile --environment Devel
 | `npm run test:d22` | D-23 俄罗斯方块最高分（预置读 / 首屏占位 / 不闪 0 / 未落盘 / 重玩固化 / 损坏值 / 跨页隔离） | 20 秒 |
 | `npm run test:d24` | D-24 对局会话保持 + 后台自动暂停 / D-25 最高分落盘加固（切页往返 / 结束清档 / 重玩清档 / 8 种坏档 / 恢复后继续 / 切后台 / 软降零头） | 55 秒 |
 | `npm run test:ms` | H-013 扫雷（首屏 / 首点安全 / 洪泛边界 / 插旗 / 败局 / 胜局纪录 / 坏值 / 会话保持 / 重开切档 / 窄屏 / 无异常） | 65 秒 |
-| `npm run test:llk` | H-014 连连看每日一关（首屏 / 每日确定性 / 消除与不可连 / 死局重排 / 胜局 / 纪录口径 / 会话保持 / 切后台 / 窄屏横纵 / 资产完整 / **点错反馈**） | 75 秒 |
+| `npm run test:llk` | H-014 连连看每日一关（首屏 / 每日确定性 / 消除与不可连 / 死局重排 / 胜局 / 纪录口径 / 会话保持 / 切后台 / 窄屏横纵 / 资产完整 / 点错反馈 / 连接线 · 三次提示 · 规则引导 / **重排淡出淡入 + 窗口内输入挡**） | 140 秒 |
 | `npm run test:fast` | nav + lt + g2048 + code_nf（不含 tris 长时项） | 6 分钟 |
 | `npm run test:pr` | **CI 的 PR/push 子集**（chromium + 编号前缀白名单，见下） | 16 分钟 |
 | `npm run test:all` | 全部 | 17~20 分钟 |
 
-- **`test:pr` 是 CI 与本地同源的唯一子集定义**（`.github/workflows/tests.yml` 只调 `npm run test:pr`）。它靠 `--grep` 的前缀白名单选用例，**新增 spec 时必须把标题编号前缀加进去**，否则该 spec 永远不会在 PR 上跑（`D02-`/`NF-`/`D15-`/`D-1[12]` 就这样漏过 40 条）。当前白名单：`NAV-|FISH-|G2048-|LT-|TRIS-0|D14-|D08-|D02-|D-1[12]|D15-|NF-|CODE-|D22-|D24-|MS-|LL-`（**2026-11-13 实测：157 条选中 155 条通过 / 2 跳过 / 0 失败**；故意排除 TRIS-10~14/20/21/25/26/ERR 与 smoke 的人工项）；
+- **`test:pr` 是 CI 与本地同源的唯一子集定义**（`.github/workflows/tests.yml` 只调 `npm run test:pr`）。它靠 `--grep` 的前缀白名单选用例，**新增 spec 时必须把标题编号前缀加进去**，否则该 spec 永远不会在 PR 上跑（`D02-`/`NF-`/`D15-`/`D-1[12]` 就这样漏过 40 条）。当前白名单：`NAV-|FISH-|G2048-|LT-|TRIS-0|D14-|D08-|D02-|D-1[12]|D15-|NF-|CODE-|D22-|D24-|MS-|LL-`（**2026-11-14 实测：167 条选中 165 条通过 / 2 跳过 / 0 失败**；故意排除 TRIS-10~14/20/21/25/26/ERR 与 smoke 的人工项）；
 - 换端口：`BASE_URL=http://localhost:14099 npm run test:lt`；
 - 按用例编号过滤依赖"编号写在 `test()` 标题首段"的约定，例如 `npx playwright test --grep "LT-11"`；
 - **`trace` 默认关闭**（见 §6），失败时 `test-results/` 里有失败截图、`error-context.md`（ARIA 快照）与 **`env-snapshot.json`**（环境快照，见 §3.1）；要逐帧复盘就临时加 `--trace on`；
@@ -89,7 +89,7 @@ dotnet run --project ../../jtjsym/jtjsym --no-launch-profile --environment Devel
 | `tests/d14_mobile_layout.spec.mjs` | D14-1~D14-9 + D14-10/10b/10c/10d（横屏四档、桌面四档含 768×1024）（+ 一条控制台错误辅助断言） | 《11》§5.1 新写、《28》P-023 |
 | `tests/smoke.spec.mjs` | 《07》§11.3 的 28 条 P0 | 从上列各文件抽子集，不新增逻辑 |
 | `tests/minesweeper.spec.mjs` | MS-01~MS-13（扫雷，H-013） | 《34》§6.2 新写；C-59（D-26/D-27）与 C-65（D-29）各改过判据，条数未变 |
-| `tests/lianliankan.spec.mjs` | LL-01~LL-14（连连看每日一关，H-014；LL-13/14 为点错反馈，D-30） | 《36》§6 新写、《38》§7 补两条 |
+| `tests/lianliankan.spec.mjs` | LL-01~LL-22（连连看每日一关，H-014；LL-13/14 = 点错反馈 D-30；LL-15~20 = 连接线 / 三次提示 / 规则引导 H-015；LL-21/22 = 重排淡出淡入 D-31） | 《36》§6 新写、《38》§7 补两条、《39》§8.2 补六条、《40》§4.2 补两条 |
 
 ## 5. 迁移约定（改脚本前先看）
 
@@ -123,5 +123,5 @@ dotnet run --project ../../jtjsym/jtjsym --no-launch-profile --environment Devel
 - **红检/门禁前先杀站点进程**（2026-11-13）：`reuseExistingServer: true` 在端口被占用时会**直接复用**，复用的可能是一个跑着旧 dll 的遗留进程 —— 红检首跑因此假绿（改错的地方照样通过）。同时该进程会锁住 `bin\Debug\net8.0\jtjsym.dll`，`dotnet build` 直接 MSB3026→MSB3027→MSB3021。跑门禁前一律 `Get-Process -Name jtjsym | Stop-Process -Force`。
 - **多条门禁别串在一条命令里跑**（2026-11-13）：`npm run test:nf; npm run test:smoke; npm run test:pr` 连跑时，前一条的站点没退干净，后一条的 `webServer` 会判定"没站点"去起新实例，于是 `Failed to bind to address http://127.0.0.1:14074: address already in use` 直接崩，测试跑在半死站点上，表现为**成片 400ms 快速判红**（本轮 40 余条）。看到"失败快得离谱"先查这条，别逐条读断言。两条之间要留出站点退出时间，或先 `Get-Process -Name jtjsym | Stop-Process -Force` 并确认 14074 不再 LISTENING。
   同一次实测还暴露出另一半原因：**沙箱/容器环境里站点子进程活不过 7~8 分钟**（两次都在启动后约 7.2 分钟被回收，日志无异常堆栈）。`test:pr` 要 16 分钟 ⇒ 长跑门禁要放到沙箱外跑，否则后半段全是 `ECONNREFUSED`。
-- **`test:pr` 最稳的跑法是「手动起站点 + 复用」，不是靠 `webServer`**（2026-11-13 订正上一条，连撞两次才定因）：即使放到沙箱外，**Playwright 自己拉起的那个站点子进程照样会在跑批中途被回收**（实测两次：3 分钟死一次、11.8 分钟死一次，失败位置不固定、全是 `ERR_CONNECTION_REFUSED`；而**手动 `dotnet run` 起的独立进程连续探测 7 分钟 14 次全 200**，从不自然死亡）。`webServer.stdout` 设为 `'ignore'` 时死因完全不可见，是最卡的一步。**跑法**：先在外部 `dotnet run --project jtjsym/jtjsym --no-launch-profile --environment Development --urls http://localhost:14074` 并 `tee` 日志，再跑 `npm run test:pr`（`reuseExistingServer: true` 会直接复用它）。判据：站点在整个门禁期间一直 200、跑完仍 200。
-- **"红点紧挨着某条用例"不是定因依据**（2026-11-13）：两次首红都紧跟 `D02-14`，一度归因于它长按 `ArrowDown` 打崩 Tetris，单跑 `D02-14` 却是绿的。要单条复现再下结论。
+- **`test:pr` 最稳的跑法是「手动起站点 + 复用」，不是靠 `webServer`**（2026-11-13 订正上一条，连撞两次才定因）：即使放到沙箱外，**Playwright 自己拉起的那个站点子进程照样会在跑批中途被回收**（实测两次：3 分钟死一次、11.8 分钟死一次，失败位置不固定、全是 `ERR_CONNECTION_REFUSED`；而**手动 `dotnet run` 起的独立进程连续探测 7 分钟 14 次全 200**，从不自然死亡）。`webServer.stdout` 设为 `'ignore'` 时死因完全不可见，是最卡的一步。**跑法**：先在外部 `dotnet run --project jtjsym/jtjsym --no-launch-profile --environment Development --urls http://localhost:14074` 并 `tee` 日志，再跑 `npm run test:pr`（`reuseExistingServer: true` 会直接复用它）。判据：站点在整个门禁期间一直 200、跑完仍 200。
+- **"红点紧挨着某条用例"不是定因依据**（2026-11-13）：两次首红都紧跟 `D02-14`，一度归因于它长按 `ArrowDown` 打崩 Tetris，单跑 `D02-14` 却是绿的。要单条复现再下结论。

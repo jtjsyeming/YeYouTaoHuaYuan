@@ -16,6 +16,13 @@ public static class LlkKeys
 
     /// <summary>今日最快：<c>{"issue":20261112,"sec":87}</c>。<c>localStorage</c>，单键单条。</summary>
     public const string Best = "jtjsym.llk.best";
+
+    /// <summary>
+    /// 玩法遮罩是否看过（H-015）：<c>localStorage</c>，"1" = 已看过。
+    /// <para>只挡首访：写死"1" 而不是存时间戳 —— 本期不做"重看入口"，
+    /// 想看第二遍就清掉这条键（《39》§12 #7）。</para>
+    /// </summary>
+    public const string RulesSeen = "jtjsym.llk.rulesSeen";
 }
 
 /// <summary>
@@ -37,6 +44,13 @@ public sealed class LianliankanSnapshot
     [JsonPropertyName("cells")] public int[]? Cells { get; set; }
 
     [JsonPropertyName("elapsedSec")] public int ElapsedSec { get; set; }
+
+    /// <summary>
+    /// 剩余提示次数（H-015）。<b>可空</b>：旧档没有这个字段，读出来是 <c>null</c> ⇒ 补满 3。
+    /// <para><b>不升 <see cref="CurrentVersion"/></b>（《39》§4 拍板 4）：加一个可选字段是向后兼容的结构变化，
+    /// 升版本反而要同时把 <c>TryFrom</c> 的"只认当前版本"改成白名单，以后每加一版都得回来改。</para>
+    /// </summary>
+    [JsonPropertyName("hints")] public int? Hints { get; set; }
 }
 
 /// <summary>本地榜的载荷：<c>{"issue":20261112,"sec":87}</c>（《36》v2.1 §4.1）。</summary>
@@ -45,6 +59,14 @@ public sealed class LlkBestRecord
     [JsonPropertyName("issue")] public int Issue { get; set; }
     [JsonPropertyName("sec")] public int Sec { get; set; }
 }
+
+/// <summary>
+/// 一条连通路径（H-015 / 《39》§3.1）。
+/// <para><see cref="Points"/> 已<b>压缩</b>为只保留端点与拐点：相邻两点必同行或同列，
+/// 且 <see cref="Turns"/> 恒等于 <c>Points.Count - 2</c>。盘外坐标（<c>-1</c> 或 <c>Rows</c>/<c>Cols</c>）
+/// 会原样保留 —— 那是<b>算法语义</b>；"画在盘边"是渲染层的事（钳制在 JS 里做）。</para>
+/// </summary>
+public sealed record LlkPath(IReadOnlyList<(int R, int C)> Points, int Turns);
 
 /// <summary>
 /// 连连看的纯逻辑内核（《36》v2.0 §3.1）：不依赖 UI / JSRuntime，因此
@@ -69,8 +91,11 @@ public sealed class LianliankanCore
     /// <summary>重排上限。超过就进确定性兜底，不"放水"继续摇。</summary>
     private const int ReshuffleLimit = 20;
 
-    /// <summary>最多允许的拐弯数（经典连连看：≤2 拐）。</summary>
-    private const int TurnLimit = 2;
+    /// <summary>最多允许的拐弯数（经典连连看：≤2 拐）。<b>public</b>：页面要用它按 <c>Turns</c> 分流（H-015）。</summary>
+    public const int TurnLimit = 2;
+
+    /// <summary>每局提示次数（H-015）。</summary>
+    public const int HintTotal = 3;
 
     private static readonly int[] Dr = { -1, 1, 0, 0 };
     private static readonly int[] Dc = { 0, 0, -1, 1 };
@@ -90,6 +115,9 @@ public sealed class LianliankanCore
 
     /// <summary>剩余方块数（0 = 已通关）。</summary>
     public int RemainingCount { get; private set; }
+
+    /// <summary>剩余提示次数（H-015，默认 <see cref="HintTotal"/>）。<b>只有 <see cref="UseHint"/> 能减</b>。</summary>
+    public int HintsLeft { get; private set; } = HintTotal;
 
     public bool IsCleared => RemainingCount == 0;
 
@@ -330,6 +358,160 @@ public sealed class LianliankanCore
         return false;
     }
 
+    /// <summary>
+    /// 带路径的连通判定（H-015 / 《39》§3.1）：<b>一次搜索拿全部信息</b>。
+    /// <para><paramref name="maxTurns"/> 只影响剪枝：传 <see cref="TurnLimit"/> = "按判定口径"；
+    /// 传 <see cref="int.MaxValue"/> = "只要有路就给最省拐的那条"。调用方<b>只用 MAX 调一次</b>，
+    /// 再按 <see cref="LlkPath.Turns"/> 分流（≤2 消除 / ≥3 画虚线 / null 抖动）。</para>
+    /// <para>实现是 <b>0-1 BFS</b>（代价是拐数不是步数）：同向 <c>AddFirst</c>、转向 <c>AddLast</c>，
+    /// 所以出队顺序按拐数单调不减。用普通步数 BFS 会"先到先得"，把拐更少但路更长的解漏掉。</para>
+    /// </summary>
+    public LlkPath? TryFindPath(int r1, int c1, int r2, int c2, int maxTurns)
+    {
+        if (!InBoard(r1, c1) || !InBoard(r2, c2)) return null;
+        if (r1 == r2 && c1 == c2) return null;
+
+        var face = _cells[Index(r1, c1)];
+        if (face == 0 || face != _cells[Index(r2, c2)]) return null;
+
+        // 与 CanConnect 同一套状态编码：坐标范围 [-1, Rows] × [-1, Cols]，状态 = (r, c, 进入方向)
+        var cols = Cols + 2;
+        var stateCount = (Rows + 2) * cols * 4;
+        var dist = new int[stateCount];
+        Array.Fill(dist, int.MaxValue);
+        var parent = new int[stateCount];
+        Array.Fill(parent, -1);
+
+        bool OutOfRange(int r, int c) => r < -1 || r > Rows || c < -1 || c > Cols;
+        bool Blocked(int r, int c) => InBoard(r, c) && _cells[Index(r, c)] != 0;
+        int StateIndex(int r, int c, int d) => ((r + 1) * cols + (c + 1)) * 4 + d;
+        (int R, int C) CellOf(int s)
+        {
+            var p = s / 4;
+            return (p / cols - 1, p % cols - 1);
+        }
+
+        // ⚠ 回溯后必须补起点：起点状态记 -1 当哨兵，parent 链里**没有起点本身**（《39》§3.2 实现坑）。
+        //   只按 parent 回溯会少掉第一段、Turns 也算错。
+        LlkPath Build(int endState)
+        {
+            var raw = new List<(int R, int C)>();
+            for (var s = endState; s >= 0; s = parent[s]) raw.Add(CellOf(s));
+            raw.Reverse();
+            raw.Insert(0, (r1, c1));
+            raw.Add((r2, c2));
+
+            // 压缩：只保留端点与拐点。先按"完全重合"去重，再按方向是否改变判定 ——
+            // Math.Sign(0) == 0 会把"水平段接水平段"和"水平段接垂直段"混在一起，所以必须先去掉零长段。
+            var pts = new List<(int R, int C)>(raw.Count);
+            foreach (var p in raw)
+            {
+                if (pts.Count > 0 && pts[^1] == p) continue;
+                if (pts.Count >= 2)
+                {
+                    var prev = pts[^2];
+                    var last = pts[^1];
+                    if (Math.Sign(last.R - prev.R) == Math.Sign(p.R - last.R) &&
+                        Math.Sign(last.C - prev.C) == Math.Sign(p.C - last.C))
+                    {
+                        pts[^1] = p;                       // 同向：把中间点吃掉
+                        continue;
+                    }
+                }
+                pts.Add(p);
+            }
+
+            // Turns 由压缩后的点数反推，不信 BFS 里累加的 t（"起点到终点直线"时两者对不上）
+            return new LlkPath(pts, pts.Count - 2);
+        }
+
+        var deque = new LinkedList<int>();
+
+        for (var d = 0; d < 4; d++)
+        {
+            var nr = r1 + Dr[d];
+            var nc = c1 + Dc[d];
+            if (OutOfRange(nr, nc)) continue;
+            if (nr == r2 && nc == c2) return new LlkPath(new[] { (r1, c1), (r2, c2) }, 0);   // 紧贴：0 拐
+            if (Blocked(nr, nc)) continue;
+
+            var si = StateIndex(nr, nc, d);
+            if (dist[si] <= 0) continue;
+            dist[si] = 0;
+            parent[si] = -1;
+            deque.AddFirst(si);
+        }
+
+        while (deque.Count > 0)
+        {
+            var cur = deque.First!.Value;
+            deque.RemoveFirst();
+
+            var t = dist[cur];
+            if (t == int.MaxValue) continue;               // 陈旧条目：起点 4 向之间互相覆盖时可能出现
+            var (r, c) = CellOf(cur);
+            var d = cur % 4;
+
+            for (var nd = 0; nd < 4; nd++)
+            {
+                if (nd == (d ^ 1)) continue;               // 原地掉头：白绕一圈，不可能更优
+                var nt = nd == d ? t : t + 1;
+                if (nt > maxTurns) continue;
+
+                var nr = r + Dr[nd];
+                var nc = c + Dc[nd];
+                if (OutOfRange(nr, nc)) continue;
+                if (nr == r2 && nc == c2) return Build(cur);
+                if (Blocked(nr, nc)) continue;
+
+                var si = StateIndex(nr, nc, nd);
+                if (dist[si] <= nt) continue;
+                dist[si] = nt;
+                parent[si] = cur;
+                if (nd == d) deque.AddFirst(si);           // 0 权：插队首
+                else deque.AddLast(si);                    // 1 权：排队尾
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 找一对<b>可连</b>的同号（H-015 提示按钮）。行优先确定性扫描，顺序与 <see cref="HasAnyPair"/> 一致，
+    /// 所以"同一盘扫两次结果相同"（U6 钉住这条）。
+    /// <para><paramref name="excludeIdx"/>：跳过<b>含该格</b>的对。玩家已选中一格时点提示，
+    /// 若提示对含那一格，屏幕上会同时出现 <c>is-selected</c> 与 <c>is-hint</c>（两个 outline 抢同一属性）。</para>
+    /// </summary>
+    public (int R1, int C1, int R2, int C2)? FindHintPair(int? excludeIdx = null)
+    {
+        for (var i = 0; i < CellCount; i++)
+        {
+            if (_cells[i] == 0) continue;
+            if (excludeIdx == i) continue;
+
+            for (var j = i + 1; j < CellCount; j++)
+            {
+                if (_cells[j] != _cells[i]) continue;
+                if (excludeIdx == j) continue;
+                if (CanConnect(i / Cols, i % Cols, j / Cols, j % Cols))
+                    return (i / Cols, i % Cols, j / Cols, j % Cols);
+            }
+        }
+
+        return null;
+    }
+
+    /// <summary>
+    /// 扣一次提示。<b>0 次或已通关一律返回 false 且不扣</b>（《39》§3.3）。
+    /// <para>页面必须先 <see cref="FindHintPair"/> 找到对、再调这里 —— 反过来会在"死局瞬间点提示"时白扣一次。</para>
+    /// </summary>
+    public bool UseHint()
+    {
+        if (HintsLeft <= 0 || IsCleared) return false;
+        HintsLeft--;
+        return true;
+    }
+
     /// <summary>消除一格（只清值，不做连通判定 —— 判定由调用方先做）。</summary>
     public bool Remove(int r, int c)
     {
@@ -382,6 +564,7 @@ public sealed class LianliankanCore
         Issue = Issue,
         Cells = (int[])_cells.Clone(),
         ElapsedSec = elapsedSec,
+        Hints = HintsLeft,
     };
 
     /// <summary>
@@ -422,6 +605,8 @@ public sealed class LianliankanCore
         var core = new LianliankanCore(s.Issue, Rng.ForIssue(s.Issue));
         Array.Copy(cells, core._cells, CellCount);
         core.RemainingCount = remaining;
+        // 旧档没有 hints 字段 ⇒ 补满；坏值（负数 / 超过上限）夹回合法区间，不让它把按钮画成负数
+        core.HintsLeft = Math.Clamp(s.Hints ?? HintTotal, 0, HintTotal);
         return core;
     }
 
