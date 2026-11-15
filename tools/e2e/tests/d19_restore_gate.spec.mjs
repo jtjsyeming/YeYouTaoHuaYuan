@@ -8,7 +8,7 @@
 // 窗口内点击的拦截能力交给 Test/functiontest.mjs 的 FT-08（它用 element.click()，绕得过 disabled）。
 import { expect, test } from '@playwright/test';
 import {
-  check, checkEq, clickDir, open, readBoard, readScore, readSession, simulate, sleep,
+  check, checkEq, clickDir, open, readBoard, readScore, readSession, simulate, sleep, waitArchiveBoard,
 } from './helpers.mjs';
 
 /** 盘面签名：16 格按行拼成字符串，用于"是否同一盘面"的精确比对（只比"2 块 0 分"没有判别力） */
@@ -50,14 +50,21 @@ test.describe('19 2048 恢复与落盘生命周期', () => {
 
   test('G2048-44 恢复完成后门闸解除：可点、可走、盘面是残局', async ({ page }) => {
     await open(page, '/game_2048', 1600);
-    await clickDir(page, 'left'); // 建立一份真实存档
+    // 先挑一个"必然改变棋盘"的方向再点（与 G2048-45 / FT-07 同一手法，C-70 全量跑撞红过一次）：
+    // 新开局两块**可能都落在最左列**，此时左移是"合法但无位移"的一步 —— 页面见盘面没变直接返回，
+    // 既不生成新块也不落盘 ⇒ waitArchiveBoard 必然 8s 超时。这不是条件等待的错，是构造在赌随机开局。
+    const b0 = await readBoard(page);
+    const dir = DIRS.find(d => JSON.stringify(simulate(b0, d).board) !== JSON.stringify(b0));
+    expect(dir, `四方向都改不动盘面（盘面=${sig(b0)}），无法建立存档`).toBeTruthy();
+    await clickDir(page, dir); // 只负责"点"，不再兼任"等"（P-069：固定 320ms 是靠猜的）
+    const settleMs = await waitArchiveBoard(page); // 条件等待，8s 上限
     const b = await readBoard(page);
     const s = await readScore(page);
     const raw = await readSession(page);
     check(
       'G2048-44-前置',
       raw !== null && JSON.parse(raw).cells.join(',') === b.flat().join(','),
-      `走一步后盘面 ${sig(b)}（分数 ${s}）与存档一致`,
+      `走一步后盘面 ${sig(b)}（分数 ${s}）与存档一致；落盘等待 ${settleMs}ms（旧实现固定 320ms）`,
     );
 
     await page.reload({ waitUntil: 'domcontentloaded' });
@@ -84,17 +91,15 @@ test.describe('19 2048 恢复与落盘生命周期', () => {
     check('G2048-44-方向键', st.dis.length === 4 && st.dis.every(d => d === false), `四方向键禁用态：${JSON.stringify(st.dis)}`);
 
     // 恢复后仍能正常走子，且存档与画面逐格一致（证明守卫没有误伤主流程、落盘链路仍是活的）
-    await clickDir(page, 'right');
-    await expect
-      .poll(
-        async () => {
-          const raw = await readSession(page);
-          const arch = raw ? JSON.parse(raw).cells.join(',') : 'null';
-          return arch === (await readBoard(page)).flat().join(',');
-        },
-        { timeout: 5000 },
-      )
-      .toBe(true);
+    // 与上面同一份判据 ⇒ 收敛为同一个 helper，避免两份拷贝将来各改一半
+    // 同样挑"必然改变棋盘"的方向：残局里某方向可能是无位移的一步，那一步不落盘。
+    const b1 = await readBoard(page);
+    const dir2 = DIRS.find(d => JSON.stringify(simulate(b1, d).board) !== JSON.stringify(b1));
+    expect(dir2, `恢复后四方向都改不动盘面（${sig(b1)}）`).toBeTruthy();
+    await clickDir(page, dir2);
+    const settleMs2 = await waitArchiveBoard(page);
+    // 只当证据，不另设断言：超时本身就会让上面这行抛红，再补一条"ms < 上限"是恒真的假断言。
+    test.info().annotations.push({ type: '落盘等待', description: `恢复后走一步 ${settleMs2}ms（8s 上限）` });
   });
 
   test('G2048-45 看到即已存：DOM 更新后再刷新，5 轮全保持（P-007 门禁判据）', async ({ page }) => {

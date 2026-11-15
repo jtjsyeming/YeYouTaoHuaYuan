@@ -222,11 +222,33 @@ export const archiveOf = (cells, score = 0) => ({ v: 1, cells, score });
 /** 合法死局：16 格全满、无相邻同值。8 个 4 ⇒ cap = 32，故注入 score 只能 ≤ 32。 */
 export const DEAD_CELLS = [2, 4, 2, 4, 4, 2, 4, 2, 2, 4, 2, 4, 4, 2, 4, 2];
 
-export const clickDir = async (page, dir) => {
+/** 点方向键。第三参是与旧实现等价的固定沉降，**默认 320ms 保持不变**（18 个既有调用点零改动）。
+ *  传 0 只用于"验 poll 有没有接上"的场合：留着 320 的话，poll 是在 320ms **之后**才开始的，
+ *  测出来的是"320 够不够"，而不是"条件等待是否存在"（P-069 负向验证的坑）。 */
+export const clickDir = async (page, dir, settleMs = 320) => {
   const sel = { up: '⬆️', left: '⬅️', down: '⬇️', right: '➡️' }[dir];
   await page.locator(`.controls fluent-button:has-text("${sel}")`).click();
-  await sleep(320);
+  if (settleMs > 0) await sleep(settleMs);
 };
+
+/** 等"存档 == 画面"成立，返回实际耗时（ms）。
+ *  返回值的用途只有一个：当证据。`settleMs` 证明的是"320ms **之后**是否还有欠账"，
+ *  **不**证明"320 一直不够" —— 320 发生在测量之前，这个量永远量不到它自己。
+ *  （要证"320 一直在兜着"，只能把 `clickDir` 的 settleMs 置 0 再跑一遍看是否变红。） */
+export async function waitArchiveBoard(page, timeout = 8000) {
+  const t0 = Date.now();
+  await expect
+    .poll(
+      async () => {
+        const raw = await readSession(page);
+        const arch = raw ? JSON.parse(raw).cells.join(',') : 'null';
+        return arch === (await readBoard(page)).flat().join(',');
+      },
+      { timeout, intervals: [50, 50, 100, 100, 250, 500] },
+    )
+    .toBe(true);
+  return Date.now() - t0;
+}
 
 /** 单行合并（标准 2048 语义：先压缩，再成对消费），与页面实现完全独立 */
 export function moveLine(line) {

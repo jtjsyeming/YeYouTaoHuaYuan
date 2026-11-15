@@ -58,9 +58,14 @@ dotnet run --project ../../jtjsym/jtjsym --no-launch-profile --environment Devel
 | `npm run test:llk` | H-014 连连看每日一关（首屏 / 每日确定性 / 消除与不可连 / 死局重排 / 胜局 / 纪录口径 / 会话保持 / 切后台 / 窄屏横纵 / 资产完整 / 点错反馈 / 连接线 · 三次提示 · 规则引导 / **重排淡出淡入 + 窗口内输入挡**） | 140 秒 |
 | `npm run test:fast` | nav + lt + g2048 + code_nf（不含 tris 长时项） | 6 分钟 |
 | `npm run test:pr` | **CI 的 PR/push 子集**（chromium + 编号前缀白名单，见下） | 16 分钟 |
+| `npm run test:flaky` | flaky 机械采样：`G2048-44` + `TRIS-20`（含 TRIS-21 重开段），`--repeat-each=5` | 1.5~2.5 分钟 |
+| `npm run test:release` | 发布前清单三条（NF-05/07/08）。**必须先设 `PW_RELEASE=1` 与 `RELEASE_BASE_URL`**，否则一条都收不到 | 秒级（NF-07 除外，见下） |
 | `npm run test:all` | 全部 | 17~20 分钟 |
 
-- **`test:pr` 是 CI 与本地同源的唯一子集定义**（`.github/workflows/tests.yml` 只调 `npm run test:pr`）。它靠 `--grep` 的前缀白名单选用例，**新增 spec 时必须把标题编号前缀加进去**，否则该 spec 永远不会在 PR 上跑（`D02-`/`NF-`/`D15-`/`D-1[12]` 就这样漏过 40 条）。当前白名单：`NAV-|FISH-|G2048-|LT-|TRIS-0|D14-|D08-|D02-|D-1[12]|D15-|NF-|CODE-|D22-|D24-|MS-|LL-`（**2026-11-14 实测：167 条选中 165 条通过 / 2 跳过 / 0 失败**；故意排除 TRIS-10~14/20/21/25/26/ERR 与 smoke 的人工项）；
+- **`test:pr` 是 CI 与本地同源的唯一子集定义**（`.github/workflows/tests.yml` 只调 `npm run test:pr`）。它靠 `--grep` 的前缀白名单选用例，**新增 spec 时必须把标题编号前缀加进去**，否则该 spec 永远不会在 PR 上跑（`D02-`/`NF-`/`D15-`/`D-1[12]` 就这样漏过 40 条）。当前白名单：`NAV-|FISH-|G2048-|LT-|TRIS-0|D14-|D08-|D02-|D-1[12]|D15-|NF-|CODE-|D22-|D24-|MS-|LL-`（故意排除 TRIS-10~14/20/21/25/26/ERR；发布前清单不在白名单里，它由 `PW_RELEASE` 单独门控）；
+- **"选中 / 执行 / 跳过"三个数这样读**（C-70，别再写死绝对数）：
+  `选中 = 该 project 收集到的用例数`，`执行 = 选中 − 跳过`，而**跳过恒为 0** —— 默认门禁里已无任何运行期 `test.skip` / `test.fixme`：只对某个浏览器有意义的（`NF-01`@chromium、`NF-03`@firefox）在 `playwright.config.mjs` 的 **`grepInvert` 收集期**就排除，需要生产环境的（`NF-05/07/08`）搬到 `release.manual.mjs`、只在 `PW_RELEASE=1` 时收集。**报告里出现非零"跳过"就是配置脱钩**，先查 `grepInvert` 的标题正则，不要当成正常波动；
+- **`grepInvert` 是标题正则、对整个项目跨文件生效**：不要把"会被别的文件复用的编号"写进去。曾经写过 `/NF-01|NF-05/`，结果发布清单里的 `NF-05 http → https 301` 被一起吞掉 —— 而且那是**静默排除**（连 skip 都不算），报告里查不出来（实测 `PW_RELEASE=1` 变 186 而非 187）。改标题或改 `grepInvert` 前后都跑一次 `npx playwright test --list | grep NF-0` 对账；
 - 换端口：`BASE_URL=http://localhost:14099 npm run test:lt`；
 - 按用例编号过滤依赖"编号写在 `test()` 标题首段"的约定，例如 `npx playwright test --grep "LT-11"`；
 - **`trace` 默认关闭**（见 §6），失败时 `test-results/` 里有失败截图、`error-context.md`（ARIA 快照）与 **`env-snapshot.json`**（环境快照，见 §3.1）；要逐帧复盘就临时加 `--trace on`；
@@ -88,7 +93,8 @@ dotnet run --project ../../jtjsym/jtjsym --no-launch-profile --environment Devel
 | `tests/lt.spec.mjs` | LT-01~LT-24 + LT-ERR | `lt.mjs` |
 | `tests/g2048.spec.mjs` | G2048-01~G2048-22 | `g2048.mjs` + `g2048b.mjs` |
 | `tests/tris.spec.mjs` | TRIS-01~TRIS-26 | `tris_core.mjs` + `tris_long.mjs` + `tris14.mjs` + `tris25.mjs` |
-| `tests/code_nf.spec.mjs` | CODE-01~03、NF-01~NF-08（含 NF-02b） | `code_nf.mjs` |
+| `tests/code_nf.spec.mjs` | CODE-01~03、NF-01~NF-04 / NF-06 / NF-10（含 NF-02b；**NF-01 只在 firefox 收集、NF-03 只在 chromium 收集**，靠 `grepInvert` 结构性排除，不写运行期 skip） | `code_nf.mjs` |
+| `tests/release.manual.mjs` | NF-05（http→https 301）、NF-07（闲置 30 分钟重连）、NF-08（部署站点静态资源 200）。**默认不收集**，需 `PW_RELEASE=1` + `RELEASE_BASE_URL` | 《07》§9.3 发布前清单 |
 | `tests/d11_d12.spec.mjs` | D-11-1~3、D-12-1~6 | 《09》§6 新写 |
 | `tests/d14_mobile_layout.spec.mjs` | D14-1~D14-9 + D14-10/10b/10c/10d（横屏四档、桌面四档含 768×1024）（+ 一条控制台错误辅助断言） | 《11》§5.1 新写、《28》P-023 |
 | `tests/smoke.spec.mjs` | 《07》§11.3 的 28 条 P0 | 从上列各文件抽子集，不新增逻辑 |
@@ -102,6 +108,7 @@ dotnet run --project ../../jtjsym/jtjsym --no-launch-profile --environment Devel
 3. 等待策略保持原样（`window.Blazor` + 固定 `sleep`）。Blazor Server 没有稳定的"就绪"信号，改 `networkidle` 反而更脆（SignalR 长连接永不 idle）。
 4. `FluentSelect` 类下拉**不能**靠"赋 `value` + 派发 `change`"驱动 Blazor，必须点击展开后点 `fluent-option`。
 5. 俄罗斯方块当前方块的坐标改用 `getBoundingClientRect()` 计算（08 起 `top/left` 是 `calc(var(--cell-size) * n)`，`parseInt(style.top)` 会得到 NaN）。
+6. **"点一下 → 立刻读存储"的场景一律用条件等待，不要靠固定 sleep 兜**（P-069）：`clickDir()` 的 320ms 是与旧实现等价的沉降，不是判据；要断言"存档 == 画面"就用 `waitArchiveBoard(page)`（内部 `expect.poll`，8s 上限，返回实际耗时当证据）。它证明的是"320ms 之后是否还有欠账"，**不证明"320 一直不够"** —— 后者只能把 `clickDir` 的 `settleMs` 置 0 再跑一遍看是否变红。
 
 ## 6. 踩坑清单
 
@@ -110,7 +117,9 @@ dotnet run --project ../../jtjsym/jtjsym --no-launch-profile --environment Devel
 - `--grep` 过滤不到任何用例时 Playwright 报 "no tests found"（不会静默通过），注意标题是否被改名。
 - 计时类用例（LT 秒级跳动、TRIS 难度升级）偶发抖动时，先确认 `workers` 仍为 1、`retries` 仍为 0，再排查是否并行/复用实例导致。
 - 冒烟集的 `TRIS-10`（消行）/ `TRIS-20`（游戏结束）依赖有界自动玩：`TRIS-10` 用启发式落点评估（能稳定消行），`TRIS-20` 用"只堆中间两列"的会输策略（约 20 秒堆满）。若某次不触发，先看是否 `workers` 被改成 >1；全量 `tris.spec.mjs` 覆盖更充分。
-- 当前仍有 2 处 `fixme`：`NF-05/07/08`（需生产环境）与 `TRIS-23`（需读服务端控制台），均为人工验收项，按《07》§11.3 在册。`TRIS-26`（D-04）与 `D02-4` 已分别随 C-27、H-011 修好并转为真实用例，不要再按旧的"5 处 fixme"理解。
+- **默认门禁里已经没有 `fixme` / `skip` 了，别再按旧清单理解**（C-70，P-070）：原来的 5 条跳过按"谁该处理"拆成三类，各有各的出口 —— ① **项目错位**（`NF-01`@chromium、`NF-03`@firefox）改为 `grepInvert` 在**收集期**排除，用例里的 `test.skip(browserName !== …)` 已删（留着就是第二份真相：哪天配置改了，它以"跳过"掩盖错误而不是红）；② **发布前人工**（`NF-05/07/08`）搬进 `tests/release.manual.mjs`，只在 `PW_RELEASE=1` 时收集，因此不占门禁的跳过数；③ **真人工项**（`TRIS-23`）自 C-69 / P-068 起是**真用例** —— 读 `jtjsym-site.log` 的增量判"关闭页后 10 秒内宿主无 Error 级日志"，并已挪到冒烟集**第一条**（前面的用例电路 3 分钟后释放，会与 10s 窗口交叉污染），它的"后半段"（电路释放时才跑的 `DisposeAsync`）仍属人工，见《07》§11.4。`TRIS-26`（D-04）与 `D02-4` 已分别随 C-27、H-011 转为真实用例。
+- **`PW_RELEASE=1` 但没设 `RELEASE_BASE_URL` 时那 3 条会 skip**：这是"发布清单未就绪"，**不计入门禁跳过数** —— 报告里的"0 跳过"只针对默认门禁。用 PowerShell 记得先 `$env:PW_RELEASE='1'`（`PW_RELEASE=1 cmd` 那种写法只对 bash 成立）。
+- **`release.manual.mjs` 的 NF-07 断言别写 `body` 可见**：白屏时 `body` **也存在且可见**，那条断言恒绿、跑完 30 分钟什么都证明不了，却以"通过"的身份进入账目（比 skip 更糟）。现在断言的是 `nav` / `h1` 可见 + `#blazor-error-ui` 的 `display !== 'block'`（Blazor 白屏时 framework 会把它设成 block）。
 - **同一「数量常量」可能写在两个 spec 里**：`FISH-02` 的装饰 gif 数在 `nav_fish.spec.mjs` 与 `smoke.spec.mjs` 各有一份，改一处会让另一处**静默失配**（`test:fish` 绿、`test:smoke` 红、`test:pr` 红）。改数量类判据前先 `grep -rn` 全库。**第二例（2026-11-09，D-23）**：Tetris 面板 `.info-value` 的行数写在 `NF-01`（`code_nf.spec.mjs:134`）与 `NF-04`（`:251`）两处，加「最高分」行后两处都得由 2 改 3；**`NF-01` 只在 firefox 跑**，`test:pr`（chromium 子集）看不见它，只有 `test:nf` 才会红 —— 这类"同一条断言两份拷贝、且分属不同 project"的最容易漏。
 - **汇总读数不要 `grep ... | tail -2`**：Playwright 的汇总行顺序是 `failed` → `skipped` → `passed`，`tail -2` 正好把 `1 failed` 切掉（2026-11-08 实测把 smoke 的失败误读成「1 skipped / 5 passed」，直到跑 PR 全量才暴露）。用 `tail -3`，或直接看 `echo "exit=$?"`。
 - **木鱼状态行取数一律用 `fishCount()`，不要写文案正则**：文案改过两次（`次数: ` → `本次功德：`，C-50），17 处数字比对已改为 `fishCount(x) === N`（`helpers.mjs`，只认行尾数字）。标签本身只在两处显式断言：`FISH-01` 的 `/^本次功德：/` 前缀与 `FISH-07` 的整串锚定 `/^本次功德：105$/` —— 这两条是唯一还看着文案的断言，改动时别顺手删。浏览器内 `waitForFunction` 用不了 Node 侧 helper，改行尾后缀正则 `(?<!\d)N$`。

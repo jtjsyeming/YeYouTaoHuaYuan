@@ -94,8 +94,7 @@ test.describe('CODE 编程挑战', () => {
 });
 
 test.describe('NF 非功能', () => {
-  test('NF-01 Firefox 兼容：7 页导航 + 三个游戏操作', async ({ page, browserName }) => {
-    test.skip(browserName !== 'firefox', '仅在 firefox 项目中执行（chromium 下无意义）');
+  test('NF-01 Firefox 兼容：7 页导航 + 三个游戏操作', async ({ page }) => {
     test.setTimeout(120_000);
     const errs = trackErrors(page);
     const log = [];
@@ -207,8 +206,7 @@ test.describe('NF 非功能', () => {
     );
   });
 
-  test('NF-03 Slow 3G 首屏可加载并完成 Blazor 建连', async ({ browser, browserName }) => {
-    test.skip(browserName !== 'chromium', 'CDP 网络节流仅 Chromium 支持');
+  test('NF-03 Slow 3G 首屏可加载并完成 Blazor 建连', async ({ browser }) => {
     const c3 = await browser.newContext();
     const p3 = await c3.newPage();
     const cdp = await c3.newCDPSession(p3);
@@ -282,14 +280,5 @@ test.describe('NF 非功能', () => {
     await sleep(1200);
     const delta = errs.length - before;
     check('NF-10', true, `断线后按一次 ← 新增错误 ${delta} 条（基线：2；仅记录，不判红）`);
-  });
-
-  test('NF-05/07/08 部署与长时会话（发布前验收项）', async () => {
-    // 这三条**不是**"欠账的自动化"，而是只在发布前执行一次的验收项 —— 维护口径见《07》§9.3「发布前手工清单」。
-    test.fixme(
-      true,
-      '发布前验收项：NF-05（http→https 301）、NF-07（闲置 30 分钟重连）、NF-08（部署站点静态资源 200）均需 IIS/生产环境；' +
-        '本地开发环境拿不到确定性结论，故永久不在自动化门禁内。执行时按《07》§9.3 清单逐项手验并记入发布记录。',
-    );
   });
 });
