@@ -1,4 +1,4 @@
-// H-014 / H-015 / D-31：每日一关连连看（LL-01~LL-22）
+// H-014 / H-015 / D-31 / D-32：每日一关连连看（LL-01~LL-23）
 // 存储键（全部带 jtjsym. 命名空间，且都收在 LlkKeys 里）：
 //   sessionStorage['jtjsym.llk.session']  = {v:1, issue, cells[48], elapsedSec}
 //   localStorage['jtjsym.llk.best']      = {"issue":20261112,"sec":87}   ← 单键单条，越小越好
@@ -873,5 +873,61 @@ test.describe('LL 连连看', () => {
     check('LL-22-剩4块', (await readCells(page)).filter(v => v > 0).length === 4,
       `已消一对、重排不改数量，应剩 4 块（实际 ${(await readCells(page)).filter(v => v > 0).length}）`);
     check('LL-22-可消', await eliminateAnyPair(page), '重排后两两试过都没消掉（说明重排没救活）');
+  });
+
+  test('LL-23 消除瞬间图案不跳变：sprite 停在原位（D-32）', async ({ page }) => {
+    await openLlk(page);
+
+    // 成对闸：9 号 ×2（目标对，相邻可连）+ 1 号 ×2（兜底对，防"消完即胜局"）。
+    // ⚠ 目标对**必须 face ≥ 2**：Position(1) = (0,0) 恰好等于渲染兜底，face 1 的对
+    //   在修复前后都看不出跳变 ⇒ 用例退化成橡皮图章（《43》§1.1 实测：LL-16 用的就是 face 1）。
+    //   取 9 —— Position(9) = (2,1)，两个轴都非零，失败信息最直观。
+    const A = idx(0, 0);
+    const B = idx(0, 1);
+    await seedSession(page, {
+      cells: cellsWith([[A, 9], [B, 9], [idx(7, 4), 1], [idx(7, 5), 1]]),
+      elapsed: 5,
+    });
+    check('LL-23-前置块数', (await readCells(page)).filter(v => v > 0).length === 4,
+      `块数=${(await readCells(page)).filter(v => v > 0).length}（应 4；!=4 说明档被成对闸丢弃）`);
+
+    // 判据通道 = background-position：它是"图案在哪"的直接观测量。
+    // ⚠ 别拿 --c/--r 当判据（那是机制名，钉成契约后换个实现就假红），只放进失败文案。
+    const readPos = i =>
+      page.evaluate(n => {
+        const e = document.querySelector(`.llk-cell[data-idx="${n}"]`);
+        const cs = getComputedStyle(e);
+        return {
+          bg: cs.backgroundPosition,
+          c: e.style.getPropertyValue('--c'),
+          r: e.style.getPropertyValue('--r'),
+        };
+      }, i);
+
+    const before = await readPos(A);
+    // ★ 这条是"判据不是橡皮图章"的看守：兜底是 0% 0%，基线若等于它，本用例什么都守不住
+    check('LL-23-基线非兜底', before.bg !== '0% 0%',
+      `基线 bgPos=${before.bg}（--c:${before.c};--r:${before.r}）—— 等于兜底 0% 0% 说明造盘选了 face 1，用例失效`);
+
+    await page.locator(`.llk-cell[data-idx="${A}"]`).click();
+    await sleep(120);
+    // ★ 第二击用裸 click（clickCell 内含 sleep(220)，会把描线窗口睡过去）
+    await page.locator(`.llk-cell[data-idx="${B}"]`).click();
+
+    // 约束 1：锚点必须**按格**，不能数 is-gone 总数 —— 这张盘只有 4 块，另外 44 格本来就是 is-gone。
+    // 它同时兼任"渲染已落地"：实测 is-gone / data-face 消失 / --c 跳变在同一帧（第二击后 ~21ms）。
+    await expect.poll(
+      () => page.locator(`.llk-cell[data-idx="${A}"].is-gone`).count(),
+      { intervals: [10, 10, 25, 25, 50, 100], timeout: 3000 },
+    ).toBe(1);
+
+    // 本条窗口是**单向**的（与 D-30/D-31 相反）：消除后 --c/--r 再也不变 ⇒ 读晚了没关系、读早了才假绿，
+    // 而"读早了"已被上面那个 poll 挡住 ⇒ 不需要 D-31 那种极紧的采样。
+    const after = await readPos(A);
+    check('LL-23-不跳变', after.bg === before.bg,
+      `消除后 bgPos=${after.bg}（--c:${after.c};--r:${after.r}），基线 ${before.bg} —— 跳变说明 sprite 被重置到第 1 张脸`);
+
+    check('LL-23-挡掉脸但留图案', (await page.getAttribute(`.llk-cell[data-idx="${A}"]`, 'data-face')) === null,
+      'data-face 必须消失（LL-12 的 {1..24} 契约）；本修复只保 --c/--r，不保 data-face');
   });
 });

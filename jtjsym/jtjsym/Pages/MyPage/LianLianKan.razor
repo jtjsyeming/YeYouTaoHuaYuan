@@ -56,7 +56,13 @@
                 //   （《34》C-58 实测：每格都去翻最后一格）
                 var idx = i;
                 var face = game.Cells[idx];
-                var pos = face > 0 ? LianliankanThemes.Position(face) : (Col: 0, Row: 0);
+                // D-32：face==0 的格若本局曾有过脸，继续用原脸的 sprite 位置 ——
+                //   is-gone 的 340ms 延迟期内 opacity 恒为 1，图案必须原地不动；
+                //   否则消除后 21ms 就会顶着第 1 张脸静止 330ms（用户报的"消失前变成别的图案"）。
+                // ⚠ 兜底必须是 (0,0)，**不能**落回 Position(0)：C# 里 -1 % 6 == -1 ⇒ --c:-1，
+                //   负偏移会让 background-position 露出 sprite 边缘，比现状更糟。
+                var showFace = face > 0 ? face : lastFace[idx];
+                var pos = showFace > 0 ? LianliankanThemes.Position(showFace) : (Col: 0, Row: 0);
                 var name = face > 0 ? LianliankanThemes.ById(face)?.Name : null;
 
                 @* data-face 只在非空格上出现：它是"这张脸还在不在盘上"的唯一判据，
@@ -359,6 +365,11 @@
     private int issue = LianliankanCore.IssueFor(DateTimeOffset.UtcNow);
 
     private LianliankanCore game = LianliankanCore.NewDaily(LianliankanCore.IssueFor(DateTimeOffset.UtcNow));
+
+    /// <summary>每格最后一张脸（0 = 从未有过）。消除格用它保持 sprite 原位（D-32）。
+    /// 连连看消除格永不复活（Core 里 Remove 是唯一置 0 处）⇒ 每格最多写一次，无需失效逻辑。
+    /// 恢复局 / 预渲染时全 0，渲染走兜底 (0,0) —— 与修复前完全一致（那些格带 is-gone 恒不可见）。</summary>
+    private readonly int[] lastFace = new int[LianliankanCore.CellCount];
 
     private int elapsedSec;
     private int? best;
@@ -795,6 +806,15 @@
 
     // ───────────────────────── 交互 ─────────────────────────
 
+    /// <summary>消除一格，但先把脸留在 lastFace —— 渲染段据此保持 sprite 原位（D-32）。
+    /// 封成一处是为了让「读原值 → 换算行列 → Remove」只写一次：以后若多出第三个消除入口
+    /// （比如"提示直接消"），直接调它就不会漏记。视图态不进 Core（进 Core 会让单测被迫关心 UI）。</summary>
+    private void RemoveKeepingFace(int i)
+    {
+        lastFace[i] = game.Cells[i];
+        game.Remove(i / LianliankanCore.Cols, i % LianliankanCore.Cols);
+    }
+
     private async Task OnCellClickedAsync(int idx)
     {
         // isReshuffling：动画 470ms 内的输入一律"吞"掉，不排队 —— 死局瞬间玩家没有有效操作可丢，
@@ -852,8 +872,8 @@
             await DrawLineAsync(path, "success");
             if (disposed) return;
 
-            game.Remove(r1, c1);
-            game.Remove(r2, c2);
+            RemoveKeepingFace(first);
+            RemoveKeepingFace(idx);
             selectedIdx = -1;
             showReshuffleTip = false;
             ClearFeedback();                            // 消成功就把失败提示与提示高亮一起收掉
@@ -909,6 +929,7 @@
         StopClock();
         issue = LianliankanCore.IssueFor(DateTimeOffset.UtcNow);
         game = LianliankanCore.NewDaily(issue);
+        Array.Clear(lastFace);                          // 字段 = 本局事实（D-32）：不清也不出错，但"再来一局"该是干净局
         elapsedSec = 0;
         selectedIdx = -1;
         isPaused = true;
