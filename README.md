@@ -1,8 +1,8 @@
 # 夜游桃花源（YeYouTaoHuaYuan）
 
-个人小站 + 一个独立小游戏（`Mini-game/tetris.py`）的代码仓库。
+个人小站「夜游桃花源」的代码仓库。
 
-## 一、站点 jtjsym（Blazor Server）
+## 站点 jtjsym（Blazor Server）
 
 .NET 8 + Blazor **Server** + FluentUI 3.8.0；无数据库、无服务端持久化，页面状态在服务端内存里
 （2048 的最高分与对局进度是浏览器侧 `localStorage` / `sessionStorage`）。
@@ -44,7 +44,3 @@ npm run test:all              # 全量，约 20 分钟
 ### 发布
 
 `.vscode/publish-release.ps1`（或 VS Code 任务 `release-jtjsym`）：publish → 同步发布目录 → 同步部署目录 → 打版本 zip。
-
-## 二、Mini-game/tetris.py
-
-pygame 版俄罗斯方块原型，主站不引用，保留作历史参考。
