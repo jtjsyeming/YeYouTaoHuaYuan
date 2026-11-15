@@ -7,10 +7,10 @@ import {
   EMPTY_COLOR,
   TETROMINO_COLORS,
   autoPlay,
-  stackToGameOver,
   check,
   checkEq,
   clickGameBtn,
+  driveToGameOver,
   holdSoftDrop,
   open,
   readTetris,
@@ -261,28 +261,31 @@ test.describe('TRIS 俄罗斯方块', () => {
   });
 
   test('TRIS-20/TRIS-21 堆到顶部 → 游戏结束 → 重新开始', async ({ page }) => {
-    test.setTimeout(240_000);
     await open(page, '/tetris', 1800);
-    await clickGameBtn(page, '重新开始', 600);
 
-    // 启发式玩家堆不满（实测 150s/71 块仍在低高度），这里刻意换成"只堆中间两列"的会输玩法
-    const r = await stackToGameOver(page, 120_000);
+    // 局面是注入出来的，不赌方块序列（P-067）。原来的 stackToGameOver 是"只往第 4/5 列堆"的
+    // 会输玩法：两列到顶后后续方块落不进目标列，散到别处反而更容易凑整行消行、堆高被反复清零
+    // ⇒ 同代码两种结果（11-13 堆 121s/57 块仍未结束判红，11-14 17.9s 堆满判绿）。
+    const r = await driveToGameOver(page);
+    const end = await readTetris(page);
     check(
       'TRIS-20',
-      r.gameOver,
-      r.gameOver
-        ? `第 ${r.blocks} 块后堆满（${r.elapsed}s），分数=${r.end.score}；方向/旋转按钮禁用=${r.end.btns.filter(b => ['←', '→', '旋转', '↓'].includes(b.t)).every(b => b.dis)}`
-        : `堆了 ${r.blocks} 块（${r.elapsed}s）仍未到顶部`,
+      r.ok,
+      r.ok
+        ? `注入近满盘后 ${r.ms}ms 进入结束态，分数=${end.score}；方向/旋转按钮禁用=${end.btns.filter(b => ['←', '→', '旋转', '↓'].includes(b.t)).every(b => b.dis)}`
+        : `构造失效：${r.reason}`,
     );
 
-    if (r.gameOver) {
+    if (r.ok) {
       await clickGameBtn(page, '重新开始', 700);
       const st = await readTetris(page);
       check('TRIS-21', !st.gameOver && st.score === '0' && st.difficulty === '1', `重开后 结束=${st.gameOver} 分数=${st.score} 难度=${st.difficulty}`);
     } else {
       // 失败必须判红，**不能**退回 test.skip —— 否则这就是一条"永远绿不了的隐藏 skip"（《26》H-011：
       // 运行期条件 skip 只在构造失败时出现，从未进过台账）。构造不可靠要作为缺陷暴露出来。
-      check('TRIS-21', false, `构造不可靠：堆 ${r.blocks} 块 / ${r.elapsed}s 仍未进入结束态（stackToGameOver 预算 120s）`);
+      // ⚠ P-067 之后局面是注入的，"堆不满"这个失败原因已不存在 —— 走到这里只剩一种解释：
+      //   注入档没被接住（快照闸丢弃 / .continue-btn 没出现 / 软降没锁定），即构造链失效。
+      check('TRIS-21', false, `构造失效：${r.reason}`);
     }
   });
 

@@ -31,7 +31,11 @@ export default defineConfig({
   //   全部 404 → Fluent 自定义元素不会升级，<fluent-option> 以行内元素撑出 2.7~3.1 倍页宽，
   //   所有"横向溢出/尺寸"类断言都会得到假结果（实测见 2026-11-01 D11-D12 执行记录）。
   webServer: {
-    command: 'dotnet run --project ../../jtjsym/jtjsym --no-launch-profile --environment Development --urls http://localhost:14074',
+    // `> jtjsym-site.log 2>&1` 是 TRIS-23 的验收依据：shell 把两条流都送进文件，
+    // 于是 stdout/stderr 维持原样即可（11-13「stdout:'ignore' 让死因不可见」的教训由
+    // 这个文件承接，且比 pipe 更持久 —— 跑批结束、进程退了，文件还在）。
+    // cwd = 本 config 所在目录 ⇒ 落 tools/e2e/jtjsym-site.log，被既有 `*-site.log` 规则忽略。
+    command: 'dotnet run --project ../../jtjsym/jtjsym --no-launch-profile --environment Development --urls http://localhost:14074 > jtjsym-site.log 2>&1',
     url: BASE_URL,
     reuseExistingServer: true, // VS/VS Code 调试实例已占用 14074 时直接复用
     timeout: 180_000,

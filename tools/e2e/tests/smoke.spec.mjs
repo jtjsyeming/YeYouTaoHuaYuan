@@ -1,11 +1,14 @@
 // 冒烟集：《07-测试文档-全量测试用例-v2.0.md》§11.3 的 28 条 P0
-// 每条用例都落到具体断言（不新增逻辑，只挑 P0 子集），TRIS-23 为人工项。
+// 每条用例都落到具体断言（不新增逻辑，只挑 P0 子集）。TRIS-23 自 P-068 起为真用例：读站点日志增量判宿主侧 Error。
 import { test } from '@playwright/test';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   check,
   clickDir,
   clickGameBtn,
   countTiles,
+  driveToGameOver,
   fishCount,
   open,
   parseTimer,
@@ -21,6 +24,43 @@ import {
 } from './helpers.mjs';
 
 test.describe('冒烟集（28 条 P0）', () => {
+  // TRIS-23 放在**第一条**（《41》§3.4 / §7.1-③）：组件 DisposeAsync 是"电路被释放"时跑的，
+  // 而裸 AddServerSideBlazor() 的 DisconnectedCircuitRetentionPeriod 默认 3 分钟 ⇒ 前面几条用例的
+  // 电路可能正好在这个 10s 窗口内被释放，异常会被算到这条头上。挪到最前是零成本的对冲。
+  test('TRIS-23 关闭标签页后 10 秒内宿主无 Error 级日志', async ({ page }) => {
+    // 站点日志来自 webServer 的 `> jtjsym-site.log`，或 README 那条"手动起站 + 重定向"。
+    // 复用已存在站点（reuseExistingServer）时 webServer 不经手，日志只可能由外部命令产生。
+    const logPath = process.env.JTJSYM_SITE_LOG
+      ?? path.resolve(import.meta.dirname, '..', 'jtjsym-site.log');   // tools/e2e/jtjsym-site.log
+
+    // ① 不存在就判红并 return —— check() 是 expect.soft，**不中断**；不 return 会在下一行抛
+    //    ENOENT，红是红了，但报错变成 Node 堆栈，读者不知道该怎么修。
+    if (!fs.existsSync(logPath)) {
+      check('TRIS-23', false,
+        `未找到站点日志 ${logPath}——外部起站请按 README 把控制台重定向到该路径，或设 JTJSYM_SITE_LOG`);
+      return;
+    }
+
+    // ② 哨兵：文件存在但 0 字节 ⇒ 不是站点日志（启动行必定 > 0）。防"被 touch 出来的空文件"。
+    const baseBuf = fs.readFileSync(logPath);
+    if (baseBuf.length === 0 || !baseBuf.toString('utf8').includes('Now listening on')) {
+      check('TRIS-23', false, `${logPath} 存在但不像站点日志（${baseBuf.length} 字节、无 "Now listening on"）`);
+      return;
+    }
+    const baseBytes = baseBuf.length;             // ③ 真·字节基线（Buffer.length，不是字符串 length）
+
+    await open(page, '/tetris', 1200);
+    await page.close();                           // 触发 circuit 断开
+    await sleep(10_000);
+
+    const after = fs.readFileSync(logPath);
+    const added = after.subarray(baseBytes).toString('utf8');  // 只取增量：旧异常不污染本轮
+    const bad = /Unhandled exception|ObjectDisposedException/.test(added);
+    check('TRIS-23', !bad,
+      `关闭后日志增量 ${after.length - baseBytes} 字节，命中未处理异常=${bad}`
+      + (bad ? `；片段：${added.slice(0, 300)}` : '（增量为 0 属正常：Microsoft.AspNetCore 级别为 Warning）'));
+  });
+
   test('NAV-01/NAV-02 首页与 7 项导航', async ({ page }) => {
     await open(page, '/');
     const h1 = (await page.textContent('h1').catch(() => '')) || '';
@@ -258,8 +298,10 @@ test.describe('冒烟集（28 条 P0）', () => {
   });
 
   test('TRIS-10/TRIS-20 消行计分与游戏结束（有界自动玩）', async ({ page }) => {
-    test.setTimeout(240_000);
-    const { autoPlay, stackToGameOver } = await import('./helpers.mjs');
+    // 240s → 120s，但**不能删**：前半段 autoPlay(60_000) 本身就可能吃满默认 60s，
+    // "预算参数可以消失"只对 tris 那条成立（它原来整条都在等赌局）。
+    test.setTimeout(120_000);
+    const { autoPlay } = await import('./helpers.mjs');
 
     // TRIS-10：会玩的策略，60 秒内应产生消行
     await open(page, '/tetris', 1800);
@@ -274,17 +316,14 @@ test.describe('冒烟集（28 条 P0）', () => {
         : `自动玩 ${r.blocks} 块（${r.elapsed}s）未消行，全量见 tris.spec.mjs`,
     );
 
-    // TRIS-20：会输的策略，堆中间两列直到顶部
-    await clickGameBtn(page, '重新开始', 600);
-    const s = await stackToGameOver(page, 90_000);
+    // TRIS-20：注入近满盘（不再赌方块序列）。seedTetrisSession 内部会 reload，
+    // 于是上一步 autoPlay 的残局被整档替换 —— TRIS-10 已断言完，不影响。
+    const s = await driveToGameOver(page);
     check(
       'TRIS-20',
-      s.gameOver,
-      s.gameOver ? `第 ${s.blocks} 块后堆满（${s.elapsed}s），分数=${s.end.score}` : `堆了 ${s.blocks} 块（${s.elapsed}s）仍未到顶部`,
+      s.ok,
+      s.ok ? `注入近满盘后 ${s.ms}ms 进入结束态，分数=${(await readTetris(page)).score}` : `构造失效：${s.reason}`,
     );
   });
 
-  test('TRIS-23 关闭标签页后服务端无异常（人工项）', async () => {
-    test.fixme(true, '需观察服务端控制台 30 秒——浏览器侧无法读取宿主输出，按《07》§11.3 登记为人工验收');
-  });
 });

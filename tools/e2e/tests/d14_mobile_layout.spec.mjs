@@ -7,7 +7,7 @@
 //  - 文档高恒含导航 56 + .content padding-top 17.6，D14-2 依赖 --tetris-container 的 min-height 换算；
 //  - 本站点由 playwright.config.mjs 的 webServer 拉起，必须带 --environment Development，否则尺寸断言全是假结果。
 import { test } from '@playwright/test';
-import { check, holdSoftDrop, open, readTetris, sleep, stackToGameOver, trackErrors } from './helpers.mjs';
+import { check, driveToGameOver, holdSoftDrop, open, readTetris, sleep, trackErrors } from './helpers.mjs';
 
 const MOBILES = [
   { w: 320, h: 568 },
@@ -125,7 +125,7 @@ test.describe('D-14 移动端俄罗斯方块右侧布局', () => {
     );
   });
 
-  test('D14-6 状态扩展：暂停态与游戏结束态右栏仍不越出首屏（375×667）', async ({ page }) => {
+  test('D14-6 状态扩展：暂停态与游戏结束态右栏仍不越出首屏（375×667）', async ({ page, browser }) => {
     test.setTimeout(300_000);
     await page.setViewportSize({ width: 375, height: 667 });
     await open(page, '/tetris', 1600);
@@ -141,18 +141,27 @@ test.describe('D-14 移动端俄罗斯方块右侧布局', () => {
       `暂停态：面板底 ${p.panel.bottom}、操作区底 ${p.controls.bottom} ≤ 视口高 ${p.vh}（面板高 ${p.panel.h}）`,
     );
 
-    // ② 游戏结束态：面板底部追加「游戏结束!」提示
-    await page.locator('.game-btn:has-text("重新开始")').click();
-    await sleep(800);
-    const r = await stackToGameOver(page, 100_000);
-    check('D14-6-构造', r.gameOver, r.gameOver ? `第 ${r.blocks} 块后堆满（${r.elapsed}s）` : `堆了 ${r.blocks} 块（${r.elapsed}s）仍未到顶部，无法验证结束态布局`);
-    if (r.gameOver) {
-      const g = await readLayout(page);
-      check(
-        'D14-6-结束',
-        g.panel.bottom <= g.vh && g.controls.bottom <= g.vh,
-        `结束态：面板底 ${g.panel.bottom}、操作区底 ${g.controls.bottom} ≤ 视口高 ${g.vh}（面板高 ${g.panel.h}）`,
-      );
+    // ② 游戏结束态：注入确定性近满盘（P-067），不再靠"只堆中间两列"赌方块序列。
+    //    ⚠ 必须换一个 context：本文件 beforeEach 的 addInitScript 在**每次导航**（含 reload）都
+    //      会清掉会话档 —— 那条是为 D14-1/D14-7 连续 open 多视口做隔离的，不能动（见 :56 注释）；
+    //      而本条要跨 reload 保住注入档。新 context 不带 page 级 initScript，隔离干净。
+    const origin = new URL(page.url()).origin;
+    const ctx = await browser.newContext({ viewport: { width: 375, height: 667 }, baseURL: origin });
+    const tp = await ctx.newPage();
+    try {
+      await open(tp, '/tetris', 1600);
+      const r = await driveToGameOver(tp);
+      check('D14-6-构造', r.ok, r.ok ? `注入近满盘后 ${r.ms}ms 进入结束态` : `注入档未进入结束态（构造失效）：${r.reason}`);
+      if (r.ok) {
+        const g = await readLayout(tp);
+        check(
+          'D14-6-结束',
+          g.panel.bottom <= g.vh && g.controls.bottom <= g.vh,
+          `结束态：面板底 ${g.panel.bottom}、操作区底 ${g.controls.bottom} ≤ 视口高 ${g.vh}（面板高 ${g.panel.h}）`,
+        );
+      }
+    } finally {
+      await ctx.close();
     }
   });
 

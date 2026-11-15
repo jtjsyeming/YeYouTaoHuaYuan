@@ -571,34 +571,93 @@ export async function autoPlay(page, budgetMs = 180000) {
   };
 }
 
+// ────────────────── 俄罗斯方块会话注入（TRIS-20/21、D14-6） ──────────────────
+//
+// 为什么需要它：原来的 stackToGameOver 是"只往第 4/5 列堆"的会输玩法，但两列到顶后
+// 后续方块落不进目标列、散到别处反而更容易凑整行消行、堆高被反复清零 ⇒ 同代码两种结果
+// （11-13 堆 121s/57 块仍不结束判红；11-14 17.9s 堆满判绿）。消 flaky 的办法不是加预算，
+// 是**把局面钉死**：注入一张"一拍就撞出生位"的盘，每一步只有唯一走法。
+
+export const TETRIS_SESSION_KEY = 'jtjsym.tetris.session';
+
 /**
- * 有界自动玩（会输的策略）：只往固定几列堆，用于 TRIS-20（堆到顶部→游戏结束）。
- * 用启发式玩家堆不满（实测 150s/71 块仍在低高度），故这里刻意不用评估函数。
+ * 直写存档 + reload，把 Tetris 钉在指定局面（d24 那 6 行的搬运，供跨文件复用）。
+ * ⚠ 不要用 addInitScript：它每次导航都会重跑，会冲掉"恢复后新写的档"。
+ * ⚠ 调用前必须**先 open() 到 /tetris** —— sessionStorage 是"源"相关的，about:blank 上写无效。
  */
-export async function stackToGameOver(page, budgetMs = 120000) {
-  const start = Date.now();
-  let blocks = 0;
-  let gameOver = false;
-  let lastScore = 0;
-  const gains = [];
+export async function seedTetrisSession(page, payload) {
+  const text = typeof payload === 'string' ? payload : JSON.stringify(payload);
+  await page.evaluate(([k, v]) => sessionStorage.setItem(k, v), [TETRIS_SESSION_KEY, text]);
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForFunction(() => !!window.Blazor, null, { timeout: 15000 }).catch(() => {});
+  await sleep(900);
+}
 
-  while (Date.now() - start < budgetMs) {
-    const st = await readTetris(page);
-    if (st.gameOver) {
-      gameOver = true;
-      break;
-    }
-    // 固定堆中间两列，几下就顶到天花板
-    await moveToColumn(page, blocks % 2 === 0 ? 4 : 5);
-    await holdSoftDrop(page, 1100);
-    blocks++;
-    const score = parseInt((await readTetris(page)).score);
-    if (score > lastScore) gains.push(score - lastScore);
-    lastScore = score;
+/**
+ * "一拍就结束"的确定性近满盘（实测 476~492ms 进结束态、分数恒 0、零消行）。
+ *
+ * 两条事实必须分开看（v1.0 方案正是把这两条混成一条才翻车）：
+ *  1. **恢复时**用快照里的 x ⇒ 这块 1×1 落在第 5 列（x=5，不是 4）；
+ *  2. **落定之后**下一块由 NewPiece() 重算 x = GRID_WIDTH/2 - piece[0].Length/2 = 5-0 = 5
+ *     ⇒ 与快照的 x 无关，一样在第 5 列出生。
+ *
+ * 行 0 必须全空：内容闸 ⑦「出生位碰撞 → 整档丢弃」（TetrisSession.cs:97-100）会把这档判废。
+ * 行 1~19 除第 4 列外全填 —— 第 4 列留空只为"避免整行填满被 ClearRows 消掉"，留在哪列都行。
+ * ⇒ 1×1 在 (5,0)、正下方 (1,5) 已填，软降第一拍（SOFT_DROP_INTERVAL=50ms）就锁定在 (5,0)；
+ *   随后 NewPiece() 撞上 (5,0) ⇒ GameOver()。
+ *
+ * 顺带说明一个反直觉的推论：**"已经结束"的盘没法靠快照直接造出来** —— 出生位一旦被占，
+ * 整档被丢弃、页面回落新开局。所以必须"先让一块落定，再让新块撞上"，这是最短的确定性路径。
+ */
+export const tetrisNearTopSnapshot = {
+  v: 1,
+  grid: Array.from({ length: 20 }, (_, r) =>
+    Array.from({ length: 10 }, (_, c) => (r >= 1 && c !== 4 ? 1 : 0))),
+  piece: [[1]],
+  pieceIndex: 0,
+  x: 5,
+  y: 0,
+  next: [[1]],
+  nextIndex: 1,
+  score: 0,
+  level: 1,
+  speed: 1000,
+};
+
+/**
+ * 注入 nearTop 盘 → 点「继续」→ 软降一拍 → 等结束态。TRIS-20/21、D14-6 共用。
+ * 三处各抄五行的后果是"下一轮改一处必漏两处"，故抽到这里。
+ * @returns {{ok: boolean, ms: number, reason?: string}}
+ */
+export async function driveToGameOver(page) {
+  await seedTetrisSession(page, tetrisNearTopSnapshot);
+
+  const cont = page.locator('.continue-btn');
+  // 恢复态要等一次 SignalR 往返才渲染出来；慢机器上 count() 会抢跑，故先等一下。
+  await cont.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {});
+  if ((await cont.count()) === 0) {
+    // 失败带自诊断：只报"没有 .continue-btn"无法分辨是「快照被丢弃」、「还没渲染」还是「页面不在 /tetris」。
+    const diag = await page.evaluate(() => ({
+      url: location.pathname,
+      save: (sessionStorage.getItem('jtjsym.tetris.session') ?? '').slice(0, 60),
+      over: !!document.querySelector('.game-over'),
+      btns: [...document.querySelectorAll('.game-btn')].map(b => b.textContent.trim()).join('/'),
+    }));
+    return {
+      ok: false,
+      ms: 0,
+      reason: `注入档恢复后未停在暂停态（页面无 .continue-btn）；url=${diag.url} 存档前60=${diag.save} over=${diag.over} 按钮=${diag.btns}`,
+    };
   }
+  await cont.click();
 
-  const end = await readTetris(page);
-  return { blocks, gameOver: gameOver || end.gameOver, end, elapsed: Math.round((Date.now() - start) / 1000), gains };
+  const t0 = Date.now();
+  await holdSoftDrop(page, 400); // 第一拍(50ms)就锁定；余下拍子被 isGameOver 挡掉
+  for (let i = 0; i < 40; i++) {  // ≤2s
+    if ((await readTetris(page)).gameOver) return { ok: true, ms: Date.now() - t0 };
+    await sleep(50);
+  }
+  return { ok: false, ms: Date.now() - t0, reason: `软降后 ${Date.now() - t0}ms 仍未进入结束态` };
 }
 
 // ───────────────────────────── 视口/尺寸 ─────────────────────────────

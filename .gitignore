@@ -33,6 +33,14 @@ test-results/
 # 手动起站点做门禁时的 tee 日志（<模块>-site.log，随用随删，不入库）
 *-site.log
 
+# 全量跑测的控制台重定向日志（e2e-full-run.log / ft-run.log 等，随用随删）。
+# 只匹配仓库根：设计上就不让深层 .log 被"顺带"吞掉。
+/*.log
+
+# 临时解析脚本（如 .tmp-parse.mjs），git status 里不该出现。
+# 靠 .tmp- 前缀自我声明"一次性"，同样只匹配仓库根。
+/.tmp-*.mjs
+
 # WorkBuddy workspace data
 .workbuddy/
 

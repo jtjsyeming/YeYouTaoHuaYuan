@@ -21,15 +21,19 @@ npm ci
 `playwright.config.mjs` 自带 `webServer`：若 `http://localhost:14074` 没起，会自动执行
 
 ```bash
-dotnet run --project ../../jtjsym/jtjsym --no-launch-profile --environment Development --urls http://localhost:14074
+dotnet run --project ../../jtjsym/jtjsym --no-launch-profile --environment Development --urls http://localhost:14074 > jtjsym-site.log 2>&1
 ```
 
 也可以手动起，二选一：
 
-- VS Code：F5「jtjsym 网站 (Blazor Server)」（`preLaunchTask` 已含上述参数）；
-- 命令行：`dotnet run --project jtjsym/jtjsym --no-launch-profile --environment Development --urls http://localhost:14074`。
+- VS Code：F5「jtjsym 网站 (Blazor Server)」（`preLaunchTask` 已含上述参数；**这条不产生站点日志，`TRIS-23` 会判红**）；
+- 命令行：`dotnet run --project jtjsym/jtjsym --no-launch-profile --environment Development --urls http://localhost:14074 > tools/e2e/jtjsym-site.log 2>&1`。
 
 > **`--environment Development` 不能省**：`--no-launch-profile` 跳过 `launchSettings`，环境会回落为 Production，此时 StaticWebAssets 不再从构建输出提供，`_content/Microsoft.Fast.Components.FluentUI/*` 全部 404 → Fluent 自定义元素不升级、`<fluent-option>` 以行内元素撑出 2.7~3.1 倍页宽。**页面看着能点，但所有"横向溢出/尺寸"断言都会得到假结果**。
+
+> **`> …/jtjsym-site.log 2>&1` 也不能省**：`TRIS-23`（关闭标签页后 10 秒内宿主无 Error 级日志）读的是这个文件的**增量**。复用模式下 `webServer` 不经手，日志只有外部起站才会产生 —— 找不到文件它会**判红**（刻意，不 skip：静默跳过等于让这条验收永久失效）。
+>
+> 站点日志是"跑测日志出仓库"约定的**唯一豁免**：它是 `TRIS-23` 的验收依据，必须落在固定可发现路径 `tools/e2e/jtjsym-site.log`（可用环境变量 `JTJSYM_SITE_LOG` 覆盖）。其余日志仍按约定出仓库。
 
 > **不要**用裸 `dotnet run`：它会走已提交的 `launchSettings` 尝试 14073/https，本机无 HTTPS 开发证书 → 启动失败（《07》§2.1）。
 
@@ -39,7 +43,7 @@ dotnet run --project ../../jtjsym/jtjsym --no-launch-profile --environment Devel
 
 | 命令 | 覆盖 | 实测耗时 |
 |---|---|---|
-| `npm run test:smoke` | 《07》§11.3 冒烟集 28 条 P0（TRIS-23 人工） | 2.6 分钟 |
+| `npm run test:smoke` | 《07》§11.3 冒烟集 28 条 P0（含 TRIS-23：读站点日志增量判"关闭页后 10s 内无 Error 级日志"） | 2.8 分钟 |
 | `npm run test:nav` | NAV 全量 + D-11 标题断言 | 40 秒 |
 | `npm run test:fish` | FISH 全量（含断网恢复） | 1 分钟 |
 | `npm run test:lt` | LT 24 条（含 30 秒后台标签） | 2 分钟 |
@@ -121,7 +125,8 @@ dotnet run --project ../../jtjsym/jtjsym --no-launch-profile --environment Devel
 - **「随机开局 + 单步操作 → 盘面必须变」的断言天生会偶发假红**（2026-11-13，`D15-12`）：2048 开局两块随机，若恰好都落在最左列且值不同，左移是**合法但无位移**的一步（`AfterMove` 见盘面没变直接返回，连新块都不生成）⇒ 约 3% 概率判红，失败文案是「棋盘未变、分数 0→0」。**能构造就构造**（连连看 `LL-03`/`LL-04` 靠"额外留一对"把局面钉死），构造不了就**先做一个必然使其成立的前置动作**（`D15-12` 先点 ➡️ 右对齐，此后 ⬅️ 必然位移），别写成"变了就算过"或加重试。复查手法：`--repeat-each=8` 连跑看频率，再用 `sessionStorage` 注入对抗局面做**确定性复现**。
 - **`sessionStorage` 注入的正确姿势**（2026-11-13）：先 `open` 到目标页 → `page.evaluate` 写键 → `reload`；`addInitScript` 在 `about:blank` 上写 `sessionStorage` 不落到目标源。另外 2048 的存档键名是**小写**（`{"v","cells","score"}` 靠 `[JsonPropertyName]` 映射），写成 `Cells` 会被结构闸静默丢弃，看到的是随机新局。
 - **红检/门禁前先杀站点进程**（2026-11-13）：`reuseExistingServer: true` 在端口被占用时会**直接复用**，复用的可能是一个跑着旧 dll 的遗留进程 —— 红检首跑因此假绿（改错的地方照样通过）。同时该进程会锁住 `bin\Debug\net8.0\jtjsym.dll`，`dotnet build` 直接 MSB3026→MSB3027→MSB3021。跑门禁前一律 `Get-Process -Name jtjsym | Stop-Process -Force`。
+- **造"必输/终局"局面别靠自动玩堆，直接注入**（2026-11-14，P-067）：`stackToGameOver` 那类"只往固定两列堆"的会输玩法本质是**赌方块序列** —— 两列到顶后后续方块落不进目标列、散到别处反而更容易凑整行消行、堆高被反复清零，于是同代码跑出"121s 57 块仍未结束"与"17.9s 判绿"两种结果。改用 `helpers.seedTetrisSession(page, payload)` + `tetrisNearTopSnapshot` + `driveToGameOver(page)`：局面钉死，实测 476~492ms 进结束态、分数恒 0、零消行。两个反直觉点：① `Tetris.razor` 的出块列是 `GRID_WIDTH/2 - piece[0].Length/2`，1×1 落在**第 5 列**（不是 4），而且快照里的 `x` 只管"恢复出来那一块"；② **"已经结束"的盘没法直接注入** —— 出生位一旦被占，快照闸 ⑦「出生位碰撞 → 整档丢弃」会把整档判废、页面回落新开局，所以必须"先让一块落定、再让新块撞上"。
 - **多条门禁别串在一条命令里跑**（2026-11-13）：`npm run test:nf; npm run test:smoke; npm run test:pr` 连跑时，前一条的站点没退干净，后一条的 `webServer` 会判定"没站点"去起新实例，于是 `Failed to bind to address http://127.0.0.1:14074: address already in use` 直接崩，测试跑在半死站点上，表现为**成片 400ms 快速判红**（本轮 40 余条）。看到"失败快得离谱"先查这条，别逐条读断言。两条之间要留出站点退出时间，或先 `Get-Process -Name jtjsym | Stop-Process -Force` 并确认 14074 不再 LISTENING。
   同一次实测还暴露出另一半原因：**沙箱/容器环境里站点子进程活不过 7~8 分钟**（两次都在启动后约 7.2 分钟被回收，日志无异常堆栈）。`test:pr` 要 16 分钟 ⇒ 长跑门禁要放到沙箱外跑，否则后半段全是 `ECONNREFUSED`。
-- **`test:pr` 最稳的跑法是「手动起站点 + 复用」，不是靠 `webServer`**（2026-11-13 订正上一条，连撞两次才定因）：即使放到沙箱外，**Playwright 自己拉起的那个站点子进程照样会在跑批中途被回收**（实测两次：3 分钟死一次、11.8 分钟死一次，失败位置不固定、全是 `ERR_CONNECTION_REFUSED`；而**手动 `dotnet run` 起的独立进程连续探测 7 分钟 14 次全 200**，从不自然死亡）。`webServer.stdout` 设为 `'ignore'` 时死因完全不可见，是最卡的一步。**跑法**：先在外部 `dotnet run --project jtjsym/jtjsym --no-launch-profile --environment Development --urls http://localhost:14074` 并 `tee` 日志，再跑 `npm run test:pr`（`reuseExistingServer: true` 会直接复用它）。判据：站点在整个门禁期间一直 200、跑完仍 200。
+- **`test:pr` 最稳的跑法是「手动起站点 + 复用」，不是靠 `webServer`**（2026-11-13 订正上一条，连撞两次才定因）：即使放到沙箱外，**Playwright 自己拉起的那个站点子进程照样会在跑批中途被回收**（实测两次：3 分钟死一次、11.8 分钟死一次，失败位置不固定、全是 `ERR_CONNECTION_REFUSED`；而**手动 `dotnet run` 起的独立进程连续探测 7 分钟 14 次全 200**，从不自然死亡）。`webServer.stdout` 设为 `'ignore'` 时死因完全不可见，是最卡的一步。**跑法**：先在外部 `dotnet run --project jtjsym/jtjsym --no-launch-profile --environment Development --urls http://localhost:14074 > tools/e2e/jtjsym-site.log 2>&1`（重定向到**固定路径**：`TRIS-23` 要按路径读增量；`tee` 也可，但落点必须是这个文件），再跑 `npm run test:pr`（`reuseExistingServer: true` 会直接复用它）。判据：站点在整个门禁期间一直 200、跑完仍 200。
 - **"红点紧挨着某条用例"不是定因依据**（2026-11-13）：两次首红都紧跟 `D02-14`，一度归因于它长按 `ArrowDown` 打崩 Tetris，单跑 `D02-14` 却是绿的。要单条复现再下结论。
