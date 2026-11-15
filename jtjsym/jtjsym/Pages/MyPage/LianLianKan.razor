@@ -64,6 +64,11 @@
                 var showFace = face > 0 ? face : lastFace[idx];
                 var pos = showFace > 0 ? LianliankanThemes.Position(showFace) : (Col: 0, Row: 0);
                 var name = face > 0 ? LianliankanThemes.ById(face)?.Name : null;
+                // H-016：族色只给兜底字牌左侧色条用（正常态无视觉后果）。
+                // 一律给个合法颜色：写成空的自定义属性会让 CSS 的 var(--fc, 兜底) 失效。
+                // ⚠ 不要改成"先把 --fc 拼成字符串变量、再用括号表达式插进 style"的写法：实测那种拼接
+                //   会让 Razor 解析失败（49 个 CS 报错，整个 code 块被挤出类体、连 _Imports 的 using 都不生效）。
+                var accent = face > 0 ? LianliankanThemes.ById(face)?.Accent : null;
 
                 @* data-face 只在非空格上出现：它是"这张脸还在不在盘上"的唯一判据，
                    写成 data-face="0" 会让 LL-12 的 {1..24} 集合断言多出一个 0 *@
@@ -71,9 +76,17 @@
                      role="gridcell"
                      data-idx="@idx"
                      data-face="@(face > 0 ? face.ToString() : null)"
-                     style="--c:@pos.Col;--r:@pos.Row"
+                     style="--c:@pos.Col;--r:@pos.Row;--fc:@(accent ?? "#8C8F96")"
                      aria-label="@(name ?? "空")"
-                     @onclick="() => OnCellClickedAsync(idx)"></div>
+                     @onclick="() => OnCellClickedAsync(idx)">
+                    @if (face > 0)
+                    {
+                        @* 兜底字牌（H-016）：正常态 display:none，只有探测失败（.llk-no-sprite）时由 CSS 露出。
+                           读屏语义走格子的 aria-label（全名），这里 aria-hidden 免得同一张脸被念两遍。
+                           用条件渲染而非恒渲染空 span：空格子少一个节点。 *@
+                        <span class="llk-face-fb" aria-hidden="true">@LlkCopy.ShortName(face)</span>
+                    }
+                </div>
             }
         </div>
 
@@ -184,6 +197,34 @@
         background-size: 600% 400%;                    /* 6 列 × 4 行 */
         background-repeat: no-repeat;
         background-position: calc(var(--c) * 20%) calc(var(--r) * 33.3333%);
+    }
+
+    /* ── 兜底字牌（H-016 / D-33）────────────────────────────────────────────
+       图没被画出来（无图模式 / 省流 / 拦截）时，sprite 的 48 格是**纯平色块、零纹理**，
+       整盘看着像"格子还没加载完"。这里给一张能玩的字牌：固定配色 + 两字标。
+       配色**不能**用族色底 + 白字：24 个 Accent 里有 14 个与 #FDF9F0 的对比度不足 4.5
+       （最差 1.71，贺婉娘 #D8C070）—— "看不清"正是这条降级要解决的唯一问题。
+       所以底色与字色写死（#F3ECE1 底 + #2B2B2B 字 = 12.07:1），族色只做左侧 4px 粗提示。
+       色条刻意用**左侧竖条**而不是整圈描边：.is-selected 是 3px 内缩 outline，
+       兜底牌面若用描边表族色，朱砂族会永久长得像被选中。 */
+    .llk-cell .llk-face-fb { display: none; }
+
+    .llk-board.llk-no-sprite .llk-cell { background-image: none; }
+
+    .llk-board.llk-no-sprite .llk-cell .llk-face-fb {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        position: absolute;
+        inset: 2px;
+        border-radius: 4px;
+        background: #F3ECE1;                    /* 固定米纸底，与 .llk-cell 的 background-color 同值 */
+        color: #2B2B2B;                         /* 固定深字：12.07:1 */
+        border-left: 4px solid var(--fc, #8C8F96);
+        font-size: 13px;
+        line-height: 1.05;
+        letter-spacing: .5px;
+        pointer-events: none;                   /* 点击仍落在格子上 */
     }
 
     .llk-cell.is-selected {
@@ -459,6 +500,13 @@
     private bool disposed;
     private CancellationTokenSource? clockCts;
     private readonly object timerLock = new();
+    /// <summary>
+    /// sprite 首次判定上限（H-016）。125332 B ÷ 37 KB/s ≈ 3.4s，5s 是 1.5 倍余量。
+    /// <para>取 3s 会早出字牌，但更可能"字牌闪一下又变回图"；取 5s 的代价是"请求挂住"这种病理场景下
+    /// 先盯 5 秒空盘。这是<b>产品行为</b> —— e2e 不许为了跑得快去改它（LL-25 单跑 8~10s 是已知成本）。</para>
+    /// </summary>
+    private const int SpriteProbeMs = 5000;
+
     private IJSObjectReference? visibilityModule;
     private IJSObjectReference? lineModule;
     private DotNetObjectReference<LianLianKan>? selfRef;
@@ -742,6 +790,25 @@
             await visibilityModule.InvokeVoidAsync("register", selfRef);
         }
         catch (JSException) { }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+
+        // ⑤ sprite 可用性探测（H-016 / D-33）。放最后：它不阻塞恢复对局、不阻塞遮罩判定，
+        //    也不参与排版（降级只切 class）。
+        //    返回值只用于排障：**降级全过程在 JS 里完成**（class + data-llk-sprite），不回写组件状态
+        //    ⇒ 不需要 StateHasChanged，也没有"探测结果与渲染状态不一致"这第二份真相。
+        //    为什么不用 DotNetObjectReference 做"迟到恢复"：④ 那条链是"可见性变化 → 改组件状态"、必须回 C#；
+        //    而降级/恢复只改 CSS，回 C# 反而多一条引用生命周期要维护（能力边界不同，别照抄）。
+        try
+        {
+            visibilityModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/llkvisibility.js");
+            if (!disposed)
+            {
+                await visibilityModule.InvokeAsync<string>(
+                    "applySpriteFallback", ".llk-board", "/Images/llk/faces.png", SpriteProbeMs);
+            }
+        }
+        catch (JSException) { }                     // 探测本身失败就不降级：退化为现状（格子仍是米纸底）
         catch (JSDisconnectedException) { }
         catch (ObjectDisposedException) { }
     }

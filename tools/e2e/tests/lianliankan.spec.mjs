@@ -1,4 +1,4 @@
-// H-014 / H-015 / D-31 / D-32：每日一关连连看（LL-01~LL-23）
+// H-014 / H-015 / D-31 / D-32 / H-016：每日一关连连看（LL-01~LL-26）
 // 存储键（全部带 jtjsym. 命名空间，且都收在 LlkKeys 里）：
 //   sessionStorage['jtjsym.llk.session']  = {v:1, issue, cells[48], elapsedSec}
 //   localStorage['jtjsym.llk.best']      = {"issue":20261112,"sec":87}   ← 单键单条，越小越好
@@ -422,10 +422,16 @@ test.describe('LL 连连看', () => {
   test('LL-12 资产完整：24 张脸全上、24 个格位互不重复', async ({ page }) => {
     await open(page, '/lianliankan', 1600);
 
-    const info = await page.$$eval('.llk-cell', els => els.map(e => ({
-      face: e.getAttribute('data-face'),
-      pos: e.getAttribute('style'),
-    })));
+    // ⚠ H-016 起 style 里多一个常量 `--fc:<族色>`（兜底字牌左侧色条用）。
+    //   若还拿**整串 style** 去重，24 张脸即便全挤在同一个 (c,r)、只要 accent 不同也照样"24 个不同"
+    //   ⇒ 这条守卫会被悄悄废掉（改造让旧断言变成看别的东西，C-68 同款教训）。
+    //   所以只解析真正承担区分的那两个变量。
+    const info = await page.$$eval('.llk-cell', els => els.map(e => {
+      const style = e.getAttribute('style') || '';
+      const c = /--c:\s*(-?\d+)/.exec(style)?.[1];
+      const r = /--r:\s*(-?\d+)/.exec(style)?.[1];
+      return { face: e.getAttribute('data-face'), pos: `${c},${r}` };
+    }));
 
     const faces = [...new Set(info.map(x => Number(x.face)).filter(v => v >= 1))].sort((a, b) => a - b);
     checkEq('LL-12-全脸', faces, Array.from({ length: 24 }, (_, i) => i + 1));
@@ -438,7 +444,7 @@ test.describe('LL 连连看', () => {
     }
     const positions = [...byFace.values()];
     check('LL-12-格位', positions.length === 24 && new Set(positions).size === 24,
-      `24 张脸对应 ${new Set(positions).size} 个不同的格位；示例=${JSON.stringify(positions.slice(0, 3))}`);
+      `24 张脸对应 ${new Set(positions).size} 个不同的格位；示例(--c,--r)=${JSON.stringify(positions.slice(0, 3))}`);
   });
 
   test('LL-13 点错有反馈：两张不同脸 → 提示带两个角色名 + 抖动，1.6s 后自动消失', async ({ page, browser }) => {
@@ -929,5 +935,113 @@ test.describe('LL 连连看', () => {
 
     check('LL-23-挡掉脸但留图案', (await page.getAttribute(`.llk-cell[data-idx="${A}"]`, 'data-face')) === null,
       'data-face 必须消失（LL-12 的 {1..24} 契约）；本修复只保 --c/--r，不保 data-face');
+  });
+
+  // ─────────────── H-016 / D-33：sprite 画不出来时的降级兜底（LL-24~LL-26） ───────────────
+  // 三条共用三条前置纪律，少一条就变橡皮图章：
+  //   ① **一律 openLlk**：首访玩法遮罩 inset:0 会盖住棋盘（《39》一次撞红 9 条）。
+  //   ② **route 必须在首次导航之前注册**，且用 `page.route`（不是 `context.route`）——
+  //      openLlk 内含一次 reload，两次导航都得被拦。
+  //   ③ **锚点用 `data-llk-sprite`**：absent（没这容器）/ pending（探测中）/ ok / fallback。
+  //      负向断言必须配一个正面锚（先等到 ok），否则"探测根本没跑"也照样绿的。
+  // 为什么值得三条：`request.get('/Images/llk/faces.png') === 200`（LL-01）证明的是**服务器有**，
+  //   不是**浏览器画了**；`getComputedStyle().backgroundImage` 在 404 / 被拦时照样返回那条 url。
+  //   这两条盲区就是 D-33 能在真机上活下来的原因（《44》§1.3）。
+
+  test('LL-24 图被拦 → 降级牌面可用（H-016）', async ({ page }) => {
+    await page.route('**/Images/llk/faces.png', r => r.abort());
+    await openLlk(page);
+
+    // abort ⇒ img.onerror 立刻回调，降级几乎与首帧同时到，不需要等 5s 超时
+    await expect.poll(
+      () => page.getAttribute('.llk-board', 'data-llk-sprite'),
+      { timeout: 3000, intervals: [50, 100, 200, 500] },
+    ).toBe('fallback');
+
+    check('LL-24-降级类', (await page.locator('.llk-board.llk-no-sprite').count()) === 1,
+      'data-llk-sprite=fallback 但棋盘上没有 .llk-no-sprite（两者必须同时成立）');
+
+    const card = await page.evaluate(() => {
+      const cell = document.querySelector('.llk-cell[data-face]');
+      const fb = cell ? cell.querySelector('.llk-face-fb') : null;
+      const cs = getComputedStyle(cell);
+      const fs = fb ? getComputedStyle(fb) : null;
+      return {
+        hasCard: !!fb,
+        text: fb ? fb.textContent : '',
+        display: fs ? fs.display : '',
+        color: fs ? fs.color : '',
+        bgImage: cs.backgroundImage,
+        bgColor: cs.backgroundColor,
+      };
+    });
+
+    check('LL-24-牌面可见', card.hasCard && card.display === 'flex',
+      `兜底字牌应 display:flex（实际 hasCard=${card.hasCard} display="${card.display}"）`);
+    check('LL-24-两字标', card.text.length === 2, `字牌文案="${card.text}"（应恰好两字）`);
+    check('LL-24-sprite已关', card.bgImage === 'none',
+      `降级后格子不该再声明 sprite（backgroundImage="${card.bgImage}"）`);
+    check('LL-24-米纸底', card.bgColor === 'rgb(243, 236, 225)',
+      `格子底色=${card.bgColor}（应 #F3ECE1，与字牌同值）`);
+    // 固定深字 12.07:1 —— 是这条降级存在的唯一理由（族色底 + 白字有 14/24 格不达标）
+    check('LL-24-固定深字', card.color === 'rgb(43, 43, 43)', `字色=${card.color}（应 #2B2B2B）`);
+  });
+
+  test('LL-25 图迟到 → 先降级、后恢复（onLateOk）', async ({ page }) => {
+    // 图晚于 5s 超时才到：先给字牌，图真到了再撤降级（弱网"先字后图"）。
+    // ⚠ 延迟取 8000 而不是刚过 5s 的 6000：openLlk 内部先 settle 1600ms 才 reload，
+    //   第二个请求要等这次导航才开始计时 —— 6000 时"fallback → ok"之间只剩约 0.8s，
+    //   poll 有可能整段错过 fallback（读到了 ok，然后判 fallback 失败）。
+    //   单跑约 11~12s 属已知成本：5s 是产品行为，不能为了跑得快去改产品。
+    await page.route('**/Images/llk/faces.png', async r => {
+      await sleep(8000);
+      // 第一次导航那个请求会被 reload 打断，continue 会抛目标已关闭 —— 那是预期，忽略
+      await r.continue().catch(() => {});
+    });
+    await openLlk(page);
+
+    await expect.poll(
+      () => page.getAttribute('.llk-board', 'data-llk-sprite'),
+      { timeout: 10_000, intervals: [150, 200, 300, 500] },
+    ).toBe('fallback');
+    check('LL-25-先降级', (await page.locator('.llk-board.llk-no-sprite').count()) === 1,
+      '超时后应停在字牌（.llk-no-sprite）');
+
+    // ★ 这一条就是 v1.0 缺的那条：`settled` 之后直接 return ⇒ 图迟到也永远不会恢复
+    await expect.poll(
+      () => page.getAttribute('.llk-board', 'data-llk-sprite'),
+      { timeout: 8000, intervals: [150, 200, 300, 500] },
+    ).toBe('ok');
+    check('LL-25-已撤销降级', (await page.locator('.llk-board.llk-no-sprite').count()) === 0,
+      '图到了以后 .llk-no-sprite 必须撤掉（否则弱网用户永久停在字牌）');
+    check('LL-25-图回来', (await page.evaluate(
+      () => getComputedStyle(document.querySelector('.llk-cell[data-face]')).backgroundImage,
+    )).includes('faces.png'), '恢复后格子应重新声明 sprite');
+  });
+
+  test('LL-26 主路径零变化（正面锚：探测确实跑过）', async ({ page }) => {
+    await openLlk(page);
+
+    // 正面锚：不等到 "ok" 就无法区分"探测通过"与"探测根本没跑"（catch 里静默吞掉同样绿）
+    await expect.poll(
+      () => page.getAttribute('.llk-board', 'data-llk-sprite'),
+      { timeout: 3000, intervals: [50, 100, 200, 500] },
+    ).toBe('ok');
+
+    // 正面锚成立之后只取一次样：这条状态本来就不该出现，写成"盯 N 秒"是零余量判据（D22-5 教训）
+    check('LL-26-未降级', (await page.locator('.llk-board.llk-no-sprite').count()) === 0,
+      '正常路径下棋盘不该有 .llk-no-sprite');
+
+    const card = await page.evaluate(() => {
+      const cell = document.querySelector('.llk-cell[data-face]');
+      return {
+        fbDisplay: getComputedStyle(cell.querySelector('.llk-face-fb')).display,
+        bgImage: getComputedStyle(cell).backgroundImage,
+      };
+    });
+    check('LL-26-牌面隐藏', card.fbDisplay === 'none',
+      `正常态字牌必须 display:none（实际 "${card.fbDisplay}"）—— 48 格布局零变化`);
+    check('LL-26-sprite在', card.bgImage.includes('faces.png'),
+      `正常态格子应声明 sprite（backgroundImage="${card.bgImage}"）`);
   });
 });

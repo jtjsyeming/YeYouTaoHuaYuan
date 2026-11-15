@@ -2,9 +2,14 @@ namespace jtjsym.Services;
 
 /// <summary>
 /// 一个格面角色（《36》v2.1 §1）。
-/// <para>只保留"渲染与无障碍需要"的四项：编号（对应 sprite 的格位）、姓名（只进 <c>aria-label</c>）、
-/// 色族（同一行 6 人同族，用于将来换皮时按族替换）、主色（文档与验收用，页面不读它 ——
-/// 颜色已经在图里了，再写进 DOM 只会让"图挂了"和"配色错了"两种故障长得一样）。</para>
+/// <para>只保留"渲染与无障碍需要"的四项：编号（对应 sprite 的格位）、姓名（只进 <c>aria-label</c> 与兜底字牌）、
+/// 色族（同一行 6 人同族，用于将来换皮时按族替换）、主色（H-016 起进 DOM 作 <c>--fc</c>，见下）。</para>
+/// <para><b>主色为什么现在要进 DOM</b>：H-016 之前它只在文档与验收里用，理由是"颜色已经在图里了，
+/// 再写进 DOM 只会让'图挂了'和'配色错了'两种故障长得一样"。D-33 之后这个理由不再成立 ——
+/// 兜底字牌要给一个<b>族级粗提示</b>（左侧 4px 色条），而那条色条<b>只在</b>
+/// <c>.llk-board.llk-no-sprite</c> 下可见，也就是说它出现本身就等于"sprite 没画出来"，
+/// 两种故障就不再混在一起了。反过来说：<b>正常态下 <c>--fc</c> 不该有任何视觉后果</b>，
+/// 一旦有人拿它去改正常态的颜色，那条区分的边界又没了。</para>
 /// </summary>
 public sealed class LlkCharacter
 {
@@ -19,13 +24,21 @@ public sealed class LlkCharacter
     /// <summary>1..24，同时是 <c>data-face</c> 的值与 sprite 的格位索引。</summary>
     public int Id { get; }
 
-    /// <summary>角色名。<b>只出现在 <c>aria-label</c> 与文档里</b>，格面上不显示文字（v2.1 §2.5）。</summary>
+    /// <summary>
+    /// 角色名。正常态<b>只出现在 <c>aria-label</c> 与文档里</b>，格面上不显示文字（v2.1 §2.5）。
+    /// <para>H-016 起唯一的例外是兜底字牌：<c>LlkCopy.ShortName</c> 取的是本字段的两字<b>子串</b>
+    /// （不是截断、也不是别名），且只在 <c>.llk-no-sprite</c> 下可见。</para>
+    /// </summary>
     public string Name { get; }
 
     /// <summary>色族：朱砂 / 石青 / 玄墨 / 藕荷 / 秋香 / 月白（6 族 × 4 人）。</summary>
     public string Family { get; }
 
-    /// <summary>主色（#RRGGBB）。换皮时按族内替换，算法与键名都不动。</summary>
+    /// <summary>
+    /// 主色（#RRGGBB）。换皮时按族内替换，算法与键名都不动。
+    /// <para>H-016 起由页面写进格子的 <c>--fc</c>，仅供兜底字牌左侧那条 4px 色条使用
+    /// （正常态无任何视觉后果，理由见类注释）。</para>
+    /// </summary>
     public string Accent { get; }
 }
 

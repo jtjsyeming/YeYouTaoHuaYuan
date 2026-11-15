@@ -78,6 +78,28 @@ public static class LlkCopy
     /// <summary>遮罩按钮。</summary>
     public const string RulesStart = "开始";
 
+    // ───────────────────────── 兜底字牌（H-016 / D-33） ─────────────────────────
+    // "图挂了"时格面上不再有图案，只剩这两字。**不用 Name[..2] 截断**：
+    // 那会把「英国公夫人」截成「英国」—— 根本不是一个角色（而「谢画楼」截成「谢画」只是别扭）。
+
+    /// <summary>兜底字牌的两字标（H-016）。下标 = face - 1；越界返回 "??"（保持两字宽，不塌格）。</summary>
+    /// <remarks>
+    /// 两条硬约束，由 U8（<c>LlkCopyTests.ShortName_UniqueAndSubstring</c>）看守，<b>不靠"记得改"</b>：
+    /// ① 24 项两两不同 —— 字牌是降级态唯一的身份线索；
+    /// ② 每项都是 <see cref="LianliankanThemes.Characters"/> 里 <c>Name</c> 的<b>连续子串</b> ——
+    /// 只判唯一性的话，改名后旧表依然"唯一"却已经指错人。
+    /// </remarks>
+    private static readonly string[] ShortNames =
+    {
+        "魏娆", "君黛", "魏姝", "画楼", "陆濯", "霍玦", "刘狩", "润生",
+        "仲恺", "韩辽", "戎王", "陆秋", "周芙", "恒娥", "虞凤", "瑛书",
+        "碧桃", "阿蛮", "红线", "婉娘", "魏老", "国公", "太后", "婕妤",
+    };
+
+    /// <summary>兜底字牌文案：<paramref name="face"/> ⇒ 两字标（H-016）。越界给 <c>"??"</c>。</summary>
+    public static string ShortName(int face) =>
+        face >= 1 && face <= ShortNames.Length ? ShortNames[face - 1] : "??";
+
     /// <summary>首页副行：有纪录。</summary>
     public static string HomeWithBest(int issue, int sec) => $"{IssueLabel(issue)} · 你的最快 {sec} 秒";
 
