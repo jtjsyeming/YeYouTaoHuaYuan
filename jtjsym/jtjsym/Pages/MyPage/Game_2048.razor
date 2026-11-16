@@ -41,7 +41,10 @@
 </div>
 
 <p>分数：@(isRestoring ? "—" : Score.ToString())</p>
-<p class="best-score">最高分：@BestScore</p>
+<!-- 最高分（D-35 / P-040）：与 Tetris 同构，占位只到 isBestLoaded 为止。
+     这一行是**现象的另一半**：只改 C# 时序不改模板，服务端预渲染那一帧仍是「最高分：0」；
+     只改模板不改时序，isBestLoaded 在 await 之前就置位、模板立刻解锁成 0 —— 两处缺一即等于没修。 -->
+<p class="best-score">最高分：@(isBestLoaded ? BestScore.ToString() : "—")</p>
 <p><FluentButton Class="replay-btn" @onclick="OnReplayClicked" Disabled="@(isGameOver || isRestoring)">重玩</FluentButton></p>
 
 @if (isGameOver)
@@ -63,7 +66,14 @@
     // 最高分（D-16）：存 localStorage，键名带 jtjsym. 命名空间，供后续 Tetris 等复用同一约定
     private const string BestKey = "jtjsym.g2048.best";
     private int BestScore = 0;
-    private bool isBestLoaded = false;     // 只在第一次交互渲染时读一次
+    // 两根标志，别合并成一（D-35 / P-040，与 Tetris 同构）：
+    //   isBestReading = "读只发生一次"的防重入闸；isBestLoaded = "读完成"⇒ 占位解锁。
+    // 旧写法只有 isBestLoaded 且在 await 之前置位，语义变成"已尝试"而不是"已读到"，
+    // 模板却拿它当"已读到"来解锁占位 ⇒ 真实值读回来之前先把 0 画了出去。
+    // 注意：2048 没有周期定时器（"每秒重渲染"是 Tetris 的特性），所以这里不能用
+    // "await 期间总有一拍会画 0"来解释；这个顺序问题的证据是服务端首帧 HTML 里就有 0。
+    private bool isBestReading = false;
+    private bool isBestLoaded = false;
 
     private bool isGameOver = false;
 
@@ -356,9 +366,13 @@
         if (!firstRender) return;
 
         // ① 读最高分：与键盘模块解耦，键盘将来怎么改都不影响它
-        if (!isBestLoaded)
+        //    D-35 / P-040：isBestLoaded 必须落在 await **之后**。放到前面等于"已尝试"，
+        //    而模板读的是"已读到"—— 顺序一颠倒，占位就等于没做（与 Tetris :1340-1352 逐字同构）。
+        //    两个 catch 也照抄 Tetris：只有 JSException / JSDisconnectedException，
+        //    **不捕** ObjectDisposedException、不加 finally —— 分叉会让下一轮要在两个文件里各读一遍。
+        if (!isBestReading)
         {
-            isBestLoaded = true;               // 先置位：读失败也不重试（避免每次渲染都打 interop）
+            isBestReading = true;
             try
             {
                 var raw = await JS.InvokeAsync<string?>("localStorage.getItem", BestKey);
@@ -367,6 +381,7 @@
             catch (JSException) { }            // 隐私模式/存储被禁：BestScore 保持 0，游戏零降级
             catch (JSDisconnectedException) { }
 
+            isBestLoaded = true;               // 读完才解锁占位（必须在 await 之后）
             StateHasChanged();                 // 预渲染首帧是 0，这一帧补成真实值
         }
 
