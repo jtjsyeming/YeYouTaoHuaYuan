@@ -1,4 +1,4 @@
-// H-014 / H-015 / D-31 / D-32 / H-016：每日一关连连看（LL-01~LL-26）
+// H-014 / H-015 / D-31 / D-32 / H-016 / D-34：每日一关连连看（LL-01~LL-28）
 // 存储键（全部带 jtjsym. 命名空间，且都收在 LlkKeys 里）：
 //   sessionStorage['jtjsym.llk.session']  = {v:1, issue, cells[48], elapsedSec}
 //   localStorage['jtjsym.llk.best']      = {"issue":20261112,"sec":87}   ← 单键单条，越小越好
@@ -937,16 +937,26 @@ test.describe('LL 连连看', () => {
       'data-face 必须消失（LL-12 的 {1..24} 契约）；本修复只保 --c/--r，不保 data-face');
   });
 
-  // ─────────────── H-016 / D-33：sprite 画不出来时的降级兜底（LL-24~LL-26） ───────────────
-  // 三条共用三条前置纪律，少一条就变橡皮图章：
+  // ─────────────── H-016 / D-33 / D-34：sprite 画不出来时的降级兜底（LL-24~LL-28） ───────────────
+  // 五条共用三条前置纪律，少一条就变橡皮图章：
   //   ① **一律 openLlk**：首访玩法遮罩 inset:0 会盖住棋盘（《39》一次撞红 9 条）。
   //   ② **route 必须在首次导航之前注册**，且用 `page.route`（不是 `context.route`）——
   //      openLlk 内含一次 reload，两次导航都得被拦。
   //   ③ **锚点用 `data-llk-sprite`**：absent（没这容器）/ pending（探测中）/ ok / fallback。
   //      负向断言必须配一个正面锚（先等到 ok），否则"探测根本没跑"也照样绿的。
-  // 为什么值得三条：`request.get('/Images/llk/faces.png') === 200`（LL-01）证明的是**服务器有**，
+  // 为什么值得五条：`request.get('/Images/llk/faces.png') === 200`（LL-01）证明的是**服务器有**，
   //   不是**浏览器画了**；`getComputedStyle().backgroundImage` 在 404 / 被拦时照样返回那条 url。
   //   这两条盲区就是 D-33 能在真机上活下来的原因（《44》§1.3）。
+  // D-34 的两条新纪律（《45》§6，照抄会出假绿）：
+  //   ④ **"条目存在" ≠ "资源可用"**：被 `route.abort()` 的请求**照样产生 Resource Timing 条目**
+  //      （`responseStatus: 0`、各 size 全 0）。判"图拉到了"只能锚 `responseStatus === 200`，
+  //      且必须**先把相对路径归一化成绝对 URL** —— `getEntriesByName` 是精确匹配，
+  //      传 '/Images/llk/faces.png' 恒返回空（实测 0 vs 1），照抄等于修复没生效、用例也一起假绿。
+  //   ⑤ **"模拟无图模式"按机制模拟，不要按请求序号模拟**：CSS 背景图成功之后 `new Image()`
+  //      命中内存缓存、**不发第二个请求**（实测 route handler 只被调用 1 次），所以"放行第一次、
+  //      拦截后续"根本触发不了第二次拦截。造"CSS 成、JS 败"只有一条稳路：`addInitScript` 打桩
+  //      `Image` 的 `src` setter（LL-27 已验证）。反过来"两者都败"用 `route.abort()`（LL-24 已覆盖），
+  //      两条交替才能把四个象限占全。
 
   test('LL-24 图被拦 → 降级牌面可用（H-016）', async ({ page }) => {
     await page.route('**/Images/llk/faces.png', r => r.abort());
@@ -1043,5 +1053,100 @@ test.describe('LL 连连看', () => {
       `正常态字牌必须 display:none（实际 "${card.fbDisplay}"）—— 48 格布局零变化`);
     check('LL-26-sprite在', card.bgImage.includes('faces.png'),
       `正常态格子应声明 sprite（backgroundImage="${card.bgImage}"）`);
+  });
+
+  // ─────────────── D-34：降级误判修掉"明明能画却被摘图"（LL-27 / LL-28） ───────────────
+  // 造"CSS 成、JS 败"的唯一稳路（组注释 ⑤）：打桩 Image 的 src setter，让探针必 error。
+  // ⚠ 必须 addInitScript —— openLlk 内含一次 reload，只注入一次会丢。
+  const stubProbeFail = page => page.addInitScript(() => {
+    const RealImage = window.Image;
+    const desc = Object.getOwnPropertyDescriptor(HTMLImageElement.prototype, 'src');
+    window.__llkProbeHits = 0;
+    window.Image = function () {
+      const img = new RealImage();
+      Object.defineProperty(img, 'src', {
+        configurable: true,
+        get() { return desc.get.call(img); },
+        set() {
+          window.__llkProbeHits += 1;
+          setTimeout(() => img.dispatchEvent(new Event('error')), 0);
+        },
+      });
+      return img;
+    };
+  });
+
+  test('LL-27 CSS 已拉到 + JS 探针必败 → 不降级（D-34）', async ({ page }) => {
+    // 模拟用户的手机：CSS 背景图正常拉（真实网络），JS new Image() 必失败。
+    await stubProbeFail(page);
+    await openLlk(page);
+
+    await expect.poll(
+      () => page.getAttribute('.llk-board', 'data-llk-sprite'),
+      { timeout: 5000, intervals: [50, 100, 200, 500] },
+    ).toBe('ok');
+
+    check('LL-27-未降级', (await page.locator('.llk-board.llk-no-sprite').count()) === 0,
+      'CSS 图明明拉到了，探针失败不该把 sprite 摘掉（这就是 D-34）');
+    check('LL-27-走条目闸', (await page.getAttribute('.llk-board', 'data-llk-sprite-src')) === 'css',
+      '应为 css（条目闸短路），若为 probe 说明闸门没生效、只是碰巧探针成功');
+    check('LL-27-图仍在', (await page.evaluate(
+      () => getComputedStyle(document.querySelector('.llk-cell[data-face]')).backgroundImage,
+    )).includes('faces.png'), '格子必须继续声明 sprite');
+    // 场景锚 ①：条目真的在且 responseStatus=200 —— 这是「CSS 成」这一半的事实依据。
+    //   ⚠ 它本身没有判别力（无修复时也绿），作用是不让"根本没收图"也冒充成"条目闸生效"。
+    const rt = await page.evaluate(() => {
+      const abs = new URL('/Images/llk/faces.png', document.baseURI).href;
+      const es = performance.getEntriesByName(abs);
+      return { n: es.length, status: es.map(e => e.responseStatus ?? 200) };
+    });
+    check('LL-27-条目200', rt.n >= 1 && rt.status.includes(200),
+      `应能找到该 URL 的条目且 responseStatus=200（实际 ${JSON.stringify(rt)}）`);
+
+    // 场景锚 ②：打桩确实装上了 —— 手动 new 一次 Image，必须立刻 error。
+    //   注：**不能**用"探针被调用过"当锚 —— 条目闸生效时探针本来就该零出场（hits 恒 0）。
+    const probe = await page.evaluate(async () => {
+      const before = window.__llkProbeHits;
+      const img = new Image();
+      const p = new Promise(res => {
+        img.onerror = () => res('error');
+        img.onload = () => res('load');
+        setTimeout(() => res('timeout'), 800);
+      });
+      img.src = '/Images/llk/faces.png';
+      return { delta: window.__llkProbeHits - before, outcome: await p };
+    });
+    check('LL-27-打桩生效', probe.delta === 1 && probe.outcome === 'error',
+      `JS 侧取图必须失败（实际 ${JSON.stringify(probe)}）—— 否则这条用例没造出 D-34 的场景`);
+  });
+
+  test('LL-28 降级后条目到了 → 自动撤销降级（退避复查）', async ({ page }) => {
+    // 打桩让 onLateOk 永远不可能触发（否则这条会被"迟到恢复"救活，测不到退避复查本身）
+    await stubProbeFail(page);
+    // CSS 请求晚 6s 放行：探针瞬 error ⇒ 立刻降级；图片 6s 后才完成 ⇒ 条目此时才出现
+    await page.route('**/Images/llk/faces.png', async r => {
+      await sleep(6000);
+      await r.continue().catch(() => {});   // 第一次导航被 reload 打断时 continue 会抛，忽略
+    });
+    await openLlk(page);
+
+    await expect.poll(
+      () => page.getAttribute('.llk-board', 'data-llk-sprite'),
+      { timeout: 10_000, intervals: [100, 200, 300, 500] },
+    ).toBe('fallback');
+    check('LL-28-先降级', (await page.locator('.llk-board.llk-no-sprite').count()) === 1, '应停在字牌');
+
+    // 退避 1/2/4/8 ⇒ 降级后约 8~9s 命中，给 15s 上限
+    await expect.poll(
+      () => page.getAttribute('.llk-board', 'data-llk-sprite'),
+      { timeout: 15_000, intervals: [200, 300, 500, 1000] },
+    ).toBe('ok');
+    check('LL-28-已撤销降级', (await page.locator('.llk-board.llk-no-sprite').count()) === 0,
+      '退避复查没跑（本用例里 onLateOk 不可能触发：探针被打桩成永远 error）');
+    check('LL-28-来源为css', (await page.getAttribute('.llk-board', 'data-llk-sprite-src')) === 'css',
+      '恢复必须由条目闸给出，不是探针');
+    check('LL-28-图回来', (await page.evaluate(
+      () => getComputedStyle(document.querySelector('.llk-cell[data-face]')).backgroundImage,
+    )).includes('faces.png'), '撤了 class 就该重新声明 sprite（图在缓存里，无需再等）');
   });
 });

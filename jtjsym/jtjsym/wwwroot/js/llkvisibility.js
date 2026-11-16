@@ -1,4 +1,4 @@
-// 夜游桃花源 连连看切后台暂停（《36》v2.0 §3.4）+ sprite 可用性探测（H-016 / D-33）
+// 夜游桃花源 连连看切后台暂停（《36》v2.0 §3.4）+ sprite 可用性探测（H-016 / D-33 / D-34）
 //
 // 为什么另写一个模块而不是复用 gamekeyboard.js：
 //   gamekeyboard 的 register 会接管四个方向键并把 keydown 全拦下来，而连连看没有键盘操作 ——
@@ -68,7 +68,29 @@ function onPageHide() {
   unloading = true;
 }
 
-// ───────────────── sprite 可用性探测（H-016 / D-33） ─────────────────
+// ───────────────── sprite 可用性探测（H-016 / D-33 / D-34） ─────────────────
+
+/**
+ * CSS 背景图是否**真的拉到了**。以页面自身的资源条目为唯一证据，不靠探针。
+ *
+ * 为什么需要它（D-34）：真机上出现过"CSS 画得出来、`new Image()` 却 onerror"（无图模式只拦 JS 侧），
+ * 探针的瞬时失败把明明可用的 sprite 摘了。页面自己的条目是**直接事实**，探针只是**代理指标** ——
+ * 直接事实优先。
+ *
+ * ⚠ 必须先把相对路径归一化成绝对 URL：条目 `name` 是绝对 URL，`getEntriesByName` 是精确匹配，
+ *   传 `'/Images/llk/faces.png'` 恒返回空（实测 0 vs 1）。这一条不改等于没修。
+ * ⚠ 判据只能是 `responseStatus === 200`。被 abort 的请求**条目照样存在**（实测 `responseStatus: 0`、
+ *   三个 size 全 0）——"没条目才是被拦"是错的；`?? 200` 只是给不写该字段的老引擎兜底。
+ * ⚠ 请求进行中不会有条目（Chromium / Firefox 实测均返回空）⇒ 慢网下这里正确返回 false、不会误放行。
+ *
+ * @returns {boolean}
+ */
+function rtLoaded(url) {
+  let abs;
+  try { abs = new URL(url, document.baseURI).href; } catch { return false; }
+  return performance.getEntriesByName(abs)
+    .some(e => (e.responseStatus ?? 200) === 200);
+}
 
 /**
  * 探测 sprite 到底能不能被画出来，并按结果切降级态。
@@ -80,32 +102,92 @@ function onPageHide() {
  * 为什么对外只有一个函数：IJSRuntime 传不了 JS 回调，所以"迟到恢复"必须在 JS 内部自销 ——
  * 否则 C# 侧只能拿到一个 boolean，等图真到了还得再 interop 一次，而那时已经不知道该不该恢复。
  *
- * 副作用范围：只动 DOM（class + data-llk-sprite），**不进 Blazor 渲染状态**。
+ * 副作用范围：只动 DOM（class + data-llk-sprite / -src），**不进 Blazor 渲染状态**。
  * `.llk-board` 的 class 在渲染树里是常量，每次 diff 都不含它 ⇒ Blazor 不会把 JS 加的类抹掉。
  *
- * @param {string} selector   棋盘容器，如 '.llk-board'
- * @param {string} url        sprite 地址
- * @param {number} timeoutMs  首次判定上限。超时先给结论，但**继续等**（弱网"先字后图"）
+ * `data-llk-sprite-src` 是**取证字段**（真机再报时一眼分辨三种情况，不用再猜）：
+ *   css = 条目闸短路（图本来就好的，探针没出场）；probe = 探针给了结论；fallback = 真降级。
+ *
+ * @param {string} selector     棋盘容器，如 '.llk-board'
+ * @param {string} url          sprite 地址
+ * @param {number} timeoutMs    首次判定上限。超时先给结论，但**继续等**（弱网"先字后图"）
+ * @param {number} retryBaseMs  降级后条目复查的首次间隔（指数退避，见 startRecover）
  * @returns {Promise<'ok'|'fallback'|'absent'>}
  */
-export async function applySpriteFallback(selector, url, timeoutMs) {
+export async function applySpriteFallback(selector, url, timeoutMs, retryBaseMs = 1000) {
   const board = document.querySelector(selector);
   if (!board) return 'absent';
+
+  // ① 条目闸：CSS 已经拉到了 ⇒ 一个请求都不再发、永不降级。
+  //    用户的手机就走这条（CSS 放行 / JS 被拦），探针不必出场。
+  //    顺序不能反过来：这是"判据优先级"，页面自己的证据高于 JS 的模拟请求。
+  if (rtLoaded(url)) {
+    board.dataset.llkSprite = 'ok';
+    board.dataset.llkSpriteSrc = 'css';
+    return 'ok';
+  }
 
   board.dataset.llkSprite = 'pending';
   const ok = await probeSprite(url, timeoutMs, () => {
     // 超时之后图才到 —— 撤销降级，避免弱网用户永远停在字牌
     board.classList.remove('llk-no-sprite');
     board.dataset.llkSprite = 'ok';
+    board.dataset.llkSpriteSrc = 'probe';
+    stopRecover();
   });
 
   if (ok) {
     board.dataset.llkSprite = 'ok';
+    board.dataset.llkSpriteSrc = 'probe';
     return 'ok';
   }
   board.classList.add('llk-no-sprite');
   board.dataset.llkSprite = 'fallback';
+  board.dataset.llkSpriteSrc = 'probe';
+  startRecover(board, url, retryBaseMs);   // ② 先字后图的自愈
   return 'fallback';
+}
+
+// ───────────────── 降级态恢复（D-34） ─────────────────
+//
+// 为什么不再补探针：`background-image: none` **不会**中止进行中的 CSS 请求（实测服务端
+// `res.on('close')` 时 `writableFinished = true`，条目 6s 后照常出现）⇒ 图一直在后台下载，
+// 只是不被绘制。所以"自愈"只需要**撤 class** 一个动作，而证据就是条目本身。
+// 补探针只会制造一次多余请求：缓存已热时它甚至不产生条目，白查。
+
+let recoverTimer = 0;
+let recoverBoard = null;
+let recoverTries = 0;
+
+/**
+ * 指数退避复查：1 / 2 / 4 / 8 / 16 / 32s，共 63s 后放弃。
+ * 63s 是 125KB ÷ 14KB/s ≈ 9s 弱网的 7 倍余量；相比"每 3s × 120s = 40 次"次数少一个量级，
+ * 而空查不产生请求，成本只是几个 setTimeout。
+ */
+function startRecover(board, url, base) {
+  stopRecover();
+  recoverBoard = board;
+  recoverTries = 0;
+  const tick = () => {
+    recoverTimer = 0;
+    if (!recoverBoard) return;
+    if (rtLoaded(url)) {
+      recoverBoard.classList.remove('llk-no-sprite');
+      recoverBoard.dataset.llkSprite = 'ok';
+      recoverBoard.dataset.llkSpriteSrc = 'css';
+      recoverBoard = null;
+      return;
+    }
+    if (++recoverTries >= 6) { recoverBoard = null; return; }
+    recoverTimer = window.setTimeout(tick, base * 2 ** (recoverTries - 1));
+  };
+  recoverTimer = window.setTimeout(tick, base);
+}
+
+function stopRecover() {
+  if (recoverTimer) window.clearTimeout(recoverTimer);
+  recoverTimer = 0;
+  recoverBoard = null;
 }
 
 /**
@@ -145,5 +227,8 @@ function remove() {
   if (handler) document.removeEventListener('visibilitychange', handler);
   window.removeEventListener('pagehide', onPageHide);
   handler = null;
+  // D-34：**必须**在这里停退避复查。`unregister()` 走的就是 remove()，而 Blazor Server 的
+  // 站内导航不触发 `pagehide` —— 只挂 pagehide 等于 SPA 切页后定时器继续跑（对已卸载的 DOM 空转）。
+  stopRecover();
   window.__jtjsymLlkVisReady = false;
 }

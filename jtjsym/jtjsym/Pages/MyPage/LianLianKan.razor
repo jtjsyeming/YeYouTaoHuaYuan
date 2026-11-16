@@ -216,7 +216,15 @@
         align-items: center;
         justify-content: center;
         position: absolute;
-        inset: 2px;
+        /* D-34：四向 longhand 而不是 `inset: 2px` —— shorthand 在老内核上可能整条不认，
+           那时 top/right/bottom/left 保持 auto，绝对定位元素回落到**静态位置**（格内左上角），
+           字牌仍可见但会贴边。拆开写各内核等价，零副作用。
+           ⚠ 这条**不宣称**能解决"字牌完全不可见"：真机视频里 48 格是均匀深棕（不是米白 #F3ECE1），
+           说明当时整页还处在启发式暗化下（D-33 现象 1），字牌被压成深底深字。 */
+        top: 2px;
+        right: 2px;
+        bottom: 2px;
+        left: 2px;
         border-radius: 4px;
         background: #F3ECE1;                    /* 固定米纸底，与 .llk-cell 的 background-color 同值 */
         color: #2B2B2B;                         /* 固定深字：12.07:1 */
@@ -793,12 +801,16 @@
         catch (JSDisconnectedException) { }
         catch (ObjectDisposedException) { }
 
-        // ⑤ sprite 可用性探测（H-016 / D-33）。放最后：它不阻塞恢复对局、不阻塞遮罩判定，
+        // ⑤ sprite 可用性探测（H-016 / D-33 / D-34）。放最后：它不阻塞恢复对局、不阻塞遮罩判定，
         //    也不参与排版（降级只切 class）。
         //    返回值只用于排障：**降级全过程在 JS 里完成**（class + data-llk-sprite），不回写组件状态
         //    ⇒ 不需要 StateHasChanged，也没有"探测结果与渲染状态不一致"这第二份真相。
         //    为什么不用 DotNetObjectReference 做"迟到恢复"：④ 那条链是"可见性变化 → 改组件状态"、必须回 C#；
         //    而降级/恢复只改 CSS，回 C# 反而多一条引用生命周期要维护（能力边界不同，别照抄）。
+        //    为什么 JS 侧先查 Resource Timing 条目再探针（D-34）：真机上出现过"CSS 画得出来、
+        //    `new Image()` 却 onerror"（无图模式只拦 JS 侧），探针的瞬时失败会摘掉明明可用的 sprite。
+        //    页面自己的条目是直接事实、探针只是代理指标 —— 直接事实优先，顺序不能颠倒。
+        //    排障看 `data-llk-sprite-src`：css（条目闸短路，图本来就好）/ probe（探针给了结论）/ fallback（真降级）。
         try
         {
             visibilityModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/llkvisibility.js");
