@@ -222,14 +222,47 @@ export const archiveOf = (cells, score = 0) => ({ v: 1, cells, score });
 /** 合法死局：16 格全满、无相邻同值。8 个 4 ⇒ cap = 32，故注入 score 只能 ≤ 32。 */
 export const DEAD_CELLS = [2, 4, 2, 4, 4, 2, 4, 2, 2, 4, 2, 4, 4, 2, 4, 2];
 
-/** 点方向键。第三参是与旧实现等价的固定沉降，**默认 320ms 保持不变**（18 个既有调用点零改动）。
- *  传 0 只用于"验 poll 有没有接上"的场合：留着 320 的话，poll 是在 320ms **之后**才开始的，
- *  测出来的是"320 够不够"，而不是"条件等待是否存在"（P-069 负向验证的坑）。 */
-export const clickDir = async (page, dir, settleMs = 320) => {
+/** 点方向键。第三参是"等 poll 接上之前的旧式固定沉降"，**默认 0**。
+ *
+ *  历史（为什么要留着这段）：P-069 的负向验证需要"320 不会被误当成条件等待"，
+ *  所以默认值曾是 320，理由是"18 个既有调用点零改动"。
+ *
+ *  2026-11-16（C-76）把 17 个调用点全部改成条件等待后，默认 320 反而有害：
+ *  它足够长，往往刚好等到状态变化——漏接 poll 的调用点也会绿，看不出来。
+ *  故默认改 0；需要沉降时在调用点显式传（`clickDir(page, 'ArrowLeft', 320)`）。
+ *
+ *  **不要再加回非零默认值。** 真正的护栏是 PR 全集（171 条）：
+ *  漏接 poll 的地方会在并行负载下红出来，flaky 抽样（10 条 × 3 轮）只是补充。
+ */
+export const clickDir = async (page, dir, settleMs = 0) => {
   const sel = { up: '⬆️', left: '⬅️', down: '⬇️', right: '➡️' }[dir];
   await page.locator(`.controls fluent-button:has-text("${sel}")`).click();
   if (settleMs > 0) await sleep(settleMs);
 };
+
+/** 盘面签名：16 格按行拼成字符串，用于"是否同一盘面"的精确比对 */
+export const boardSig = b => b.map(r => r.join(',')).join('|');
+
+/** 走一步并等它**真的落到 DOM**，返回落地后的画面快照。`willChange` 决定等法：
+ *   · true  → 条件等待：poll 到盘面签名与点击前不同，一不同立刻返回（不吃固定延时）；
+ *   · false → 只能有界沉降：\"没发生变化\"是负命题，没有任何可观测的完成信号，
+ *             只能用一段足够长的等待去证伪。**别压到真实沉降量级**（那是硬币）。
+ *
+ *  `willChange` 必须由调用点用自己的第二实现（`simulate`）算出，**不能**从页面读：
+ *  从页面读就是把"页面已经更新了"当成前置条件，判据变自证。
+ *  为什么需要这个函数（P-045）：`click()` 返回 ≠ DOM 已更新，服务端处理完才回流。 */
+export async function moveOnce(page, dir, willChange, noChangeSettleMs = 400) {
+  const before = boardSig(await readBoard(page));
+  await clickDir(page, dir);
+  if (willChange) {
+    await expect
+      .poll(async () => boardSig(await readBoard(page)), { timeout: 5000, intervals: [20, 20, 50, 100, 200] })
+      .not.toBe(before);
+  } else {
+    await sleep(noChangeSettleMs);
+  }
+  return { board: await readBoard(page), score: await readScore(page) };
+}
 
 /** 等"存档 == 画面"成立，返回实际耗时（ms）。
  *  返回值的用途只有一个：当证据。`settleMs` 证明的是"320ms **之后**是否还有欠账"，
@@ -730,7 +763,13 @@ export function parseTimer(s) {
   return m ? { d: +m[1], h: +m[2], mi: +m[3], s: +m[4] } : null;
 }
 
-export const secsOf = p => p.mi * 60 + p.s;
+/** 「这一行现在是多少秒」——**必须把天/小时一起算进去**（P-042 家族的第三个判据陷阱）。
+ *
+ *  旧写法 `p.mi * 60 + p.s` 只取分钟与秒：2026-11-16 的 PR 全集里 LT-03 实测 `2.6s 推进 -3597 秒`
+ *  —— 那 2.6 秒恰好**跨过整点**（59:57 → 00:00），分钟从 59 掉回 0，而小时被丢掉 ⇒ 差值变成 -3597。
+ *  概率约 2.6/3600，但它一旦发生就是"红一次、单跑又绿"的假红，比真回归更浪费时间。
+ *  凡是"两次读数相减"的判据，取数口径必须覆盖**全部进位位**，不能只取最右两位。 */
+export const secsOf = p => p.d * 86400 + p.h * 3600 + p.mi * 60 + p.s;
 
 /** 木鱼状态行取数：只认行尾数字，不绑定文案。
  *  文案改过两次（`次数: ` → `本次功德：`，C-50），把「数字比对」与「标签」解耦后，

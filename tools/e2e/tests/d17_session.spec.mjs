@@ -3,7 +3,8 @@
 //      —— 恢复失败时新开局的形态与期望完全一样，必须比具体盘面才具备判别力。
 import { expect, test } from '@playwright/test';
 import {
-  check, checkEq, clickDir, countTiles, open, readBest, readBoard, readScore, readSession, sleep, trackErrors,
+  boardSig, check, checkEq, countTiles, moveOnce, open, readBest, readBoard, readScore, readSession, simulate, sleep,
+  trackErrors,
 } from './helpers.mjs';
 
 const BEST_KEY = 'jtjsym.g2048.best';
@@ -20,11 +21,16 @@ async function leaveAndReturn(page) {
   await sleep(400);            // 恢复在 firstRender，毫秒级；真等不到交给 expect.poll 判红
 }
 
-/** 走子直到分数 ≥ min（2048 前几步必有合并）。打死就停，别点重玩——重开会把存档覆盖掉。 */
+/** 走子直到分数 ≥ min（2048 前几步必有合并）。打死就停，别点重玩——重开会把存档覆盖掉。
+ *  C-76 / P-045：每次走子等"盘面真的变了"（willChange 由 simulate 在页面之外算出）；
+ *  这一步不一定改变盘面，那一路走有界沉降 —— 旧的默认 320ms 就是在这里当遮羞布的。 */
 async function playUntilScore(page, min = 4, max = 30) {
   for (let i = 0; i < max && (await readScore(page)) < min; i++) {
     if (await page.locator('.game-over').count()) return false;
-    await clickDir(page, DIRS[i % 4]);
+    const dir = DIRS[i % 4];
+    const b = await readBoard(page);
+    const willChange = boardSig(simulate(b, dir).board) !== boardSig(b);
+    await moveOnce(page, dir, willChange);
   }
   return (await readScore(page)) >= min;
 }

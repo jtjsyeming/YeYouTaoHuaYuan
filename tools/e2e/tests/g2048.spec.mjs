@@ -4,11 +4,13 @@
 import { test } from '@playwright/test';
 import {
   archiveOf,
+  boardSig,
   check,
   checkEq,
   clickDir,
   countTiles,
   DEAD_CELLS,
+  moveOnce,
   open,
   readBoard,
   readScore,
@@ -69,9 +71,10 @@ test.describe('G2048 2048 游戏', () => {
       if (!found) {
         // 四向皆无变化 → 正是 G2048-22 的场景
         const scoreA = await readScore(page);
-        await clickDir(page, 'left');
-        const b2 = await readBoard(page);
-        const s2 = await readScore(page);
+        // 无变化的一步是负命题：没有可观测的完成信号，只能有界沉降（别压到真实沉降量级）
+        const landed0 = await moveOnce(page, 'left', false);
+        const b2 = landed0.board;
+        const s2 = landed0.score;
         if (JSON.stringify(b2) === JSON.stringify(before) && s2 === scoreA) noChangeOk++;
         else {
           noChangeBad++;
@@ -80,9 +83,10 @@ test.describe('G2048 2048 游戏', () => {
         break;
       }
 
-      await clickDir(page, dir);
-      const after = await readBoard(page);
-      const scoreAfter = await readScore(page);
+      // sim 已证明这一步必然改变盘面 ⇒ 条件等待，一变化立刻返回
+      const landed = await moveOnce(page, dir, true);
+      const after = landed.board;
+      const scoreAfter = landed.score;
 
       const gainOk = scoreAfter - scoreBefore === sim.gain;
       const diffs = [];
@@ -123,9 +127,9 @@ test.describe('G2048 2048 游戏', () => {
     const b0 = await readBoard(page);
     const s0 = await readScore(page);
     const willChange = JSON.stringify(simulate(b0, 'left').board) !== JSON.stringify(b0);
-    await clickDir(page, 'left');
-    const b1 = await readBoard(page);
-    const s1 = await readScore(page);
+    const landed = await moveOnce(page, 'left', willChange);
+    const b1 = landed.board;
+    const s1 = landed.score;
 
     let ok;
     let detail;
@@ -151,9 +155,9 @@ test.describe('G2048 2048 游戏', () => {
       const b0 = await readBoard(page);
       const s0 = await readScore(page);
       const changed = JSON.stringify(simulate(b0, 'right').board) !== JSON.stringify(b0);
-      await clickDir(page, 'right');
-      const b1 = await readBoard(page);
-      const s1 = await readScore(page);
+      const landed = await moveOnce(page, 'right', changed);
+      const b1 = landed.board;
+      const s1 = landed.score;
       if (!changed) {
         const same = JSON.stringify(b1) === JSON.stringify(b0) && s1 === s0;
         if (!same) bad++;
@@ -181,9 +185,9 @@ test.describe('G2048 2048 游戏', () => {
       if (nd.length > 0 && countTiles(b) >= 2) {
         const dir = nd[0];
         const s0 = await readScore(page);
-        await clickDir(page, dir);
-        const b2 = await readBoard(page);
-        const s2 = await readScore(page);
+        const landed = await moveOnce(page, dir, false);   // nd 里挑的方向必然无变化
+        const b2 = landed.board;
+        const s2 = landed.score;
         const same = JSON.stringify(b2) === JSON.stringify(b);
         check(
           'G2048-22',
@@ -229,10 +233,10 @@ test.describe('G2048 2048 游戏', () => {
       `满盘 ${countTiles(before)} 块、遮罩=${overlay0}（有一对相邻同值，重算后不得判死）`,
     );
 
-    await clickDir(page, 'right');
-    const after = await readBoard(page);
+    const landed = await moveOnce(page, 'right', true);   // 首行 2+2 必合并 ⇒ 必然改变盘面
+    const after = landed.board;
     const tiles = countTiles(after);
-    const score = await readScore(page);
+    const score = landed.score;
     const overlay = await page.locator('.game-over').count();
     // 首行 [2,2,4,8] 向右 → [0,4,4,8]（2+2 合并 +4 分；8/4 各占一格且不再合并），
     // 空出的 1 格被 spawn 补回 ⇒ 仍 16 块；其余三行无移动可能，必须逐格不变

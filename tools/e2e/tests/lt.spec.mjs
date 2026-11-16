@@ -64,7 +64,10 @@ const daysBetween = (y, m, d) => {
   const thenIso = `${y}-${pad(m)}-${pad(d)}T00:00:00+08:00`;
   return Math.floor((Date.parse(nowIso) - Date.parse(thenIso)) / 86400000);
 };
-const secsOf = p => p.mi * 60 + p.s;
+// ⚠ 本文件自带一份 parseTimer/secsOf（历史原因，未改成 import）：两处口径必须与 helpers 一致。
+//   2026-11-16 的 PR 全集里，smoke 的 LT-03 因"只取分/秒"在跨整点时算出 `2.6s 推进 -3597 秒`；
+//   这里同款写法有同样的坑，故一并把天/小时算进去（只要"两次读数相减"，就必须覆盖全部进位位）。
+const secsOf = p => p.d * 86400 + p.h * 3600 + p.mi * 60 + p.s;
 
 test.describe('LT 爱情计时器', () => {
   test('LT-01~LT-07 三行展示、秒级刷新与下拉选项', async ({ page }) => {

@@ -5,11 +5,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import {
   check,
-  clickDir,
   clickGameBtn,
   countTiles,
   driveToGameOver,
   fishCount,
+  moveOnce,
   open,
   parseTimer,
   pickSelect,
@@ -184,9 +184,9 @@ test.describe('冒烟集（28 条 P0）', () => {
 
     // G2048-02：初始按左
     const willChange = JSON.stringify(simulate(b0, 'left').board) !== JSON.stringify(b0);
-    await clickDir(page, 'left');
-    const b1 = await readBoard(page);
-    const s1 = await readScore(page);
+    const landed0 = await moveOnce(page, 'left', willChange);
+    const b1 = landed0.board;
+    const s1 = landed0.score;
     const ok2 = willChange
       ? s1 - s0 === simulate(b0, 'left').gain && countTiles(b1) >= countTiles(b0)
       : JSON.stringify(b1) === JSON.stringify(b0) && s1 === s0;
@@ -210,9 +210,10 @@ test.describe('冒烟集（28 条 P0）', () => {
         }
       }
       if (!dir) break;
-      await clickDir(page, dir);
-      const after = await readBoard(page);
-      const afterScore = await readScore(page);
+      // dir 由 simulate 选出、必然改变盘面 ⇒ 条件等待（不再靠固定沉降）
+      const landed = await moveOnce(page, dir, true);
+      const after = landed.board;
+      const afterScore = landed.score;
       if (afterScore - beforeScore !== sim.gain) mismatches++;
       if (sim.gain > 0) merges++;
       if ((await page.locator('.game-over').count()) > 0) break;
@@ -226,9 +227,9 @@ test.describe('冒烟集（28 条 P0）', () => {
       const nd = ['left', 'up', 'right', 'down'].filter(d => JSON.stringify(simulate(b, d).board) === JSON.stringify(b));
       if (nd.length > 0 && countTiles(b) >= 2) {
         const sc = await readScore(page);
-        await clickDir(page, nd[0]);
-        const b2 = await readBoard(page);
-        const sc2 = await readScore(page);
+        const landed = await moveOnce(page, nd[0], false);   // 无变化的一步：负命题，只能有界沉降
+        const b2 = landed.board;
+        const sc2 = landed.score;
         check(
           'G2048-22',
           JSON.stringify(b2) === JSON.stringify(b) && sc2 === sc,

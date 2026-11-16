@@ -3,7 +3,8 @@
 //      判据必须能区分"恢复了这一局"与"退化成新局"，否则两边都是 2 块 0 分，等于恒真。
 import { expect, test } from '@playwright/test';
 import {
-  SESSION_KEY, check, checkEq, clickDir, countTiles, open, readBest, readBoard, readScore, readSession, sleep,
+  SESSION_KEY, boardSig, check, checkEq, clickDir, countTiles, moveOnce, open, readBest, readBoard, readScore,
+  readSession, simulate, sleep,
 } from './helpers.mjs';
 
 const BEST_KEY = 'jtjsym.g2048.best';
@@ -22,12 +23,15 @@ const zeros = (n = 16) => Array(n).fill(0);
 const cellsOf = list => { const c = zeros(); list.forEach((v, i) => (c[i] = v)); return c; };
 const archive = (list, score) => ({ v: 1, cells: cellsOf(list), score });
 
-/** 走子直到分数 ≥ min（2048 前几步必有合并）；打出结束态就返回 false */
+/** 走子直到分数 ≥ min（2048 前几步必有合并）；打出结束态就返回 false。
+ *  C-76 / P-045：willChange 由 simulate 在页面之外算出，改的那一路等条件、不改的那一路走有界沉降。 */
 async function playUntilScore(page, min = 100, max = 60) {
   const DIRS = ['left', 'down', 'right', 'up'];
   for (let i = 0; i < max && (await readScore(page)) < min; i++) {
     if (await page.locator('.game-over').count()) return false;
-    await clickDir(page, DIRS[i % 4]);
+    const dir = DIRS[i % 4];
+    const b = await readBoard(page);
+    await moveOnce(page, dir, boardSig(simulate(b, dir).board) !== boardSig(b));
   }
   return (await readScore(page)) >= min;
 }

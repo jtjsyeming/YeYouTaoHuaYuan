@@ -8,7 +8,7 @@
 // 窗口内点击的拦截能力交给 Test/functiontest.mjs 的 FT-08（它用 element.click()，绕得过 disabled）。
 import { expect, test } from '@playwright/test';
 import {
-  check, checkEq, clickDir, open, readBoard, readScore, readSession, simulate, sleep, waitArchiveBoard,
+  check, checkEq, clickDir, moveOnce, open, readBoard, readScore, readSession, simulate, sleep, waitArchiveBoard,
 } from './helpers.mjs';
 
 /** 盘面签名：16 格按行拼成字符串，用于"是否同一盘面"的精确比对（只比"2 块 0 分"没有判别力） */
@@ -104,7 +104,11 @@ test.describe('19 2048 恢复与落盘生命周期', () => {
 
   test('G2048-45 看到即已存：DOM 更新后再刷新，5 轮全保持（P-007 门禁判据）', async ({ page }) => {
     await open(page, '/game_2048', 1600);
-    await clickDir(page, 'left'); // 先确保有存档
+    // 先确保有存档。**不能随手点左**：新开局两块可能都在最左列，左移是"合法但无位移"⇒ 不落盘（C-70 撞过一次）；
+    // 也不能靠固定沉降 —— 等的是"盘面真的变了"（willChange 由 simulate 在页面之外算出）。
+    const bp = await readBoard(page);
+    const dp = DIRS.find(d => JSON.stringify(simulate(bp, d).board) !== JSON.stringify(bp));
+    if (dp) await moveOnce(page, dp, true);
     const rows = [];
 
     for (let i = 0; i < 5; i++) {
