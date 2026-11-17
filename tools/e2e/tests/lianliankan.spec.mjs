@@ -1173,4 +1173,59 @@ test.describe('LL 连连看', () => {
     check('LL-29-无虚线', (await page.locator('.llk-cell.is-hint').count()) === 0,
       '不该出现提示虚线（③ 层的残留）');
   });
+
+  // ─────────────── D-38：连线漂移（LL-30） ───────────────
+  test('LL-30 连线不漂移：参照格被消掉后，端点仍对齐格中心（D-38）', async ({ page }) => {
+    // 造盘（《48》v2.0 §4.2）：目标对 face5 在 (0,1)/(1,0)，1 拐经 (0,0)；face7 在 (6,4)/(6,5) 只作陪跑。
+    // ★ 关键是 (0,0) **空**：旧版拿 idx 0 当固定参照，它一进 is-gone 就缩到 60%，而 idx 1 / idx 6 仍活着，
+    //   误差无法相互抵消 —— 三格同时被消时才抵消（那正是 v1.0 那个盘恒绿的根因：cx 误差恰为 0）。
+    await openLlk(page);
+    await seedSession(page, {
+      cells: cellsWith([[idx(0, 1), 5], [idx(1, 0), 5], [idx(6, 4), 7], [idx(6, 5), 7]]),
+    });
+    const before = (await readCells(page)).filter(v => v > 0).length;
+    check('LL-30-前置', before === 4,
+      `块数=${before}（应 4；注入档被成对闸丢弃时会退回真实每日盘 = 48）`);
+
+    await clickCell(page, idx(0, 1));
+    await clickCell(page, idx(1, 0));
+
+    await expect.poll(() => readLineSvg(page).then(s => s?.mode ?? ''), { timeout: 3000 }).toBe('success');
+    const svg = await readLineSvg(page);
+
+    const pts = (svg?.raw ?? '').trim().split(/\s+/).filter(Boolean).map(s => s.split(',').map(Number));
+    // 正面锚：1 拐 = 3 个点。少于 3 多半是线压根没画出来（v1.0 那条"取不到基准就不画"的兜底），
+    // 那样下面的几何比对会在空数组上"全部通过"。
+    check('LL-30-三点', pts.length === 3,
+      `points="${svg?.raw}"（(0,1)-(0,0)-(1,0) 这条 1 拐路径应为 3 个点）`);
+
+    // 期望中心必须用**布局值**（offsetLeft/offsetTop）：
+    //   getBoundingClientRect 是 llkline.js 自己的公式（等于自证），而且会吃 transform: scale(.6)。
+    // .llk-board 是 position: relative ⇒ offsetParent 就是它，两者都是 padding box 口径。
+    const want = await page.evaluate(ids => {
+      const board = document.querySelector('.llk-board');
+      return ids.map(i => {
+        const el = board.querySelector(`[data-idx="${i}"]`);
+        return [el.offsetLeft + el.offsetWidth / 2, el.offsetTop + el.offsetHeight / 2];
+      });
+    }, [idx(0, 1), idx(0, 0), idx(1, 0)]);
+
+    // 按"最近中心"一一匹配，不假设点的先后（起点由点击顺序决定，路径反过来依然算对）
+    const dist = (a, b) => Math.hypot(a[0] - b[0], a[1] - b[1]);
+    let worst = 0;
+    const used = new Set();
+    for (const p of pts) {
+      let bestI = -1;
+      let bestD = Infinity;
+      want.forEach((w, i) => {
+        if (used.has(i)) return;
+        const d = dist(p, w);
+        if (d < bestD) { bestD = d; bestI = i; }
+      });
+      if (bestI >= 0) used.add(bestI);
+      worst = Math.max(worst, bestD);
+    }
+    check('LL-30-对齐', used.size === 3 && worst <= 2,
+      `最坏偏差 ${worst.toFixed(2)}px（应 ≤2；旧版参照格被消时按 0.2×格宽/步推歪，320 档约 10px、桌面约 11.8px）`);
+  });
 });

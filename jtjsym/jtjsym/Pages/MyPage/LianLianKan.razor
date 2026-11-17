@@ -627,9 +627,12 @@
     // ───────────────────────── 连接线（H-015） ─────────────────────────
 
     /// <summary>
-    /// 画一条连接线。<b>② 可连分支必须在 <c>game.Remove</c> 之前 await 这里</b> ——
-    /// <c>.llk-cell.is-gone</c> 的 <c>transform: scale(.6)</c> 会让
-    /// <c>getBoundingClientRect</c> 返回缩小后的矩形，先删再画会把线连到格子内侧 40%。
+    /// 画一条连接线。<b>② 可连分支必须在 <c>game.Remove</c> 之前 await 这里</b>。
+    /// <para>这条纪律仍然要守，但理由在 D-38 之后换了：旧理由是"<c>.is-gone</c> 的
+    /// <c>transform: scale(.6)</c> 会让 <c>getBoundingClientRect</c> 返回缩小矩形，先删再画会把线连到格子内侧 40%"——
+    /// 现在坐标是逐格实测中心、缩放不影响中心，所以线不会歪。真正的理由变成<b>语义</b>：
+    /// 这条线画的是"刚刚还存在的两张牌"，先 <c>Remove</c> 再画等于在给两个空格画线。
+    /// <b>别因为"中心准了"就把顺序调过来</b>，下一轮会有人这么问。</para>
     /// </summary>
     private async Task DrawLineAsync(LlkPath path, string mode)
     {

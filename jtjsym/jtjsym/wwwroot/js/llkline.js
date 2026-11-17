@@ -2,10 +2,16 @@
 // 一次 drawPath 画一层 SVG；新调用立刻 cancel 旧动画并移除旧节点（代际号 seq）。
 // e2e 的三个固定挂点：svg.llk-line-svg / polyline[data-llk-mode] / circle[data-llk-bend]。
 //
-// 两个必须记住的坑：
+// 三个必须记住的坑：
 //   ① 坐标一律用「实测格差」算 pitch，不写 cell + 6 —— 紧凑档（320）gap 是 4，写死会把线画歪。
+//      ⚠ D-38 起连 pitch 也不需要了：坐标改为**逐格实测**，见 ③。
 //   ② 外圈点要钳到盘边的 EDGE = 1px，不是 cell/2：320 档 c = -1 的 x 是 -25，
 //      钳到 cell/2 (=21) 会正好落在第 0 列中心，线穿进格子里，"从外面绕"的语义就没了。
+//   ③ **不要**再用参照格反推坐标系（D-38）。旧版拿 idx 0/1/6 当固定参照，
+//      而 face==0 的格永久带着 .is-gone 的 transform: scale(.6)，getBoundingClientRect()
+//      返回缩小 40% 的矩形 —— 参照格被消掉后整条线按 0.2 格/步推歪（桌面档最坏 82.6px）。
+//      正解是逐轴读一格：同一列所有格中心横坐标相同、同一行所有格中心纵坐标相同，
+//      而 scale 以格中心为原点 ⇒ 中心在任何缩放中间态都不动。
 
 const SVG_NS = 'http://www.w3.org/2000/svg';
 const STROKE = '#B3423C';
@@ -16,6 +22,8 @@ const HINT_LIFE = 1600;      // 与页面 ShowFeedbackAsync 的 FeedbackMs 同�
 const SUCCESS_DRAW = 340;    // 描线时长，也是 .llk-cell.is-gone 的 transition-delay
 const SUCCESS_HOLD = 160;
 const FADE = 200;
+const ROWS = 8;              // 镜像 LianliankanCore.Rows/Cols（JS 读不到 C# 常量，两处必须同时改）
+const COLS = 6;
 
 let seq = 0;
 let host = null;
@@ -46,31 +54,35 @@ export function drawPath(boardSelector, points, mode) {
   const my = ++seq;
   removeSvg();
 
-  const c0 = board.querySelector('[data-idx="0"]');
-  const c1 = board.querySelector('[data-idx="1"]');
-  const c6 = board.querySelector('[data-idx="6"]');      // 第 2 行第 1 格（Cols = 6）
-  if (!c0 || !c1 || !c6) return;
-
   const boardRect = board.getBoundingClientRect();
-  const r0 = c0.getBoundingClientRect();
-  if (r0.width <= 0 || boardRect.width <= 0) return;
-
-  const cell = r0.width;
-  const pitchX = c1.getBoundingClientRect().left - r0.left;
-  const pitchY = c6.getBoundingClientRect().top - r0.top;
+  if (boardRect.width <= 0) return;
   const boardW = boardRect.width;
   const boardH = boardRect.height;
 
-  // 格 (r,c) 中心，相对 board 左上角；盘外点会是负数
-  const cx = c => r0.left - boardRect.left + c * pitchX + cell / 2;
-  const cy = r => r0.top - boardRect.top + r * pitchY + cell / 2;
+  // D-38：坐标**逐格实测**，不再用 cell / pitch 反推。
+  //   已消除格带 .is-gone 的 transform: scale(.6)，getBoundingClientRect() 会缩到 60%：
+  //   拿 idx 0/1/6 当固定参照时，缩过的格会把整条线按 0.2 格/步推歪（桌面档最坏 82.6px）。
+  //   只依赖「同一列/同一行的格中心对齐」这条 grid 事实 —— 中心在任何缩放中间态都不动。
+  const centerOf = idx => {
+    const el = board.querySelector(`[data-idx="${idx}"]`);
+    if (!el) return null;
+    const r = el.getBoundingClientRect();
+    if (r.width <= 0) return null;
+    return [r.left - boardRect.left + r.width / 2, r.top - boardRect.top + r.height / 2];
+  };
+  const colX = c => centerOf(c)?.[0];            // 第 0 行第 c 格
+  const rowY = r => centerOf(r * COLS)?.[1];     // 第 r 行第 0 格
 
   const clamp = (v, hi) => Math.min(Math.max(v, EDGE), hi - EDGE);
 
-  const pts = points.map(p => [
-    Math.round(clamp(cx(p[1]), boardW)),
-    Math.round(clamp(cy(p[0]), boardH)),
-  ]);
+  const pts = [];
+  for (const p of points) {
+    const r = p[0], c = p[1];
+    const x = c >= 0 && c < COLS ? colX(c) : (c < 0 ? EDGE : boardW - EDGE);
+    const y = r >= 0 && r < ROWS ? rowY(r) : (r < 0 ? EDGE : boardH - EDGE);
+    if (x === undefined || y === undefined) return;   // 防御：格子拿不到就不画，别抛错
+    pts.push([Math.round(clamp(x, boardW)), Math.round(clamp(y, boardH))]);
+  }
 
   const svg = document.createElementNS(SVG_NS, 'svg');
   svg.setAttribute('class', 'llk-line-svg');
