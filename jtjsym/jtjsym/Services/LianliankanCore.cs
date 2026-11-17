@@ -365,6 +365,12 @@ public sealed class LianliankanCore
     /// 再按 <see cref="LlkPath.Turns"/> 分流（≤2 消除 / ≥3 画虚线 / null 抖动）。</para>
     /// <para>实现是 <b>0-1 BFS</b>（代价是拐数不是步数）：同向 <c>AddFirst</c>、转向 <c>AddLast</c>，
     /// 所以出队顺序按拐数单调不减。用普通步数 BFS 会"先到先得"，把拐更少但路更长的解漏掉。</para>
+    /// <para><b>但 0-1 BFS 只修好了跨层</b>（<c>t</c> 单调）：同层（<c>t</c> 相同）内部的展开顺序仍由入队方式决定，
+    /// "转向命中"可能抢在"同向命中"之前 —— D-37 之前这里首次踩到终点就 <c>return</c>，实测 16.6% 的对多报 1 拐，
+    /// 页面因此把 4.02% 的可连对判成「连不上」，最坏在最后一对时**卡死**。
+    /// 修法是<b>延迟返回</b>：同层找完、比出最省再返回（见循环内 <c>best</c> 的注释）。
+    /// 所以"最省"这条契约由 <c>U9</c>（递增 k 求真值）+ <c>U10</c>（4 块确定性盘）看守，
+    /// <c>U1</c> 只钉有界调用的存在性、<c>U2</c> 只钉路径自洽，两者都证明不了"最省"。</para>
     /// </summary>
     public LlkPath? TryFindPath(int r1, int c1, int r2, int c2, int maxTurns)
     {
@@ -427,6 +433,9 @@ public sealed class LianliankanCore
 
         var deque = new LinkedList<int>();
 
+        // D-37：命中终点后不立刻返回，先在**同一层**里比出最省的那条。
+        LlkPath? best = null;
+
         for (var d = 0; d < 4; d++)
         {
             var nr = r1 + Dr[d];
@@ -461,7 +470,17 @@ public sealed class LianliankanCore
                 var nr = r + Dr[nd];
                 var nc = c + Dc[nd];
                 if (OutOfRange(nr, nc)) continue;
-                if (nr == r2 && nc == c2) return Build(cur);
+                if (nr == r2 && nc == c2)
+                {
+                    // D-37：这里**不能**首次命中就返回。0-1 BFS 只保证出队时 t 非降，
+                    // 同层（t 相同）内部的展开顺序由入队方式决定（同向 AddFirst / 转向 AddLast），
+                    // 于是"转向命中（t+1）"可能抢在"同向命中（t）"之前 —— 多报 1 拐。
+                    // 页面按 Turns ≤ TurnLimit 分流，多报 1 就会把"两折可连"判成「连不上」。
+                    var cand = Build(cur);
+                    if (best is null || cand.Turns < best.Turns) best = cand;
+                    if (best.Turns <= t) return best;      // 本层已是理论下界：后续命中只会 ≥ t
+                    continue;                              // 否则把本层找完（同向命中的 delta=0 可能还在后面）
+                }
                 if (Blocked(nr, nc)) continue;
 
                 var si = StateIndex(nr, nc, nd);
@@ -473,7 +492,7 @@ public sealed class LianliankanCore
             }
         }
 
-        return null;
+        return best;
     }
 
     /// <summary>

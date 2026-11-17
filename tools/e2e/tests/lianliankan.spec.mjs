@@ -1149,4 +1149,28 @@ test.describe('LL 连连看', () => {
       () => getComputedStyle(document.querySelector('.llk-cell[data-face]')).backgroundImage,
     )).includes('faces.png'), '撤了 class 就该重新声明 sprite（图在缓存里，无需再等）');
   });
+
+  // ─────────────── D-37：两折可连被误判「连不上」（LL-29） ───────────────
+  test('LL-29 两折可连不再误判「连不上」（D-37）', async ({ page }) => {
+    // 4 块最小盘（《47》v2.0 §1.2）：face1 = (0,0)/(5,4) 就是"两折可连"的那一对，face2 只作障碍。
+    // 4 块 = 2 对，满足 seedSession 的成对闸（奇数档会被 TryFrom 静默丢弃 ⇒ 回落真实每日盘，本用例假绿）。
+    // 修复前：无界 TryFindPath 首次命中即返回、同层内多报 1 拐（2 → 3）⇒ 页面落 ③ 层 ⇒ 本用例必红。
+    await openLlk(page);
+    await seedSession(page, {
+      cells: cellsWith([[idx(0, 0), 1], [idx(0, 3), 2], [idx(4, 0), 2], [idx(5, 4), 1]]),
+    });
+    const before = (await readCells(page)).filter(v => v > 0).length;
+    check('LL-29-前置', before === 4,
+      `块数=${before}（应 4；注入档被成对闸丢弃时会退回真实每日盘 = 48）`);
+
+    await clickCell(page, idx(0, 0));
+    await clickCell(page, idx(5, 4));
+
+    // 修复前停在 ③ 层（不消除），poll 超时即红
+    await expect.poll(() => readCells(page).then(c => c[idx(0, 0)]), { timeout: 4000 }).toBe(0);
+    const line = await readLineSvg(page);
+    check('LL-29-实线', line?.mode === 'success', `data-llk-mode="${line?.mode}"（应 success）`);
+    check('LL-29-无虚线', (await page.locator('.llk-cell.is-hint').count()) === 0,
+      '不该出现提示虚线（③ 层的残留）');
+  });
 });

@@ -940,8 +940,9 @@
             return;
         }
 
-        // 一次搜索拿全部信息：最省拐 ≤2 ⟺ 存在 ≤2 拐的路（U1 差分钉住这条等价），
-        // 页面不再二次调 CanConnect。
+        // 一次搜索拿全部信息：int.MaxValue 返回的就是最省拐（U9 钉住"最省"本身）。
+        // ⚠ 这句话在 D-37 之前是假的：0-1 BFS 首次命中即返回，同层内可能多报 1 拐，
+        //   而 U1 钉的只是「有界调用的存在性」——它证明不了"最省"。
         var path = game.TryFindPath(r1, c1, r2, c2, int.MaxValue);
 
         if (path is not null && path.Turns <= LianliankanCore.TurnLimit)

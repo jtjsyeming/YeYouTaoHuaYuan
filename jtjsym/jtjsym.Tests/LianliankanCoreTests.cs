@@ -503,6 +503,82 @@ public class LianliankanCoreTests
         Assert.Contains(path.Points, p => !LianliankanCore.InBoard(p.R, p.C));
     }
 
+    /// <summary>
+    /// U9（D-37）：无界调用必须返回<b>最省拐</b>。真值用"递增 k 的首个非 null"独立求得
+    /// —— 有界调用的剪枝只砍 <c>&gt;k</c> 的路径、不砍 <c>≤k</c> 的，所以它判"存在性"是完备的，
+    /// 不会假阴性；它的问题只是返回值不最省，而这里只用它判 null。
+    /// <para><b>为什么不用 <c>Turns &lt;= 2 ⟺ CanConnect</c></b>：那只能抓住"真值 2 → 报 3"这一档（4.02%），
+    /// 抓不住"真值 1 → 报 2"（11.7%）—— 而 <see cref="LianliankanCore.TryFindPath"/> 的注释承诺的是
+    /// "最省拐"，弱判据等于继续容着半个谎。盘源复用 <see cref="LlkDifferentialProbe.Boards"/>，
+    /// 与 U1 同源：两处盘源一漂，两个差分就不是同一个命题。</para>
+    /// </summary>
+    [Fact]
+    public void TryFindPath_Unbounded_IsMinimalTurns_Differential()
+    {
+        long compared = 0;
+        var iter = 0;
+        foreach (var cells in LlkDifferentialProbe.Boards())
+        {
+            iter++;
+            var core = FromCells(cells);
+            for (var a = 0; a < LianliankanCore.CellCount; a++)
+            {
+                if (cells[a] == 0) continue;
+                for (var b = a + 1; b < LianliankanCore.CellCount; b++)
+                {
+                    if (cells[b] != cells[a]) continue;
+
+                    var want = -1;
+                    for (var k = 0; k <= 8 && want < 0; k++)
+                    {
+                        if (core.TryFindPath(a / 6, a % 6, b / 6, b % 6, k) is not null) want = k;
+                    }
+
+                    var got = core.TryFindPath(a / 6, a % 6, b / 6, b % 6, int.MaxValue)?.Turns ?? -1;
+                    compared++;
+                    Assert.True(want == got,
+                        $"iter={iter} 格 {a}({a / 6},{a % 6})↔{b}({b / 6},{b % 6}) face={cells[a]}：最省={want} 实得={got} 盘={string.Join(',', cells)}");
+                }
+            }
+        }
+        Assert.True(compared > 5000, $"对拍样本过少：{compared}");
+    }
+
+    /// <summary>
+    /// U10（D-37）：4 块确定性复现盘 —— 两折可连，但"首次命中即返回"会报 3 拐，页面据此落进
+    /// ③ 层「连不上：最多拐两次弯」。
+    /// <para>最后一行钉住本缺陷的<b>直接形态</b>：提示按钮走 <c>FindHintPair</c>（内部是
+    /// <see cref="LianliankanCore.CanConnect"/>，正确）说"这一对能连"，点下去走
+    /// <c>TryFindPath(int.MaxValue)</c>（多报）说"连不上"—— <b>同一个问题，两套判据</b>。
+    /// 修复后两者自然一致，故在此一并钉住，不额外抽公共层。</para>
+    /// </summary>
+    [Fact]
+    public void TryFindPath_TwoTurns_NotOverReported()
+    {
+        // 布局出自《47》v2.0 §1.2（v1.0 只给了三值结论、没给盘面，U10 一度不可执行）
+        var core = FromCells(new[]
+        {
+            1, 0, 0, 2, 0, 0,
+            0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0,
+            2, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 1, 0,
+            0, 0, 0, 0, 0, 0,
+            0, 0, 0, 0, 0, 0,
+        });
+
+        Assert.True(core.CanConnect(0, 0, 5, 4));                                    // 判定口径：通
+        Assert.Equal(2, core.TryFindPath(0, 0, 5, 4, LianliankanCore.TurnLimit)!.Turns);   // 有界：2（一直是对的）
+
+        var path = core.TryFindPath(0, 0, 5, 4, int.MaxValue);
+        Assert.NotNull(path);
+        Assert.Equal(2, path!.Turns);                                                // 修复前 = 3
+        Assert.Equal((0, 0), path.Points[0]);
+        Assert.Equal((5, 4), path.Points[^1]);
+        Assert.Equal((0, 0, 5, 4), core.FindHintPair()!.Value);                       // 提示与点击必须同一对
+    }
+
     /// <summary>U6：提示对 —— 可连、行优先确定性、<paramref name="excludeIdx"/> 生效、全堵返回 null。</summary>
     [Fact]
     public void FindHintPair_FirstConnectable_Deterministic()
