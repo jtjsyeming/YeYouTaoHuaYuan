@@ -265,8 +265,18 @@
         animation: llk-fade-in .25s ease-out;
     }
 
-    /* 两段时长必须与 shuffleOutMs / shuffleInMs 对齐：动画比 Task.Delay 短会露出"淡完停着"，
-       比它长则 class 被摘掉时淡到一半（reduced-motion 时两个 class 根本不会被加上，无需 @@media 兜底）。 */
+    /* H-017：FLIP 滑行期间把方块抬到同层最上面。格子在 DOM 里的先后决定同层绘制顺序，
+       往"索引更大"的方向飞时会被目标格盖住（实测 elementsFromPoint 命中的是目标格）。
+       ⚠ 别改成内联 style：class 由 llkshuffle.js 在 onfinish 摘掉，与组件状态无关。 */
+    .llk-cell.is-shuffle-fly {
+        z-index: 2;
+    }
+
+    /* 阶段 1 的 .22s 与 shuffleOutMs、阶段 2 的 .25s 与 shuffleInMs 对齐。
+       **阶段 2 的 class 生命周期现在由 max(shuffleInMs, ShuffleFlipMs) 决定**（H-017：FLIP 380ms 大于淡入 250ms），
+       所以 .25s 的动画会先播完、class 再活 130ms —— 无害（animation 默认不 forwards，播完就回到常态 opacity）。
+       **别为了"对齐"把 .25s 改成 .38s**：淡入会跟着变慢一倍。
+       （reduced-motion 时两个 class 根本不会被加上，无需 @@media 兜底。） */
     @@keyframes llk-fade-out {
         to { opacity: 0; }
     }
@@ -482,7 +492,7 @@
     /// <summary>重排动画阶段：0 = 无动画；1 = 旧盘淡出中；2 = 新盘淡入中。</summary>
     private int reshufflePhase;
 
-    /// <summary>true = 动画窗口内（约 470ms），棋盘输入一律吞掉。也是 <c>data-llk-reshuffling</c> 的来源。</summary>
+    /// <summary>true = 动画窗口内（约 600ms = 220 淡出 + max(250, 380)），棋盘输入一律吞掉。也是 <c>data-llk-reshuffling</c> 的来源。</summary>
     private bool isReshuffling;
 
     /// <summary>
@@ -495,6 +505,14 @@
 
     /// <summary>新盘淡入时长（ms），与 <see cref="shuffleOutMs"/> 同一套语义。</summary>
     private int shuffleInMs = 250;
+
+    /// <summary>
+    /// FLIP 滑行时长（ms）。<b>必须与 llkshuffle.js 的 FLIP_MS 一致</b>：
+    /// 它同时是阶段 2 的等待时长 —— 短了动画被截断，长了露出"滑完停着"。
+    /// <para>H-017 起阶段 2 的窗口 = <c>max(shuffleInMs, ShuffleFlipMs)</c> = 380ms（淡入 250 先播完，无害）；
+    /// 全程 220 + 380 = 600ms。</para>
+    /// </summary>
+    private const int ShuffleFlipMs = 380;
 
     /// <summary>读闸：偏好只读一次；读失败也不重试（降级为"有动画"，不阻塞恢复）。</summary>
     private bool motionPrefRead;
@@ -517,6 +535,7 @@
 
     private IJSObjectReference? visibilityModule;
     private IJSObjectReference? lineModule;
+    private IJSObjectReference? shuffleModule;
     private DotNetObjectReference<LianLianKan>? selfRef;
 
     private string FormatBest(int? v) => v is null ? LlkCopy.NoRecord : $"{v}";
@@ -853,13 +872,15 @@
             if (disposed) return;
         }
 
+        var before = game.Cells.ToArray();          // H-017：配对的唯一依据（同脸方块视觉全同）
         game.Reshuffle();
 
         if (shuffleInMs > 0)
         {
             reshufflePhase = 2;
             RenderSafe();                           // 换脸与换 class 落在同一次 render batch
-            await Task.Delay(shuffleInMs);
+            await PlayShuffleAsync(LianliankanCore.PairShuffleMoves(before, game.Cells));
+            await Task.Delay(Math.Max(shuffleInMs, ShuffleFlipMs));
             if (disposed) return;
         }
 
@@ -870,7 +891,27 @@
     }
 
     /// <summary>
-    /// <c>StateHasChanged</c> 的兜底版。动画把"渲染窗口"从 0 拉到 470ms，
+    /// 阶段 2 的 FLIP 滑入（H-017）。失败一律吞掉：动画缺席不影响对局（与 <see cref="DrawLineAsync"/> 同口径）。
+    /// </summary>
+    private async Task PlayShuffleAsync(IReadOnlyList<(int From, int To)> moves)
+    {
+        if (moves.Count == 0) return;               // Reshuffle 返回 false / 盘面没动 ⇒ 不调 JS
+
+        try
+        {
+            shuffleModule ??= await JS.InvokeAsync<IJSObjectReference>("import", "./js/llkshuffle.js");
+            // 传 int[][] 而不是元组：同一页 DrawLineAsync 已踩过（ValueTuple 的 Item1/Item2 是**字段**，
+            // System.Text.Json 默认只序列化属性 ⇒ 元组过来会变成 [{}]，JS 侧一次都不会动、也不报错）
+            var payload = moves.Select(m => new[] { m.From, m.To }).ToArray();
+            await shuffleModule.InvokeVoidAsync("playShuffle", ".llk-board", payload);
+        }
+        catch (JSException) { }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+    }
+
+    /// <summary>
+    /// <c>StateHasChanged</c> 的兜底版。动画把"渲染窗口"从 0 拉到 600ms（H-017），
     /// 期间 circuit 断开的概率比同步路径高，直接调会抛 <see cref="InvalidOperationException"/>
     /// （渲染队列已关；同 <c>RunClockAsync</c> 收的那条）。
     /// </summary>
@@ -1180,6 +1221,14 @@
         try
         {
             if (lineModule is not null) await lineModule.DisposeAsync();
+        }
+        catch (JSException) { }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+
+        try
+        {
+            if (shuffleModule is not null) await shuffleModule.DisposeAsync();
         }
         catch (JSException) { }
         catch (JSDisconnectedException) { }

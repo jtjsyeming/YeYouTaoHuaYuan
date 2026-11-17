@@ -1,4 +1,4 @@
-// H-014 / H-015 / D-31 / D-32 / H-016 / D-34：每日一关连连看（LL-01~LL-28）
+// H-014 / H-015 / D-31 / D-32 / H-016 / D-34 / D-37 / D-38 / H-017：每日一关连连看（LL-01~LL-31）
 // 存储键（全部带 jtjsym. 命名空间，且都收在 LlkKeys 里）：
 //   sessionStorage['jtjsym.llk.session']  = {v:1, issue, cells[48], elapsedSec}
 //   localStorage['jtjsym.llk.best']      = {"issue":20261112,"sec":87}   ← 单键单条，越小越好
@@ -16,11 +16,11 @@
 //   ⑤ **要点格子的用例必须用 openLlk，不能用 open**（H-015 起）：首访玩法遮罩 inset:0 会盖住棋盘，
 //      Playwright 每个 test 都是新 context ⇒ localStorage 恒空 ⇒ 遮罩必弹 ⇒ click 直接 3.5s 超时。
 //      openLlk 预置 "已看过" 再 reload。⚠ 别用 addInitScript（每次导航都重跑，会把 LL-15 冲掉）。
-//   ⑥ **重排动画（D-31）的窗口只有 220ms，判据有三条硬约束**：
+//   ⑥ **重排动画（D-31 两阶段 + H-017 FLIP）的窗口：淡出 220ms、阶段 2 380ms、全程 600ms**，判据有三条硬约束：
 //      a) "出现"必须单独成一步。单用 poll(busy 属性 === 0) 是无效锚点 —— 点击后 SignalR 往返期
 //         属性还没加上，poll 立刻返回、后续断言在动画里跑（零余量，D22-5 同款）。
 //      b) intervals 必须收紧。默认 [100,250,500,1000] 在 220ms 窗口上只剩 1~2 次采样。
-//      c) 抓"恢复即重排"时**不能走 seedSession**：它自带 sleep(1100)，远大于 470ms 全程，
+//      c) 抓"恢复即重排"时**不能走 seedSession**：它自带 sleep(1100)，远大于 600ms 全程，
 //         poll 到时动画早演完了。那条用例只能裸注入 + reload 后立刻 poll。
 //      另：第二击之后**不能**用 clickCell（它内含 sleep 220 = 整个淡出窗口），必须裸 click。
 import { expect, test } from '@playwright/test';
@@ -128,6 +128,38 @@ const TIGHT = { intervals: [10, 25, 25, 50, 100, 200], timeout: 5000 };
 const shuffleOutCount = page => page.locator('.llk-cell.is-shuffle-out').count();
 const shuffleInCount = page => page.locator('.llk-cell.is-shuffle-in').count();
 const busyCount = page => page.locator('.llk-board[data-llk-reshuffling]').count();
+
+/**
+ * 正在跑 **script 动画**（FLIP）的格（H-017），按 data-idx 升序。
+ *
+ * 必须排掉 CSSTransition / CSSAnimation：44 个 is-gone 格自带 88 个带 transform 的过渡，
+ * 「数有 transform 动画的格」在原地不动时也会数到 44 —— 那种判据在没实现 FLIP 时照样绿
+ * （《48》v2.0 §1.5 逐时刻实测）。脚本动画才能区分"方块真的在飞"。
+ */
+const flipDetail = page => page.evaluate(() => {
+  const isScript = a =>
+    typeof Animation !== 'undefined' && a instanceof Animation &&
+    !(typeof CSSTransition !== 'undefined' && a instanceof CSSTransition) &&
+    !(typeof CSSAnimation !== 'undefined' && a instanceof CSSAnimation);
+  const hasTransform = a =>
+    isScript(a) && (a.effect?.getKeyframes?.() ?? []).some(k => 'transform' in k);
+
+  return [...document.querySelectorAll('.llk-cell')]
+    .filter(el => el.getAnimations().some(hasTransform))
+    .map(el => {
+      const a = el.getAnimations().find(hasTransform);
+      const first = (a.effect?.getKeyframes?.() ?? [])[0]?.transform ?? '';
+      const m = /translate\(([-\d.]+)(?:px)?,\s*([-\d.]+)(?:px)?\)/.exec(first);
+      return {
+        idx: Number(el.dataset.idx),
+        dx: m ? Number(m[1]) : null,
+        dy: m ? Number(m[2]) : null,
+        fly: el.classList.contains('is-shuffle-fly'),
+        raw: first,
+      };
+    })
+    .sort((x, y) => x.idx - y.idx);
+});
 
 /**
  * 试着消掉任意一对同脸 —— 重排后的盘面取决于 Reshuffle 的确定性实现，用例不该假设它长什么样。
@@ -824,7 +856,7 @@ test.describe('LL 连连看', () => {
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => !!window.Blazor, null, { timeout: 15000 });
 
-    // ★ 这里绝不能 sleep：动画由恢复段在 reload 后立刻启动，470ms 全程就跑完了，
+    // ★ 这里绝不能 sleep：动画由恢复段在 reload 后立刻启动，600ms（220 + 380）全程就跑完了，
     //   睡过去就只能 poll 到"已经结束"，is-shuffle-out 一次都抓不到（§4.2 纪律 4）。
     await expect.poll(() => shuffleOutCount(page), TIGHT).toBeGreaterThan(0);
     check('LL-21-置忙', (await busyCount(page)) === 1,
@@ -1227,5 +1259,63 @@ test.describe('LL 连连看', () => {
     }
     check('LL-30-对齐', used.size === 3 && worst <= 2,
       `最坏偏差 ${worst.toFixed(2)}px（应 ≤2；旧版参照格被消时按 0.2×格宽/步推歪，320 档约 10px、桌面约 11.8px）`);
+  });
+
+  // ─────────────── H-017：重排「打乱重排」FLIP 动画（LL-31） ───────────────
+  test('LL-31 重排是「打乱重排」：两个方块从旧位置滑到新位置（H-017）', async ({ page }) => {
+    await openLlk(page);          // 先走一遍规则遮罩（写 rulesSeen），否则下面的 reload 会再弹一次
+
+    // 与 LL-21 同一张贴角死局档：4 块、过成对闸、HasAnyPair=False、Reshuffle 后 True。
+    // 重排后的盘必然"不是原样"（原样是死局，Reshuffle 不会停在那里），而 2×2 贴角 + 2 头像的
+    // 6 种排列里可连的 4 种都只差一次交换 ⇒ **恰好 2 个格在动**（373 个期号实测 min=max=2，不是概率）。
+    const dead = cellsWith([
+      [idx(0, 0), 1], [idx(0, 1), 2],
+      [idx(1, 0), 2], [idx(1, 1), 1],
+    ]);
+    const payload = JSON.stringify({ v: 1, issue: todayIssue(), cells: dead, elapsedSec: 5 });
+    await page.evaluate(([k, v]) => sessionStorage.setItem(k, v), [SK, payload]);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => !!window.Blazor, null, { timeout: 15000 });
+
+    // ★ 这里绝不能 sleep：动画由恢复段在 reload 后立刻启动，600ms 全程跑完就只能 poll 到"已结束"。
+    //   也不能用 seedSession（内含 sleep(1100)）—— 同 LL-21 纪律 (c)。
+    await expect.poll(() => busyCount(page), TIGHT).toBe(1);
+    await expect.poll(() => shuffleInCount(page), TIGHT).toBeGreaterThan(0);
+
+    let flying = [];
+    await expect.poll(async () => (flying = await flipDetail(page)).length, TIGHT).toBe(2);
+
+    check('LL-31-飞行class', flying.every(f => f.fly),
+      `is-shuffle-fly=${flying.map(f => f.fly).join(',')}（应全 true：z-index 抬层靠这个 class）`);
+    check('LL-31-位移非零', flying.every(f => f.dx !== null && (f.dx !== 0 || f.dy !== 0)),
+      `keyframes=${JSON.stringify(flying.map(f => f.raw))}（应为 translate(dx,dy) 且非零）`);
+
+    // 一次交换 ⇒ 两段位移互为相反数（容差 1px：Math.round 与亚像素）
+    const [m1, m2] = flying;
+    check('LL-31-互为相反数', Math.abs(m1.dx + m2.dx) <= 1 && Math.abs(m1.dy + m2.dy) <= 1,
+      `位移1=${m1.dx},${m1.dy} 位移2=${m2.dx},${m2.dy}（应互为相反数）`);
+
+    // |位移| 必须等于这两格的**中心距**：位移的定义就是"旧中心 − 新中心"，两格互换后
+    // 正好等于互相之间的距离。中心用布局值算（offsetLeft/offsetWidth 不吃 transform）。
+    const centers = await page.evaluate(ids => {
+      const board = document.querySelector('.llk-board');
+      return ids.map(i => {
+        const el = board.querySelector(`[data-idx="${i}"]`);
+        return [el.offsetLeft + el.offsetWidth / 2, el.offsetTop + el.offsetHeight / 2];
+      });
+    }, [m1.idx, m2.idx]);
+    const gap = Math.hypot(centers[0][0] - centers[1][0], centers[0][1] - centers[1][1]);
+    const len = Math.hypot(m1.dx, m1.dy);
+    check('LL-31-位移等于中心距', Math.abs(len - gap) <= 1.5,
+      `|位移|=${len.toFixed(2)}px，两格中心距=${gap.toFixed(2)}px（应相等）`);
+
+    await expect.poll(() => busyCount(page), TIGHT).toBe(0);
+    check('LL-31-清场', (await shuffleOutCount(page)) === 0 && (await shuffleInCount(page)) === 0,
+      `结束后两个动画 class 都不该留在 DOM（out=${await shuffleOutCount(page)} in=${await shuffleInCount(page)}）`);
+    // onfinish 真的跑了（class 由 JS 摘，不靠 React/Blazor 重渲染）
+    await expect.poll(() => page.locator('.llk-cell.is-shuffle-fly').count(), TIGHT).toBe(0);
+
+    // 继承 LL-21 的"动画后可玩"
+    check('LL-31-可消', await eliminateAnyPair(page), '重排后两两试过都没消掉（说明仍是死局）');
   });
 });

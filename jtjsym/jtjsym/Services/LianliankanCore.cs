@@ -575,6 +575,42 @@ public sealed class LianliankanCore
         return HasAnyPair();
     }
 
+    /// <summary>
+    /// 把「重排前 / 重排后」两份盘面翻译成一次置换（H-017）。
+    /// <para><b>纯函数、不进字段</b>：少一条"未重排时必须为空"的不变式，也就能用固定输入断言固定输出
+    /// （<see cref="Reshuffle"/> 用 <c>Rng.ForIssue</c>，期号一变置换就变，拿它当断言输入不可复现）。</para>
+    /// <para><b>同脸配对</b>：同脸方块视觉全同，配对顺序无所谓，但必须先认「同位」——
+    /// 重排前后都在同一格 = 没动。少了这一步，同一张脸留在原格也会被判成一次移动（平移 0px 的空动画）。</para>
+    /// <para><b>多重集被破坏时返回空表</b>（不是重排、是别的东西改了盘）：宁可不动，也不要画错。</para>
+    /// </summary>
+    public static IReadOnlyList<(int From, int To)> PairShuffleMoves(
+        IReadOnlyList<int> before, IReadOnlyList<int> after)
+    {
+        if (before.Count != CellCount || after.Count != CellCount) return Array.Empty<(int, int)>();
+
+        var olds = new Dictionary<int, List<int>>();
+        var news = new Dictionary<int, List<int>>();
+        for (var i = 0; i < CellCount; i++)
+        {
+            if (before[i] > 0) { if (!olds.TryGetValue(before[i], out var l)) olds[before[i]] = l = new(); l.Add(i); }
+            if (after[i] > 0) { if (!news.TryGetValue(after[i], out var m)) news[after[i]] = m = new(); m.Add(i); }
+        }
+
+        var moves = new List<(int From, int To)>();
+        foreach (var (face, newIdx) in news)
+        {
+            if (!olds.TryGetValue(face, out var oldIdx) || oldIdx.Count != newIdx.Count)
+                return Array.Empty<(int, int)>();               // 多重集不一致
+
+            var newSet = new HashSet<int>(newIdx);
+            var oldSet = new HashSet<int>(oldIdx);
+            var restOld = oldIdx.Where(i => !newSet.Contains(i)).ToList();
+            var restNew = newIdx.Where(i => !oldSet.Contains(i)).ToList();
+            for (var k = 0; k < restOld.Count; k++) moves.Add((restOld[k], restNew[k]));
+        }
+        return moves;
+    }
+
     // ───────────────────────── 快照 ─────────────────────────
 
     public LianliankanSnapshot ToSnapshot(int elapsedSec) => new()

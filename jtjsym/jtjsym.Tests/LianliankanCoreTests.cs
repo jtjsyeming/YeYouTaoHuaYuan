@@ -661,4 +661,105 @@ public class LianliankanCoreTests
         Assert.False(cleared.UseHint());                             // 已通关：不扣
         Assert.Equal(LianliankanCore.HintTotal, cleared.HintsLeft);
     }
+
+    // ─────────────────── 重排置换（H-017，U11-1 ~ U11-6） ───────────────────
+
+    /// <summary>按 idx 造一份盘（其余全 0）。<c>PairShuffleMoves</c> 只吃数组，不需要 Core。</summary>
+    private static int[] CellsOf(params (int Idx, int Face)[] tiles)
+    {
+        var cells = new int[LianliankanCore.CellCount];
+        foreach (var (i, face) in tiles) cells[i] = face;
+        return cells;
+    }
+
+    /// <summary>
+    /// U11-1：一次 2-循环（两格不同脸互换）⇒ 恰好两段映射，且互为逆。
+    /// <para>「2」对 4 块死局盘是<b>可证的</b>（《48》v2.0 §4.1 末注）：2×2 贴角 + 2 头像共 6 种排列，
+    /// 其中"原样"与"对角互换"是死局、<c>Reshuffle</c> 不会停在那里，剩下 4 种都只差一次交换。</para>
+    /// </summary>
+    [Fact]
+    public void PairShuffleMoves_SingleSwap_IsTwoInverseMoves()
+    {
+        var before = CellsOf((0, 1), (1, 2), (6, 2), (7, 1));
+        var after = CellsOf((0, 2), (1, 1), (6, 2), (7, 1));         // 只交换 0 与 1
+
+        var moves = LianliankanCore.PairShuffleMoves(before, after);
+
+        Assert.Equal(2, moves.Count);
+        Assert.Equal(moves[0].From, moves[1].To);
+        Assert.Equal(moves[0].To, moves[1].From);
+    }
+
+    /// <summary>U11-2：重排前后完全一致 ⇒ 空表（同位不动，不产生"平移 0px"的空动画）。</summary>
+    [Fact]
+    public void PairShuffleMoves_Identical_IsEmpty()
+    {
+        var board = CellsOf((0, 1), (1, 2), (6, 2), (7, 1));
+
+        Assert.Empty(LianliankanCore.PairShuffleMoves(board, board.ToArray()));
+    }
+
+    /// <summary>U11-3：同脸 4 张全换位 ⇒ 双射（From 互异、To 互异、From ∩ To 为空）。</summary>
+    [Fact]
+    public void PairShuffleMoves_SameFace_IsBijective()
+    {
+        var before = CellsOf((0, 3), (1, 3), (6, 3), (7, 3));
+        var after = CellsOf((2, 3), (3, 3), (8, 3), (9, 3));
+
+        var moves = LianliankanCore.PairShuffleMoves(before, after);
+
+        Assert.Equal(4, moves.Count);
+        Assert.Equal(4, moves.Select(m => m.From).Distinct().Count());
+        Assert.Equal(4, moves.Select(m => m.To).Distinct().Count());
+        Assert.Empty(moves.Select(m => m.From).Intersect(moves.Select(m => m.To)));
+    }
+
+    /// <summary>
+    /// U11-4：<c>ForcePair</c> 第二分支的形状 —— (0,1) 腾空、(4,5) 填上同一张脸。
+    /// <para>腾空的格不出现在 <c>after</c> 里，所以不进 <c>To</c>；被填的格不出现在 <c>before</c> 里，
+    /// 所以不进 <c>From</c>。总共仍是 2 段映射。</para>
+    /// </summary>
+    [Fact]
+    public void PairShuffleMoves_ForcePairMovedToEmpty_LeavesVacatedCellsOut()
+    {
+        var before = CellsOf((0, 5), (1, 5), (2, 7), (3, 7));
+        var after = CellsOf((4, 5), (5, 5), (2, 7), (3, 7));          // (0,1) 腾空
+
+        var moves = LianliankanCore.PairShuffleMoves(before, after);
+
+        Assert.Equal(2, moves.Count);
+        Assert.DoesNotContain(0, moves.Select(m => m.To));            // 腾空的格不在 after ⇒ 不是去处
+        Assert.DoesNotContain(1, moves.Select(m => m.To));
+        Assert.DoesNotContain(4, moves.Select(m => m.From));          // 被填的格不在 before ⇒ 不是来源
+        Assert.DoesNotContain(5, moves.Select(m => m.From));
+    }
+
+    /// <summary>U11-5：多重集被破坏（某脸少一张）⇒ 空表，不抛异常。宁可不动，也不画错。</summary>
+    [Fact]
+    public void PairShuffleMoves_BrokenMultiset_IsEmpty()
+    {
+        var before = CellsOf((0, 5), (1, 5), (2, 7), (3, 7));
+        var after = CellsOf((4, 5), (5, 5), (2, 7));                  // 7 只剩一张
+
+        Assert.Empty(LianliankanCore.PairShuffleMoves(before, after));
+    }
+
+    /// <summary>
+    /// U11-6：回放 —— 把 <c>moves</c> 当置换应用到 <c>before</c>，逐格等于 <c>after</c>。
+    /// <para>这条才是"双射性"的真正判据：前五条都只验了局部形状。</para>
+    /// </summary>
+    [Fact]
+    public void PairShuffleMoves_Replay_RestoresAfter()
+    {
+        var before = CellsOf((0, 1), (1, 2), (2, 2), (3, 1), (6, 3), (7, 3));
+        var after = CellsOf((1, 1), (2, 2), (3, 2), (6, 1), (7, 3), (0, 3));
+
+        var moves = LianliankanCore.PairShuffleMoves(before, after);
+        Assert.NotEmpty(moves);
+
+        var replayed = before.ToArray();
+        foreach (var (from, to) in moves) replayed[to] = before[from];   // 逐个搬：from 互异才成立
+
+        Assert.Equal(after, replayed);
+    }
 }
