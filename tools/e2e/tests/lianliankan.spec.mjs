@@ -1,4 +1,4 @@
-// H-014 / H-015 / D-31 / D-32 / H-016 / D-34 / D-37 / D-38 / H-017 / P-077：每日一关连连看（LL-01~LL-32）
+// H-014 / H-015 / D-31 / D-32 / H-016 / D-33 / D-34 / D-37 / D-38 / H-017 / D-39 / P-077：每日一关连连看（LL-01~LL-37）
 // 存储键（全部带 jtjsym. 命名空间，且都收在 LlkKeys 里）：
 //   sessionStorage['jtjsym.llk.session']  = {v:1, issue, cells[48], elapsedSec}
 //   localStorage['jtjsym.llk.best']      = {"issue":20261112,"sec":87}   ← 单键单条，越小越好
@@ -24,6 +24,7 @@
 //         poll 到时动画早演完了。那条用例只能裸注入 + reload 后立刻 poll。
 //      另：第二击之后**不能**用 clickCell（它内含 sleep 220 = 整个淡出窗口），必须裸 click。
 import { expect, test } from '@playwright/test';
+import fs from 'node:fs';
 import { check, checkEq, open, openLlk, sleep, trackErrors } from './helpers.mjs';
 
 const SK = 'jtjsym.llk.session';
@@ -1021,8 +1022,11 @@ test.describe('LL 连连看', () => {
     check('LL-24-牌面可见', card.hasCard && card.display === 'flex',
       `兜底字牌应 display:flex（实际 hasCard=${card.hasCard} display="${card.display}"）`);
     check('LL-24-两字标', card.text.length === 2, `字牌文案="${card.text}"（应恰好两字）`);
-    check('LL-24-sprite已关', card.bgImage === 'none',
-      `降级后格子不该再声明 sprite（backgroundImage="${card.bgImage}"）`);
+    check('LL-24-sprite已关', !card.bgImage.includes('faces.png') && card.bgImage.includes('data:image/svg+xml'),
+      // D-39 起降级态**不再**把 background-image 清成 none，而是收成"只剩字牌图"的一层
+      //（理由见 LianLianKan.razor 里 .llk-board.llk-no-sprite 的注释）。判据因此从"等于 none"
+      // 改成"不声明 sprite 且声明了字牌图" —— 严格说更紧了：前者任何非 sprite 值都能过。
+      `降级后应只剩字牌层（backgroundImage="${card.bgImage.slice(0, 56)}…"）`);
     check('LL-24-米纸底', card.bgColor === 'rgb(243, 236, 225)',
       `格子底色=${card.bgColor}（应 #F3ECE1，与字牌同值）`);
     // 固定深字 12.07:1 —— 是这条降级存在的唯一理由（族色底 + 白字有 14/24 格不达标）
@@ -1317,6 +1321,127 @@ test.describe('LL 连连看', () => {
 
     // 继承 LL-21 的"动画后可玩"
     check('LL-31-可消', await eliminateAnyPair(page), '重排后两两试过都没消掉（说明仍是死局）');
+  });
+
+  // ═══════════════ D-39：手机端第三轮「图标仍不可见」═══
+  // 这一轮不再去猜"图有没有被画出来"，改问两件能一次量清的事：
+  //   ① 格子有没有**地方**画（比例塌陷 → 2px，sprite 与字牌同时不可见）；
+  //   ② 图没画出来时，有没有**不依赖 JS/暗化**的东西顶上来（字牌图 + 多层叠序）。
+
+  // ─────────────── 暗化 opt-out 的两条独立声明（LL-33 / LL-34） ───────────────
+  // 为什么拆两条而不是一条"meta 在 + computed 含 only light"：两种失效方式（只删 meta / 只删
+  // :root 规则）在单条用例里会**互相掩盖** —— 双保险的意义就是任一还在都能过，但"有人删了一条"
+  // 这个事实该有人看得见。
+  test('LL-33 页头声明 color-scheme=only light（D-39 / P3）', async ({ page }) => {
+    await open(page, '/lianliankan', 700);
+    const content = await page.evaluate(() => {
+      const m = document.querySelector('meta[name="color-scheme"]');
+      return m ? (m.getAttribute('content') || '').trim().toLowerCase() : null;
+    });
+    // 用 trim + 小写比较，不用 `content*="only light"`：属性顺序与空白都可能变，
+    // 而且选择器里再写一遍大小写等于把同一个假设写两处。
+    check('LL-33', content === 'only light', `content="${content}"（应 only light）`);
+  });
+
+  test('LL-34 :root 的 color-scheme 被解析成 light only（D-39 / P3）', async ({ page }) => {
+    await open(page, '/lianliankan', 700);
+    const cs = await page.evaluate(() => getComputedStyle(document.documentElement).colorScheme);
+    // ⚠ 期望值是 **`light only`**，不是 `only light`：Chromium 156 / Firefox 157 实测都按规范
+    //   序列化成前者。写成 `only light` 会两个浏览器恒假（《50》v1.0 的判据就栽在这）。
+    check('LL-34', cs === 'light only', `computed colorScheme="${cs}"（应 light only）`);
+  });
+
+  // ─────────────── 比例零依赖（LL-35 / LL-36） ───────────────
+  test('LL-35 320×568 下格子仍是 1:1 且不小于 40px（D-39 / P1）', async ({ browser }) => {
+    // ⚠ 这条在 CI 上**不可能红**：Chromium 156 / Firefox 157 都支持 aspect-ratio，走的是
+    //   @supports 覆盖分支 —— 把 padding-bottom 兜底整个删掉，它照样绿。它守的是"新内核分支
+    //   没被兜底改动弄坏"（防止有人把兜底写错、连带把 aspect-ratio 那条也弄坏）。
+    //   真正守"有人删了兜底"的是 LL-36 的静态判据。**别因为"删了不红"就把它删掉** ——
+    //   那正是《49》LL-32 的教训（拆一层不红 ≠ 用例没价值）。
+    const ctx = await browser.newContext({ viewport: { width: 320, height: 568 }, isMobile: true, hasTouch: true });
+    const mp = await ctx.newPage();
+    await open(mp, '/lianliankan', 1400);
+    const m = await mp.evaluate(() => {
+      const r = document.querySelector('.llk-cell').getBoundingClientRect();
+      return { w: r.width, h: r.height };
+    });
+    await ctx.close();
+
+    const ratio = m.h === 0 ? Infinity : m.w / m.h;
+    check('LL-35-比例', ratio >= 0.98 && ratio <= 1.02,
+      `${m.w.toFixed(2)}×${m.h.toFixed(2)}，比例 ${ratio.toFixed(3)}（应 1 ±0.02）`);
+    check('LL-35-高度', m.h >= 40,
+      `格高 ${m.h.toFixed(2)}px（应 ≥40；比例塌陷时这里读到 2.0，整盘变成 58px 扁带）`);
+  });
+
+  test('LL-36 三处关键声明还在（D-39 / P1+P2，静态）', async () => {
+    // 静态判据，不开浏览器：读产品源码。LL-35 守不住"兜底被删"（见它的注释），这条才是守卫。
+    const raw = fs.readFileSync(
+      new URL('../../../jtjsym/jtjsym/Pages/MyPage/LianLianKan.razor', import.meta.url), 'utf8');
+    // ★ 先剥掉 CSS 注释再判。教训来自本用例的红检：注释里写着 `var(--fb, none)` 与 "600% 400%"，
+    //   于是把真声明里的兜底删掉，判据照样命中注释、照样绿 —— **判据被注释满足**，等于没判。
+    //   这类"守卫看的不是它以为的东西"比判据缺失更难发现（《50》§4.2 红检第一次跑出来的）。
+    const src = raw.replace(/\/\*[\s\S]*?\*\//g, '');
+
+    check('LL-36-比例兜底', /padding-bottom:\s*100%/.test(src),
+      'P1 的比例兜底被删了 —— 不支持 aspect-ratio 的内核上格高会塌成上下 border 的 2px');
+    check('LL-36-var兜底', (src.match(/var\(--fb,\s*none\)/g) || []).length === 2,
+      '`var(--fb, none)` 应出现 **2** 次（.llk-cell 与 .llk-no-sprite 各一）；少一处就等于让没有 --fb 的格子把整条 background-image 计算成 none，连 sprite 一起丢');
+    check('LL-36-两组尺寸', /background-size:\s*600% 400%,\s*100% 100%/.test(src),
+      'size 退成一组时浏览器按列表循环复用第一组，字牌层拿到 600% 400% 被放大 6 倍');
+  });
+
+  // ─────────────── 字牌图 + 多层叠序（LL-37） ───────────────
+  test('LL-37 两层背景：sprite 在上、字牌图在下；拦图降级后只剩字牌层（D-39 / P2）', async ({ page }) => {
+    // ⚠ 与《50》§4.1 的原文有一处**有意的差异**：原文把"backgroundSize 两组（逗号数 1）"写在
+    //   "拦掉 faces.png 之后"量。实测那样量不到 —— 拦图会让 JS 走进 fallback、给棋盘加
+    //   .llk-no-sprite，而那条规则（提前降级的显式开关）本来就把两层收成一层，size 只剩一组。
+    //   所以这里拆成两段：**正常态**判两层 + 两组 size；**降级态**判"只剩字牌层"。
+    await openLlk(page);
+
+    const two = await page.evaluate(() => {
+      const c = document.querySelector('.llk-cell[data-idx="0"]');
+      const cs = getComputedStyle(c);
+      return {
+        bg: cs.backgroundImage,
+        size: cs.backgroundSize,
+        pos: cs.backgroundPosition,
+        fb: cs.getPropertyValue('--fb').trim(),
+        cls: c.className,
+      };
+    });
+    check('LL-37-两层', two.bg.includes('faces.png') && two.bg.includes('data:image/svg+xml'),
+      `正常态应同时声明 sprite 与字牌图（实际 "${two.bg.slice(0, 70)}…"）`);
+    // ⚠ 判据是**第二层的值必须是 100% 100%**，不是"逗号数 = 1"。
+    //   《50》§4.1 原文写的是后者，而它取不到那件事：background-size 的 computed 值是**每层一个**，
+    //   只声明一组时浏览器按列表循环复用 ⇒ 同样序列化成 "600% 400%, 600% 400%"，逗号照样 1 个。
+    //   （红检实测：把声明改成一组，逗号数判据仍然绿 —— 那正是 §1.6 记录的陷阱本身。）
+    check('LL-37-两组尺寸', two.size === '600% 400%, 100% 100%',
+      `backgroundSize="${two.size}"（第二层必须是 100% 100%；复用了第一组就是字牌被放大 6 倍）`);
+    // 同上：position 漏一组时第二层会拿到第一层的 calc，字牌被推到格子外面去。
+    check('LL-37-两组定位', /,\s*0px 0px$/.test(two.pos),
+      `backgroundPosition="${two.pos}"（第二层应固定在 0px 0px）`);
+    // 正面锚：`--fb` 真的挂在这一格上了。否则上面那句可能只是"第二个 url 恰好是别的什么"。
+    check('LL-37-字牌变量已挂', two.fb.includes('data:image/svg+xml') && two.fb.length > 100,
+      `--fb 长度 ${two.fb.length}（应 >100 且含 data:image/svg+xml；空值等于字牌层没有内容）`);
+    check('LL-37-字牌类', /\bllk-face-\d+\b/.test(two.cls),
+      `格子类里应有 llk-face-N（实际 "${two.cls}"）`);
+
+    // 降级段：拦掉 sprite ⇒ JS 判 fallback ⇒ .llk-no-sprite 把两层收成一层字牌图。
+    await page.route('**/Images/llk/faces.png', r => r.abort().catch(() => {}));
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await expect.poll(
+      () => page.getAttribute('.llk-board', 'data-llk-sprite'),
+      { timeout: 12_000, intervals: [100, 200, 500, 1000] },
+    ).toBe('fallback');
+
+    const one = await page.evaluate(() => {
+      const cs = getComputedStyle(document.querySelector('.llk-cell[data-idx="0"]'));
+      return { bg: cs.backgroundImage, size: cs.backgroundSize };
+    });
+    check('LL-37-只剩字牌层', !one.bg.includes('faces.png') && one.bg.includes('data:image/svg+xml'),
+      `降级后应只剩字牌图（实际 "${one.bg.slice(0, 70)}…"）；若为 none 说明改回了 background-image: none`);
+    check('LL-37-字牌铺满', one.size === '100% 100%', `降级后 backgroundSize="${one.size}"（应 100% 100%）`);
   });
 });
 

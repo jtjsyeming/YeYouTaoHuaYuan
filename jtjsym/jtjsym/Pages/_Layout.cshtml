@@ -7,6 +7,11 @@
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    @* D-39 / P3：给遵守协议的 Android 内核（Auto Dark）的一次 opt-out 声明。
+       ⚠ 它不是修复，也**不要**写"加后应为亮色设计稿"这种可验证预期：桌面 --force-dark-mode 与
+         DevTools「模拟自动深色」两条途径实测都不遵守它（加与不加，页面截图 MD5 逐字节相同）。
+         真机复测时它的价值是零成本的效果指示器 —— 一旦生效，?diag=1 里的 autoDark 会变 false。 *@
+    <meta name="color-scheme" content="only light" />
     <base href="~/" />
     <link rel="stylesheet" href="css/bootstrap/bootstrap.min.css" />
     <link href="css/site.css" rel="stylesheet" asp-append-version="true" />
@@ -28,5 +33,108 @@
     </div>
 
     <script src="_framework/blazor.server.js"></script>
+
+    @* ───────── D-39 / P0：真机诊断条（只在 ?diag=1 时出现，长期保留） ─────────
+       三轮（D-33 / D-34 / D-39 v1.0）失败的共同根因不是技术，是**每一轮都在猜手机上的现场状态**。
+       这条底栏让用户截一张图就一次问清：模块跑没跑 / 支不支持 aspect-ratio / 格子塌没塌 /
+       图有没有画 / 有没有被暗化。它不看 D-39 是否修好，看的是"下次再报同类问题能不能一次拿全现场"。
+
+       ⚠ 三条实现约束，改之前先看：
+       ① **必须是内联 ES5，不能塞进 llkvisibility.js**。那个模块用了 `??`（Chrome 80+），
+          而最可能的现场恰恰是"内核太老 ⇒ 整个模块根本没执行"。诊断与被诊断共用同一个失败模式
+          等于没有诊断 —— 所以这里只有 var / function / IIFE，没有箭头函数、模板字符串、?? / ?.。
+       ② **必须放在 _Layout，不能写在组件里**。Blazor Server 站内导航时插入 DOM 的 <script>
+          **不会执行**（浏览器只执行解析期的 script），而组件的 <style> 会生效；两者行为不一样，
+          很容易以为"写在组件里也行"。放这里则直连与站内导航都只加载一次，再用轮询等棋盘出现。
+       ③ 只在带 `diag=1` 时轮询：正常访问第一行就 return，零成本。 *@
+    <script>
+        // D-39 / P0：真机诊断条。ES5 only —— 故意的，理由见上面 ①。
+        (function () {
+            if (!/[?&]diag=1/.test(location.search)) return;
+
+            function sup(prop, val) {
+                try { return !!(window.CSS && CSS.supports && CSS.supports(prop, val)); }
+                catch (e) { return false; }
+            }
+
+            // 官方探针（Chrome for Developers《自动深色主题》"正在检测自动深色主题"）。
+            // 为什么普通颜色读不到、系统色 `canvas` 读得到：暗化改的是**系统色映射表**，在 computed
+            // 阶段就变了；普通颜色是在**绘制层**被反转的，computed 值恒为原值（实测 body 恒 rgb(255,255,255)）。
+            function autoDark() {
+                var d = document.createElement('div');
+                d.style.display = 'none';
+                d.style.backgroundColor = 'canvas';
+                d.style.colorScheme = 'light';
+                document.body.appendChild(d);
+                var v = getComputedStyle(d).backgroundColor !== 'rgb(255, 255, 255)';
+                document.body.removeChild(d);
+                return v;
+            }
+
+            function run() {
+                var cell = document.querySelector('.llk-cell');
+                var board = document.querySelector('.llk-board');
+                if (!cell || !board) return;
+
+                var c = cell.getBoundingClientRect();
+                var bh = board.getBoundingClientRect().height;
+
+                // 资源条目：`name` 是绝对 URL，getEntriesByName 精确匹配（相对路径恒返回空）。
+                // 只判 responseStatus === 200 —— 被 abort 的请求**条目照样在**，只是状态为 0。
+                var rt = [];
+                try {
+                    rt = performance.getEntriesByName(new URL('/Images/llk/faces.png', location.origin).href) || [];
+                } catch (e) { rt = []; }
+                var ok = 0;
+                for (var i = 0; i < rt.length; i++) {
+                    var st = rt[i].responseStatus;
+                    if (st === undefined || st === 200) ok++;
+                }
+
+                var sprite = (board.getAttribute('data-llk-sprite') || '-')
+                    + '/' + (board.getAttribute('data-llk-sprite-src') || '-');
+                // fb = 字牌图那一层挂上没有（D-39 新增的机制）。空 = `--fb` 没落位，
+                // 那种情况下 background-image 会整条失效 —— 与"图没画"长得一样，必须分开。
+                var fb = '';
+                try { fb = getComputedStyle(cell).getPropertyValue('--fb').indexOf('data:image/svg+xml') >= 0; }
+                catch (e) { fb = 'err'; }
+
+                var kv = [
+                    ['UA', navigator.userAgent],
+                    ['spriteModule', typeof window.__jtjsymLlkVisReady],
+                    ['aspect-ratio', sup('aspect-ratio', '1')],
+                    ['calc-bgpos', sup('background-position', 'calc(1 * 20%) 0')],
+                    ['cell', c.width.toFixed(1) + '×' + c.height.toFixed(1)],
+                    ['board', bh.toFixed(1)],
+                    ['sprite', sprite],
+                    ['fb', fb],
+                    ['autoDark', autoDark()],
+                    ['rt', rt.length + '#' + ok]
+                ];
+
+                var out = [];
+                for (var j = 0; j < kv.length; j++) out.push(kv[j][0] + '=' + kv[j][1]);
+
+                var el = document.createElement('pre');
+                el.id = 'llk-diag';
+                el.style.cssText = 'position:fixed;left:0;right:0;bottom:0;z-index:9999;margin:0;padding:6px;'
+                    + 'background:#000;color:#0f0;font:11px/1.35 monospace;white-space:pre-wrap';
+                el.textContent = 'H5 diag | ' + out.join(' | ');
+                document.body.appendChild(el);
+            }
+
+            // SPA 导航下棋盘是后插入的 ⇒ 轮询等它出现，出现后再等一拍 interop
+            // （探测在 OnAfterRender 之后才跑，早读会读到 pending）。
+            var tries = 0;
+            var timer = setInterval(function () {
+                if (document.querySelector('.llk-board')) {
+                    clearInterval(timer);
+                    setTimeout(run, 1200);
+                } else if (++tries > 40) {
+                    clearInterval(timer);      // 20s 还没见到棋盘 ⇒ 当前不是连连看页，静默退出
+                }
+            }, 500);
+        })();
+    </script>
 </body>
 </html>

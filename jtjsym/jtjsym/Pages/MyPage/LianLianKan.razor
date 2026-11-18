@@ -1,5 +1,6 @@
 ﻿@page "/lianliankan"
 @using System.Text.Json
+@using Microsoft.AspNetCore.Components
 @using Microsoft.FluentUI.AspNetCore.Components
 @using jtjsym.Services
 @inject IJSRuntime JS
@@ -72,7 +73,7 @@
 
                 @* data-face 只在非空格上出现：它是"这张脸还在不在盘上"的唯一判据，
                    写成 data-face="0" 会让 LL-12 的 {1..24} 集合断言多出一个 0 *@
-                <div class="llk-cell @CellClass(idx, face)"
+                <div class="llk-cell @CellClass(idx, face) @FaceClass(showFace)"
                      role="gridcell"
                      data-idx="@idx"
                      data-face="@(face > 0 ? face.ToString() : null)"
@@ -183,21 +184,55 @@
 
     /* 头像走 sprite：1 次请求 + 1 次 decode（vs 24 个文件 24 次），且 background-position 是纯 CSS，
        预渲染阶段就定好了，不需要 JS 参与（对 LL-01「预渲染 HTML 已含 48 格」友好）。
-       背景色兜底：图挂了格子也不塌成透明。 */
+       D-39 起这里是**两层**：第一层 sprite、第二层字牌图 —— 叠序本身就是降级机制，不需要 JS 参与判断。
+       背景色兜底：两层都不画时格子也不塌成透明。 */
     .llk-cell {
         position: relative;
-        aspect-ratio: 1;
+        /* D-39 / P1：格子比例零依赖。无条件先给一个由 padding 撑出来的正方形，新内核再用
+           @@supports 覆盖回 aspect-ratio。
+           ⚠ 顺序不能反：极老内核可能连 @@supports 都不认，那时"有条件的那条"会被整块丢弃，
+             退回现状（只有 aspect-ratio ⇒ 高度塌成上下 border 的 2px，48 格变一条 58px 扁带）。 */
+        height: 0;
+        padding-bottom: 100%;                  /* 百分比相对包含块（= grid 列宽）⇒ 正方形 */
         min-width: 0;
+        border: 0;                             /* 边框改 inset 阴影：真 border 会让兜底分支高 2px（比例 0.963） */
+        box-shadow: inset 0 0 0 1px #C9B7A8;
         border-radius: 6px;
         overflow: hidden;
-        border: 1px solid #C9B7A8;
         cursor: pointer;
         background-color: #F3ECE1;
-        background-image: url('/Images/llk/faces.png');
-        background-size: 600% 400%;                    /* 6 列 × 4 行 */
+        /* D-39 / P2：两层背景。⚠ 两个必须照抄的点，漏一个就正好复现本次缺陷：
+           ① 必须写 `var(--fb, none)`。某格没有 `--fb` 时，`url(...), var(--fb)` 会**整条**计算成
+              none —— 连第一层 sprite 一起没（实测）。
+           ② size / position 必须给**两组**。只给一组时浏览器按列表循环复用第一组 ⇒
+              字牌层拿到 600% 400% 被放大 6 倍、位置错到看不见（实测 backgroundSize 两组同值）。 */
+        background-image: url('/Images/llk/faces.png'), var(--fb, none);
+        background-size: 600% 400%, 100% 100%;         /* 第一层 6 列 × 4 行；第二层整格铺满 */
         background-repeat: no-repeat;
-        background-position: calc(var(--c) * 20%) calc(var(--r) * 33.3333%);
+        background-position: calc(var(--c) * 20%) calc(var(--r) * 33.3333%), 0 0;
     }
+
+    /* 新内核分支：与 D-39 之前**逐像素相同**（52.33 × 52.33、1px 真边框）。
+       LL-35 守的就是这一支没被兜底改动弄坏；兜底本身只能靠 LL-36 的静态判据守（见《50》§4.3）。 */
+    @@supports (aspect-ratio: 1) {
+        .llk-cell {
+            height: auto;
+            padding-bottom: 0;
+            aspect-ratio: 1;
+            border: 1px solid #C9B7A8;
+            box-shadow: none;
+        }
+    }
+
+    /* D-39 / P2：24 条 `.llk-face-N` 规则（每条给一个 --fb 自定义属性，值就是字牌 SVG data-URI），
+       由 LlkCopy.FaceFallbackCss() 生成。
+       为什么由 C# 给、不写死在这：写死等于把 24 个人名复制出第二份真源（U8 守的是 LlkCopy 那份）。
+       为什么走 MarkupString：样式块是 raw text 元素，普通表达式会把 url() 里的引号转成 &quot;
+       而样式表里不认实体 ⇒ 整条 background-image 失效。
+       ⚠ 这段动态内容里**不许出现裸的尖括号**，注释里也一样：Blazor 写 markup 帧时交给 HTML 解析器，
+         裸标签会被解析成元素、元素在样式块里不参与文本 ⇒ 整条 SVG 被吞掉（实测见 U12 注释①）。
+         所以 FaceTileDataUri 输出的是整条百分号编码后的数据。 */
+    @((MarkupString)LlkCopy.FaceFallbackCss())
 
     /* ── 兜底字牌（H-016 / D-33）────────────────────────────────────────────
        图没被画出来（无图模式 / 省流 / 拦截）时，sprite 的 48 格是**纯平色块、零纹理**，
@@ -209,7 +244,16 @@
        兜底牌面若用描边表族色，朱砂族会永久长得像被选中。 */
     .llk-cell .llk-face-fb { display: none; }
 
-    .llk-board.llk-no-sprite .llk-cell { background-image: none; }
+    /* 强制只显示字牌（JS 判定图被拦时）。多层叠已能自动降级，这条是"提前降级"的**显式开关**：
+       把两层收成一层，sprite 连声明都不再给（取证字段 data-llk-sprite=fallback 同时落位）。
+       ⚠ 别改回 `background-image: none`：那样字牌只剩绝对定位的 HTML span 一层，
+         而这一层正是 D-34 记过的"老内核缺 inset 时贴边"的那层；字牌图不依赖定位，更稳。
+       ⚠ 这里的 `var(--fb, none)` 同样不能省 —— 缺省值缺失会让整条声明无效，而不是退回上一层。 */
+    .llk-board.llk-no-sprite .llk-cell {
+        background-image: var(--fb, none);
+        background-size: 100% 100%;
+        background-position: 0 0;
+    }
 
     .llk-board.llk-no-sprite .llk-cell .llk-face-fb {
         display: flex;
@@ -556,6 +600,21 @@
         }
         return string.Join(' ', classes);
     }
+
+    /// <summary>
+    /// 字牌图层的挂载类（D-39）：<c>llk-face-N</c> 由 <see cref="LlkCopy.FaceFallbackCss"/> 定义 <c>--fb</c>。
+    /// </summary>
+    /// <param name="showFace">
+    /// 用 <c>showFace</c> 而**不是** <c>face</c>：<c>is-gone</c> 的 340ms 延迟期内 opacity 恒为 1，
+    /// 字牌层必须和 sprite 一起停在原脸上（D-32 同一条理由），否则消除后字牌会先空一拍。
+    /// </param>
+    /// <remarks>
+    /// 单独成方法而不拼在 <c>CellClass</c> 里：<c>CellClass</c> 的入参是 (idx, face)，
+    /// 而这里要的是"曾经有过的那张脸"（<c>lastFace</c>）—— 混进去会让两个口径在同一个函数里打架。
+    /// 也不写成 <c>class="… @(showFace &gt; 0 ? $"llk-face-{showFace}" : "")"</c>：
+    /// 隐式表达式紧贴 <c>@(变量)</c> 的写法在 Razor 里出过 49 个 CS 错（C-72）。
+    /// </remarks>
+    private static string FaceClass(int showFace) => showFace > 0 ? $"llk-face-{showFace}" : "";
 
     // ───────────────────────── 失败反馈（D-30） ─────────────────────────
 

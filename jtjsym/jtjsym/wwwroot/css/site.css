@@ -438,3 +438,16 @@ a.home-card:focus-visible { outline: 2px solid #1b6ec2; outline-offset: 3px; }
         100% { opacity: 0;  translate: 0 0; }
     }
 }
+
+/* ===== D-39 / P3：暗化 opt-out 声明（**不是修复**，别当验证项） =====
+   给遵守协议的 Android 内核（Auto Dark）一次机会。本机两条触发途径（命令行 --force-dark-mode、
+   DevTools「模拟自动深色」）实测都**不遵守**它：加与不加，页面截图 MD5 逐字节相同。
+   所以：
+   · 不要写"加后应为亮色设计稿"这种可验证预期 —— 实测改前改后逐像素相同，那样写必然误判失败；
+   · 真正的价值是零成本的效果指示器：一旦生效，?diag=1 底栏里的 autoDark 会变 false。
+   computed 值注意：写了 `only light` 读回来是 **`light only`**（Chromium 156 / Firefox 157 一致），
+   LL-34 的判据按这个值写。
+   放在本文件末尾而不是顶部：这里没有别的 :root 块，位置本身不影响层叠，放末尾只为"不打断既有分区"。 */
+:root {
+    color-scheme: only light;
+}

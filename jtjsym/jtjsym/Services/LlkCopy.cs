@@ -100,6 +100,65 @@ public static class LlkCopy
     public static string ShortName(int face) =>
         face >= 1 && face <= ShortNames.Length ? ShortNames[face - 1] : "??";
 
+    // ───────────────────── 兜底字牌的图化（D-39） ─────────────────────
+    // 为什么要把它做成**图**而不是 HTML 文本：自动暗化（Android Auto Dark / 桌面 --force-dark-mode）
+    // 只反转**文本与被指定的背景色**，图片像素一律不动（实测：sprite 与 SVG data-URI 在暗化下保持原色）。
+    // 文本版字牌被反成深底深字就整块看不见 —— 那正是 D-39 第三轮报上来的现场。
+    // 图化之后"看得见"不再依赖暗化是否退出，也不依赖任何检测链：字牌图作为 `background-image` 的**第二层**，
+    // 第一层 sprite 因任何原因不画（404 / 被拦 / 解码失败 / 老内核丢弃）时它自动露出，零 JS。
+
+    /// <summary>
+    /// 兜底字牌的 SVG <c>data-URI</c>（D-39 / P2）；编号越界返回 <c>none</c>。
+    /// </summary>
+    /// <remarks>
+    /// 四条硬约束，改动前先看：
+    /// <para>① <b>整条 SVG 必须 <see cref="Uri.EscapeDataString"/> 百分号编码，不能原样塞进去。</b>
+    /// 这条是本轮实测出来的硬约束（方案原文给的是"只把 <c>#</c> 编码成 <c>%23</c>"，实测不够）：
+    /// 这段 CSS 由 Razor 的 <c>MarkupString</c> 插进组件的样式块，而 Blazor 写 markup 帧时是交给
+    /// <b>HTML 解析器</b>的 —— SVG 里的裸 <c>&lt;svg&gt;</c> 会被当成标签解析成元素，元素在样式块里
+    /// 不参与文本，于是 CSS 里只剩 <c>url("data:image/svg+xml;utf8,婉娘")</c>：标签全丢、字也不按图渲染。
+    /// 整条编码之后值里只有 URL 安全字符，同时把 <c>#</c>、引号、空格一起解决掉。</para>
+    /// <para>② 越界给 <c>none</c> 而不是空串：CSS 里 <c>var(--fb)</c> 缺失会让<b>整条</b> <c>background-image</c>
+    /// 计算成 <c>none</c> —— 连第一层 sprite 一起没（实测）。给字面量 <c>none</c> 才能让"这格没有字牌"
+    /// 与"这格有字牌"共用同一条叠层声明。</para>
+    /// <para>③ 配色与 <c>.llk-face-fb</c> 的 CSS 同值（<c>#F3ECE1</c> 底 + <c>#2B2B2B</c> 字 = 12.07:1），
+    /// 族色只做左侧 4px 竖条 —— 14/24 个 Accent 与白字的对比度不足 4.5，底色不能跟着族色走。</para>
+    /// <para>④ 颜色写<b>裸</b> <c>#RRGGBB</c>，靠编码器转成 <c>%23</c>。别手写 <c>%23</c>：
+    /// 手写过一次以后谁都分不清"这段编码过没有"，而漏编码的症状是"底色有、字没有"。</para>
+    /// </remarks>
+    public static string FaceTileDataUri(int face)
+    {
+        var t = LianliankanThemes.ById(face);
+        if (t is null) return "none";
+
+        var accent = string.IsNullOrEmpty(t.Accent) ? "#8C8F96" : t.Accent;
+        var svg = "<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'>"
+            + "<rect width='64' height='64' fill='#F3ECE1'/>"
+            + $"<rect width='4' height='64' fill='{accent}'/>"
+            + "<text x='36' y='41' font-family='sans-serif' font-size='17' text-anchor='middle' fill='#2B2B2B'>"
+            + ShortName(face) + "</text></svg>";
+        return $"url(\"data:image/svg+xml,{Uri.EscapeDataString(svg)}\")";
+    }
+
+    /// <summary>
+    /// 24 条 <c>.llk-face-N { --fb: … }</c> 的 CSS 片段（D-39 / P2），渲进组件的样式块。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>为什么由 C# 生成、不写死在 <c>site.css</c></b>：写死等于把 24 个人名复制出第二份真源，
+    /// 而 <see cref="ShortName"/> 那份已有 U8 看守（唯一 + 是角色名的连续子串）。</para>
+    /// <para><b>为什么 memo 住</b>：这个片段会被渲进每帧的样式块，而连连看页面<b>每秒</b>都有一次计时
+    /// 重渲染 —— 不缓存就是每秒重拼 24 条 data-URI。</para>
+    /// <para>体积：单条约 <b>480 B</b>、24 条约 <b>11.5 KB</b>（未 gzip），仍比 24 张 PNG（≈100 KB）省一个量级。</para>
+    /// </remarks>
+    public static string FaceFallbackCss() => FallbackCss.Value;
+
+    private static readonly Lazy<string> FallbackCss = new(BuildFallbackCss);
+
+    private static string BuildFallbackCss() =>
+        string.Join('\n', Enumerable.Range(1, LianliankanThemes.Characters.Length)
+            .Where(f => LianliankanThemes.ById(f) is not null)   // id 不连续时跳过，不抛
+            .Select(f => $".llk-face-{f}{{--fb:{FaceTileDataUri(f)}}}"));
+
     /// <summary>首页副行：有纪录。</summary>
     public static string HomeWithBest(int issue, int sec) => $"{IssueLabel(issue)} · 你的最快 {sec} 秒";
 
