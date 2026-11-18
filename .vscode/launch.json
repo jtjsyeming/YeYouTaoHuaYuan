@@ -29,8 +29,37 @@
         "uriFormat": "%s"
       },
       "justMyCode": true
+    },
+    {
+      // ===== 2. jtjsym：手机浏览器（同一 Wi-Fi 用手机看） =====
+      // 与上面那条并存不冲突：本机走 14074（只监听 localhost），手机走 14075（监听全部网卡）
+      "name": "jtjsym 网站（手机浏览器 / 局域网）",
+      "type": "coreclr",
+      "request": "launch",
+      // 清 14075 残留 → 编译 → 在终端打印手机该输的地址（IP 是 DHCP，必须现查，不能写死）
+      "preLaunchTask": "prep-jtjsym-mobile",
+      "program": "${workspaceFolder}/jtjsym/jtjsym/bin/Debug/net8.0/jtjsym.dll",
+      "args": [],
+      "cwd": "${workspaceFolder}/jtjsym/jtjsym",
+      "console": "internalConsole",
+      "stopAtEntry": false,
+      "env": {
+        "ASPNETCORE_ENVIRONMENT": "Development",
+        // 0.0.0.0 = 监听所有网卡，手机才连得进来；写成 localhost 就只有本机能访问
+        "ASPNETCORE_URLS": "http://0.0.0.0:14075",
+        "DOTNET_ENVIRONMENT": "Development"
+      },
+      "serverReadyAction": {
+        "action": "openExternally",
+        // 只捕获端口号：Kestrel 对通配地址打的可能是 0.0.0.0 也可能是 [::]，
+        // 直接把日志里的 host 拼进 URL 会打不开，所以固定回到 localhost:端口 给本机预览
+        "pattern": "\\bNow listening on:\\s+https?://\\S+:(\\d+)",
+        "uriFormat": "http://localhost:%s"
+      },
+      "justMyCode": true
     }
   ]
   // H-013 前置清理：MineSweeper（WinForms）已删除，原第 2 条配置与 compound「同时启动：网站 + 扫雷」
   // 一并移除（compound 只剩一个成员时没有意义）。
+  // 注意：两条配置共用 bin/Debug 输出目录，改完代码要同时跑时先停掉另一条，否则编译会撞 MSB3027。
 }

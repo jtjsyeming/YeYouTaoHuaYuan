@@ -77,6 +77,50 @@
       }
     },
     {
+      // F5「手机浏览器 / 局域网」前的准备：清 14075 残留 → 编译 → 打印手机该输的地址
+      "label": "prep-jtjsym-mobile",
+      "dependsOn": ["kill-stale-jtjsym-mobile", "build-jtjsym", "show-lan-url"],
+      "dependsOrder": "sequence",
+      "problemMatcher": []
+    },
+    {
+      // 结束仍在监听 14075 的残留 jtjsym 进程（与桌面那条的 14074 互不干扰）
+      "label": "kill-stale-jtjsym-mobile",
+      "type": "process",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "Get-NetTCPConnection -LocalPort 14075 -State Listen -ErrorAction SilentlyContinue | Select-Object -ExpandProperty OwningProcess -Unique | ForEach-Object { try { $p = Get-Process -Id $_ -ErrorAction Stop; Stop-Process -Id $p.Id -Force -ErrorAction Stop; Write-Host ('已结束残留进程: ' + $p.ProcessName + ' (PID ' + $p.Id + ')') } catch { } }; exit 0"
+      ],
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "silent",
+        "close": true
+      }
+    },
+    {
+      // 打印手机访问地址：局域网 IP 是 DHCP 分配，会随换网络变化，所以每次现查而不能写死
+      "label": "show-lan-url",
+      "type": "process",
+      "command": "powershell",
+      "args": [
+        "-NoProfile",
+        "-ExecutionPolicy",
+        "Bypass",
+        "-Command",
+        "$port = 14075; $fw = 'jtjsym dev 14075 (LAN)'; $nl = [Environment]::NewLine; $o = @(); $ips = @(Get-NetIPAddress -AddressFamily IPv4 -ErrorAction SilentlyContinue | Where-Object { $_.IPAddress -notlike '127.*' -and $_.IPAddress -notlike '169.254.*' } | Select-Object -ExpandProperty IPAddress -Unique); $o += ('=== 手机浏览器访问（手机与电脑连同一个 Wi-Fi）=== 端口 ' + $port); if ($ips.Count -eq 0) { $o += '  未找到局域网 IP，请检查网络连接' } else { foreach ($ip in $ips) { $o += ('  http://' + $ip + ':' + $port) } }; $o += ''; $o += ('  本机预览：http://localhost:' + $port); if (Get-NetFirewallRule -DisplayName $fw -ErrorAction SilentlyContinue) { $o += '  防火墙：已放行（仅专用网络）' } else { $o += '  防火墙：未放行，手机连不上时用管理员 PowerShell 执行一次：'; $o += '    New-NetFirewallRule -DisplayName ''jtjsym dev 14075 (LAN)'' -Direction Inbound -Action Allow -Protocol TCP -LocalPort 14075 -Profile Private' }; $o += '  站点起来后再点（首次编译要几秒）'; $o += '  手机还不行就查：网络位置须为「专用」、别连隔离的访客网络'; Write-Host ($nl + ($o -join $nl) + $nl); exit 0"
+      ],
+      "problemMatcher": [],
+      "presentation": {
+        "reveal": "always",
+        "panel": "dedicated",
+        "clear": true
+      }
+    },
+    {
       // 清理网站的编译输出（MineSweeper 已于 H-013 前置清理中删除，原第二条 clean 同步移除）
       "label": "clean-all",
       "type": "shell",
