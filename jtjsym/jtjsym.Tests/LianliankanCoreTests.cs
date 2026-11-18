@@ -699,7 +699,15 @@ public class LianliankanCoreTests
         Assert.Empty(LianliankanCore.PairShuffleMoves(board, board.ToArray()));
     }
 
-    /// <summary>U11-3：同脸 4 张全换位 ⇒ 双射（From 互异、To 互异、From ∩ To 为空）。</summary>
+    /// <summary>
+    /// U11-3：同脸 4 张全换位 ⇒ 双射（From 互异、To 互异）。
+    /// <para><b>⚠ 这里能断言 <c>From ∩ To</c> 为空，是因为输入是"整块搬家"而不是一次真置换</b>：
+    /// 来源 <c>{0,1,6,7}</c> 与去处 <c>{2,3,8,9}</c> 完全不相交，所以交集当然为空。
+    /// 真实重排里一个"旧脸 A、新脸 B"的格 i 既在 <c>restOld(A)</c>（A 从 i 搬走）、
+    /// 又在 <c>restNew(B)</c>（B 搬进 i）⇒ 满盘实测 12/12 非空、且交集规模<b>等于 moves 段数</b>
+    /// （47/47/47/48/48/47/44/45/47/48/45/46，见 U11-7）。
+    /// <b>别照这条的样子给真实重排写"交集为空"</b>——那会首跑即红。</para>
+    /// </summary>
     [Fact]
     public void PairShuffleMoves_SameFace_IsBijective()
     {
@@ -761,5 +769,54 @@ public class LianliankanCoreTests
         foreach (var (from, to) in moves) replayed[to] = before[from];   // 逐个搬：from 互异才成立
 
         Assert.Equal(after, replayed);
+    }
+
+    /// <summary>
+    /// U11-7：跨期号置换性质 —— 12 个连续期号（含跨年）上，<c>PairShuffleMoves</c> 满足双射。
+    /// <para><b>期号必须用日期递增，不能用整数递增</b>：期号是 <c>yyyyMMdd</c> 编码的 int，
+    /// <c>20261231 + 1 = 20261232</c> —— 整数递增跨不了年，只会得到一串非法期号，测试却全绿
+    /// （P-079 / C-82 的实测反例：<c>20261231 … 20261242</c> 里 11 个是非法日期）。</para>
+    /// <para><b>不要断言 <c>From ∩ To</c> 为空</b>：<c>PairShuffleMoves</c> 对一个"旧脸 A、新脸 B"的格 i
+    /// 会把 i 放进 <c>restOld(A)</c>（A 从 i 搬走）与 <c>restNew(B)</c>（B 搬进 i）⇒ i 必然同时是
+    /// 某段的 From 与另一段的 To。满盘实测 12/12 非空（规模 44~48）。这是置换的语义，不是缺陷。
+    /// U11-3 能断言交集为空，只因为它喂的是"整块搬家"（两组索引完全不相交），<b>不是一次真置换</b>——
+    /// 别照 U11-3 的样子写这里。</para>
+    /// <para><b>场景提示</b>：<c>NewDaily</c> 造的是满盘，<c>Reshuffle</c> 在满盘上洗 48 格 ⇒ <c>moves</c>
+    /// 44~48 段。这是<b>性质验证</b>，不代表 UI 会"48 格全飞"—— 真实死局盘只剩 2~4 块，
+    /// <c>moves</c> 恒为 2（U11-1 已钉）。</para>
+    /// </summary>
+    [Fact]
+    public void PairShuffleMoves_AcrossIssues_ReplaysToAfter()
+    {
+        // 12 个期号 = 2026-12-26 … 2026-12-31 + 2027-01-01 … 2027-01-06（跨年）
+        var issues = new List<int>();
+        var d = new DateTime(2026, 12, 26);
+        for (var i = 0; i < 12; i++) issues.Add(int.Parse(d.AddDays(i).ToString("yyyyMMdd")));
+        Assert.Equal(12, issues.Count);
+        Assert.Equal(20261231, issues[5]);             // 跨年前一日
+        Assert.Equal(20270101, issues[6]);             // 跨年后一日
+
+        foreach (var issue in issues)
+        {
+            var core = LianliankanCore.NewDaily(issue);
+            var before = core.Cells.ToArray();
+            Assert.True(core.Reshuffle());
+            var after = core.Cells.ToArray();
+            var moves = LianliankanCore.PairShuffleMoves(before, after);
+            // ① 双射的必要条件：From / To 各自互异 —— 这是下面"逐个搬"能成立的前提
+            Assert.Equal(moves.Count, moves.Select(m => m.From).Distinct().Count());
+            Assert.Equal(moves.Count, moves.Select(m => m.To).Distinct().Count());
+
+            // ② 真正的判据：把 moves 当置换应用到 before，逐格等于 after。
+            //    空表时 before 必须已经等于 after，所以它顺带把"非空"也覆盖了（不必单独断言）。
+            var replayed = before.ToArray();
+            foreach (var (from, to) in moves) replayed[to] = before[from];
+            Assert.Equal(after, replayed);
+
+            // ③ 多重集不变：Reshuffle 只洗位置，不改每张脸的数量
+            var oldFaces = before.Where(v => v > 0).OrderBy(v => v).ToArray();
+            var newFaces = after.Where(v => v > 0).OrderBy(v => v).ToArray();
+            Assert.Equal(oldFaces, newFaces);
+        }
     }
 }

@@ -1,4 +1,4 @@
-// H-014 / H-015 / D-31 / D-32 / H-016 / D-34 / D-37 / D-38 / H-017：每日一关连连看（LL-01~LL-31）
+// H-014 / H-015 / D-31 / D-32 / H-016 / D-34 / D-37 / D-38 / H-017 / P-077：每日一关连连看（LL-01~LL-32）
 // 存储键（全部带 jtjsym. 命名空间，且都收在 LlkKeys 里）：
 //   sessionStorage['jtjsym.llk.session']  = {v:1, issue, cells[48], elapsedSec}
 //   localStorage['jtjsym.llk.best']      = {"issue":20261112,"sec":87}   ← 单键单条，越小越好
@@ -1317,5 +1317,92 @@ test.describe('LL 连连看', () => {
 
     // 继承 LL-21 的"动画后可玩"
     check('LL-31-可消', await eliminateAnyPair(page), '重排后两两试过都没消掉（说明仍是死局）');
+  });
+});
+
+// ───── P-077 / C-82：reduced-motion 下重排必须"只换盘、不播动画" ─────
+// **本用例是守卫，不是证明修复**：短路现在就是对的（页面 :744/:745 把两个时长压 0，
+// llkshuffle.js:23 再早退一层），这条防的是"以后有人把某一层拆掉"。
+//
+// 判据 = 三个"零" + 一条功能锚：
+//   ① script transform 动画格峰值 = 0 —— 判别式必须是 `instanceof Animation && !CSSTransition && !CSSAnimation`。
+//      只数"有 transform 动画"会恒绿：44 个 is-gone 格自带 88 个带 transform 的 CSSTransition
+//      （第 11 版红检 6 实测 anyTransform=44，关掉 FLIP 照样过）。
+//   ② is-shuffle-fly 峰值 = 0 —— JS 侧没起播的正面锚（该 class 只由 playShuffle 加）。
+//   ③ is-shuffle-in 峰值 = 0 —— **唯一能把红检锚到页面 shuffleInMs = 0 那一行的判据**；
+//      没有它，①②都只指向 JS 层，删掉页面的 0 短路也不会红。
+//   ④ 功能锚：重排真跑完了（face 序列变了 + 还能消一对）。
+//      **不要**用 data-llk-reshuffling：reduced-motion 下它 0/122 次采样出现（从未进 DOM）——
+//      两个 Task.Delay 都被跳过 ⇒ isReshuffling true→false 之间没有任何 await ⇒ Blazor 合并成一次渲染，
+//      页面 :857 的注释原文就是"reduced-motion 时反而故意让它合并"。
+//
+// "0 个动画"是负命题、没有可观测完成信号 ⇒ 只能"固定时间窗内全程为 0"。
+// 窗口 1500ms（no-preference 下 busy 窗口约 600ms），10ms 采样，**在页面内一次 evaluate 里循环**：
+// 每 10ms 往返一次 CDP，往返本身就把采样周期撑到 30ms+。
+//
+// ⚠ 不能用 openLlk / openWithStorage：它们内含 sleep(1100~1600) 沉降，等它们返回时重排早跑完，
+//   采样起点落在窗口之后 ⇒ 负命题**恒绿**（"漏掉窗口"的经典假绿）。必须裸 goto。
+test.describe('reduced-motion 降级', () => {
+  // test.use 只作用于本 describe：其余 LL 用例仍是默认 no-preference。
+  test.use({ reducedMotion: 'reduce' });
+
+  test('LL-32 reduced-motion 下重排只换盘不播动画：FLIP 与淡入淡出全部短路（P-077）', async ({ page }) => {
+    const errs = [];
+    page.on('console', m => { if (m.type() === 'error') errs.push(m.text()); });
+    page.on('pageerror', e => errs.push(e.message));
+
+    // 与 LL-21 / LL-31 同一张贴角死局档：4 块、过成对闸、原样是死局 ⇒ Reshuffle 必然换脸。
+    const dead = cellsWith([
+      [idx(0, 0), 1], [idx(0, 1), 2],
+      [idx(1, 0), 2], [idx(1, 1), 1],
+    ]);
+    // 先走首页写两处存储（rulesSeen 挡玩法遮罩、session 注入死局盘），再进目标页。
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await page.evaluate(([rk, sk, v]) => {
+      localStorage.setItem(rk, '1');
+      sessionStorage.setItem(sk, v);
+    }, ['jtjsym.llk.rulesSeen', SK, JSON.stringify({ v: 1, issue: todayIssue(), cells: dead, elapsedSec: 5 })]);
+
+    // 导航后立刻起采样：evaluate 的首个动作即开始循环，中间不 sleep。
+    await page.goto('/lianliankan', { waitUntil: 'domcontentloaded' });
+    const peak = await page.evaluate(() => new Promise(resolve => {
+      const t0 = performance.now();
+      const isScript = a =>
+        typeof Animation !== 'undefined' && a instanceof Animation &&
+        !(typeof CSSTransition !== 'undefined' && a instanceof CSSTransition) &&
+        !(typeof CSSAnimation !== 'undefined' && a instanceof CSSAnimation);
+      let peakScript = 0, peakFly = 0, peakP2 = 0, ticks = 0;
+      const tick = () => {
+        ticks++;
+        let sc = 0, fly = 0, p2 = 0;
+        for (const el of document.querySelectorAll('.llk-cell')) {
+          if (el.classList.contains('is-shuffle-fly')) fly++;
+          if (el.classList.contains('is-shuffle-in')) p2++;
+          if (el.getAnimations().some(a => isScript(a) &&
+            (a.effect?.getKeyframes?.() ?? []).some(k => 'transform' in k))) sc++;
+        }
+        if (sc > peakScript) peakScript = sc;
+        if (fly > peakFly) peakFly = fly;
+        if (p2 > peakP2) peakP2 = p2;
+        if (performance.now() - t0 < 1500) setTimeout(tick, 10);
+        else resolve({ peakScript, peakFly, peakP2, ticks });
+      };
+      tick();
+    }));
+
+    // 先证明"采样真的跑了"：负命题最怕的是"窗口没盖到、全程读到 0"。
+    check('LL-32-采样覆盖', peak.ticks >= 100,
+      `${peak.ticks} 次采样 / 1500ms（<100 说明主线程被阻塞或窗口落空，本用例的"零"不可信）`);
+    check('LL-32-script动画', peak.peakScript === 0,
+      `峰值 ${peak.peakScript} 个格在播 script transform 动画（应 0；判别式已排除 CSSTransition / CSSAnimation）`);
+    check('LL-32-飞行class', peak.peakFly === 0, `is-shuffle-fly 峰值 ${peak.peakFly}（应 0：playShuffle 不该被调用）`);
+    check('LL-32-淡入class', peak.peakP2 === 0, `is-shuffle-in 峰值 ${peak.peakP2}（应 0：页面的 shuffleInMs = 0 短路生效）`);
+
+    // 功能锚：盘面确实换了脸 —— 否则"动画没播"可能只是"重排根本没发生"。
+    const after = await readCells(page);
+    check('LL-32-盘已换脸', JSON.stringify(after) !== JSON.stringify(dead),
+      `重排后 ${after.filter(v => v > 0).length} 块；序列应与注入时不同（原样是死局，Reshuffle 不会停在那里）`);
+    check('LL-32-可消', await eliminateAnyPair(page), '重排后两两试过都没消掉（说明不是合法可解盘）');
+    check('LL-32-无console报错', errs.length === 0, errs.slice(0, 3).join(' | '));
   });
 });
