@@ -15,7 +15,7 @@
         <FluentCard Style="width:100%;height:100%">
             <div class="card-body">
                 <h2 class="card-title">关于这里</h2>
-                <p class="card-desc">个人小站，所有内容都在浏览器里跑，数据只存在你自己的浏览器里。</p>
+                <p class="card-desc">个人小站，所有内容都在浏览器里跑；游戏数据存在你自己的浏览器里，连连看的每日榜单存在站点服务器上。</p>
             </div>
         </FluentCard>
     </section>
@@ -70,12 +70,14 @@
         </FluentCard>
     </NavLink>
 
-    <NavLink class="home-card" href="lianliankan">
+    @* H-018：入口改成关卡日历（和左侧导航一致） *@
+    <NavLink class="home-card" href="llkcalendar">
         <FluentCard Style="width:100%;height:100%">
             <div class="card-body">
                 <FluentIcon Value="@(new Icons.Regular.Size32.PuzzlePiece())" />
                 <h3 class="card-title">连连看</h3>
-                @* 副行读的是本地榜（方案 A）：预渲染先画"今日还没通关"，交互实例读到纪录再改 *@
+                @* 副行读**本机**榜（localStorage）：首页保持零服务端读，所以文案后面必须标「（本机）」，
+                   否则与服务端榜的口径混在一起（H-018 §9 拍板 2） *@
                 <p class="card-desc llk-card-desc">@llkSubtitle</p>
             </div>
         </FluentCard>

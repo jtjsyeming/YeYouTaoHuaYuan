@@ -1,0 +1,334 @@
+@page "/llkcalendar"
+@using jtjsym.Services
+@inject LianliankanLeaderboard Board
+@inject NavigationManager Nav
+
+@* H-018：关卡日历。它是连连看的入口（NavMenu 与首页卡片都指这里），盘面页才是"某一关"。 *@
+
+<PageTitle>连连看·关卡</PageTitle>
+
+<h1 class="llk-title">连连看·关卡</h1>
+
+<div class="llk-cal">
+    <div class="llk-cal-head">
+        @* 用裸 button 不用 FluentButton：① 禁用态就是真 disabled，e2e 一行 toBeDisabled 判完；
+           ② Fluent 的自定义元素有 shadow DOM，月份标题的宽度/对齐要跟它斗；③ 这个按钮没有图标语义。 *@
+        <button type="button" class="llk-cal-nav" disabled="@(monthIndex <= 0)"
+                aria-label="上个月" @onclick="PrevMonth">‹</button>
+        <span class="llk-cal-title">@LlkCopy.MonthTitle(CurYear, CurMonth)</span>
+        <button type="button" class="llk-cal-nav" disabled="@(monthIndex >= maxMonthIndex)"
+                aria-label="下个月" @onclick="NextMonth">›</button>
+    </div>
+
+    <div class="llk-cal-week">
+        @foreach (var w in LlkCopy.WeekNames)
+        {
+            <span>@w</span>
+        }
+    </div>
+
+    <div class="llk-cal-grid">
+        @foreach (var c in cells)
+        {
+            if (!c.HasDay)
+            {
+                @* 空白槽位：固定 42 格（6 行 × 7 列），换月时网格高度不变、按钮不跳位 *@
+                <span class="llk-cal-blank" aria-hidden="true"></span>
+            }
+            else
+            {
+                @* 未来格用**真 disabled**（不是 aria-disabled + CSS 置灰）：后者在键盘/读屏下仍可聚焦、
+                   click() 仍然派发事件，e2e 只能靠"点了没反应"间接判断 —— 这类判据写完必假绿。 *@
+                <button type="button"
+                        class="llk-cal-cell @(c.IsToday ? "is-today" : "")"
+                        disabled="@c.Disabled"
+                        aria-label="@c.Aria"
+                        data-issue="@c.Issue"
+                        data-sec="@c.Sec"
+                        @onmouseover="() => SetDetail(c)"
+                        @onfocus="() => SetDetail(c)"
+                        @onclick="() => OpenAsync(c)">
+                    <span class="llk-cal-day">@c.Day</span>
+                    <span class="llk-cal-sec">@LlkCopy.CalSec(c.Sec)</span>
+                    <span class="llk-cal-name">@LlkCopy.CalName(c.Name)</span>
+                </button>
+            }
+        }
+    </div>
+
+    @* 详情条：名字在格内被截到 3 字，全称唯一的显示位置就是这里（另一处是 aria-label）。
+       高度固定 20px 且**始终占位** —— 否则鼠标划过时下面的内容会跳一下。 *@
+    <p class="llk-cal-detail">@detailText</p>
+</div>
+
+<style>
+    /* 类名统一 llk-cal- 前缀：组件 style 块是全局的（《34》§4.3），不加前缀会与别的页撞车 */
+    .llk-cal {
+        display: flex;
+        flex-direction: column;
+        gap: 6px;
+        width: 100%;
+        max-width: 420px;
+        margin: 0 auto;
+    }
+
+    .llk-cal-head {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 8px;
+    }
+
+    .llk-cal-title {
+        font-size: 1rem;
+        font-weight: 600;
+    }
+
+    /* 边界处用 disabled 而不是隐藏：位置不跳动，且"到头了"这件事看得见 */
+    .llk-cal-nav {
+        appearance: none;
+        width: 32px;
+        height: 32px;
+        padding: 0;
+        border: 1px solid #C9B7A8;
+        border-radius: 6px;
+        background: #F3ECE1;
+        color: #2B2B2B;
+        font-size: 18px;
+        line-height: 1;
+        cursor: pointer;
+    }
+
+        .llk-cal-nav:disabled {
+            opacity: .4;
+            cursor: default;
+        }
+
+    .llk-cal-week {
+        display: grid;
+        grid-template-columns: repeat(7, 1fr);
+        gap: 3px;
+        font-size: 11px;
+        line-height: 14px;
+        color: #7A6A5C;
+        text-align: center;
+    }
+
+    .llk-cal-grid {
+        display: grid;
+        grid-template-columns: repeat(7, 1fr);
+        gap: 3px;
+    }
+
+    /* 三行（12/9/9px）+ 1px 边框 = 38px。**不写死 44px**：320×568 下 6 行 × 44 + 5 gap 会顶出首页预算。
+       320 宽时 7 列只有 40.86px（见下 @@media 的负边距），40.84px 宽下 3 字名 27px、123秒 24.84px 都放得下。 */
+    .llk-cal-cell {
+        appearance: none;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        height: 38px;
+        padding: 0;
+        border: 1px solid #C9B7A8;
+        border-radius: 6px;
+        background: #F3ECE1;
+        color: #2B2B2B;
+        font: inherit;
+        line-height: 1;
+        cursor: pointer;
+        overflow: hidden;
+    }
+
+        .llk-cal-cell:disabled {
+            opacity: .4;
+            cursor: default;
+        }
+
+        .llk-cal-cell.is-today {
+            border-color: #B3423C;
+            box-shadow: inset 0 0 0 1px #B3423C;
+        }
+
+    /* 14 → 13：三行 13+11+11 = 35，格内容高 36（38 − 上下边框）⇒ 留 1px 余量。
+       写成 14+11+11 = 36 时是**刚好零余量**（实测 clientHeight 与 scrollHeight 都是 36），
+       字体度量一变就会溢出 1px —— 那种红只在某些机器上出现，最难查。 */
+    .llk-cal-day {
+        font-size: 12px;
+        line-height: 13px;
+    }
+
+    .llk-cal-sec {
+        font-size: 9px;
+        line-height: 11px;
+        color: #B3423C;
+    }
+
+    .llk-cal-name {
+        font-size: 9px;
+        line-height: 11px;
+        color: #5B4A3C;
+        max-width: 100%;
+        white-space: nowrap;
+        overflow: hidden;
+    }
+
+    .llk-cal-blank {
+        height: 38px;
+    }
+
+    .llk-cal-detail {
+        margin: 0;
+        min-height: 20px;
+        font-size: .85rem;
+        color: #5B4A3C;
+        text-align: center;
+    }
+
+    /* 窄屏把日历"撑宽"16px：.content 是 px-4（左右各 24px），7 列在 320 - 48 = 272px 里只剩 34px/格。
+       还回 16px（各留 8px 镂空）⇒ (304 − 6×3) / 7 = 40.86px，正好是《51》§1.2 实测量到的那个数。 */
+    @@media (max-width: 419.98px) {
+        .llk-cal-week,
+        .llk-cal-grid {
+            margin: 0 -16px;
+        }
+    }
+
+    /* 宽屏格宽有余量，行高放大到 46px（5 字名也进得去，但格内仍只显示 3 字 —— 口径统一比"能放几个放几个"重要） */
+    @@media (min-width: 420px) {
+        .llk-cal-cell,
+        .llk-cal-blank {
+            height: 46px;
+        }
+
+        .llk-cal-day {
+            font-size: 14px;
+            line-height: 16px;
+        }
+
+        .llk-cal-sec,
+        .llk-cal-name {
+            font-size: 10px;
+            line-height: 12px;
+        }
+    }
+</style>
+
+@code {
+    /// <summary>可玩区间的下界（月）= <see cref="LianliankanCore.MinIssue"/> 的年月，跟着常量走、不另写一份。</summary>
+    private static readonly int FirstYear = LianliankanCore.MinIssue / 10000;
+    private static readonly int FirstMonth = LianliankanCore.MinIssue / 100 % 100;
+
+    /// <summary>固定 42 个槽位（6 行 × 7 列）。换月不改变网格高度。</summary>
+    private const int SlotCount = 42;
+
+    private int todayIssue;
+    private int monthIndex;
+    private int maxMonthIndex;
+
+    private IReadOnlyDictionary<int, LlkRecord> records = new Dictionary<int, LlkRecord>();
+    private List<CalCell> cells = new();
+
+    private string detailText = LlkCopy.CalendarHint;
+
+    private int CurYear => MonthAt(monthIndex).Year;
+    private int CurMonth => MonthAt(monthIndex).Month;
+    /// <summary>
+    /// 读榜 + 建格。<b>纯读</b>（<c>GetRangeAsync</c> 不建目录、不建文件）⇒
+    /// <c>ServerPrerendered</c> 跑两遍天然安全，这里不需要任何 <c>firstRender</c> 守卫。
+    /// </summary>
+    protected override async Task OnInitializedAsync()
+    {
+        todayIssue = LianliankanCore.IssueFor(DateTimeOffset.UtcNow);
+        maxMonthIndex = Math.Max(0, MonthIndexOf(todayIssue));
+        monthIndex = maxMonthIndex;                    // 首屏落在当前月（= MinIssue 那个月时就是 2026-11）
+
+        try
+        {
+            records = await Board.GetRangeAsync(LianliankanCore.MinIssue, todayIssue);
+        }
+        catch (Exception)
+        {
+            // 读榜失败 ⇒ 全部当"无人通关"，日历仍然可用。
+            // 这里是**故意**的全捕获：白屏比"榜暂时读不到"严重得多，而这条路径没有任何补救动作可做。
+            records = new Dictionary<int, LlkRecord>();
+        }
+
+        Build();
+    }
+
+    private void PrevMonth()
+    {
+        if (monthIndex <= 0) return;
+        monthIndex--;
+        detailText = LlkCopy.CalendarHint;             // 换月后旧格已不在屏上，详情条回到默认
+        Build();
+    }
+
+    private void NextMonth()
+    {
+        if (monthIndex >= maxMonthIndex) return;
+        monthIndex++;
+        detailText = LlkCopy.CalendarHint;
+        Build();
+    }
+
+    private void SetDetail(CalCell c) => detailText = LlkCopy.CalendarDetail(c.Issue, c.Sec, c.Name);
+
+    /// <summary>
+    /// 进关。<b><c>?issue=</c> 只在这一条路径上成立</b>（跨页进入 ⇒ 组件新建 ⇒ <c>OnInitialized</c> 重读 query）。
+    /// <para>⚠ 页内换期（<c>NavigateTo("/lianliankan?issue=…")</c>）**不会**让组件重建，<c>OnInitialized</c> 不再跑
+    /// ⇒ 期号静默不变。将来要做"下一关"之类的页内换期，必须先把 issue 提成路由参数
+    /// （<c>@page "/lianliankan/{Issue:int}"</c>），不能继续靠 query（《51》§1.6 / LL-40 的注释）。</para>
+    /// </summary>
+    private Task OpenAsync(CalCell c)
+    {
+        if (c.Disabled) return Task.CompletedTask;
+        SetDetail(c);
+        Nav.NavigateTo($"/lianliankan?issue={c.Issue}");
+        return Task.CompletedTask;
+    }
+
+    private void Build()
+    {
+        var (year, month) = MonthAt(monthIndex);
+        var days = DateTime.DaysInMonth(year, month);
+        // 周一起始：DayOfWeek 的 Sunday = 0 ⇒ (dow + 6) % 7 把周一压到 0
+        var lead = ((int)new DateTime(year, month, 1).DayOfWeek + 6) % 7;
+
+        var list = new List<CalCell>(SlotCount);
+        for (var i = 0; i < lead; i++) list.Add(CalCell.Blank);
+
+        for (var d = 1; d <= days; d++)
+        {
+            var issue = year * 10000 + month * 100 + d;      // 期号就是 yyyyMMdd 的整数
+            records.TryGetValue(issue, out var rec);
+            list.Add(new CalCell(d, issue, rec?.Sec, rec?.Name, issue > todayIssue, issue == todayIssue));
+        }
+
+        while (list.Count < SlotCount) list.Add(CalCell.Blank);
+        cells = list;
+    }
+
+    private static (int Year, int Month) MonthAt(int index)
+    {
+        var total = FirstYear * 12 + (FirstMonth - 1) + index;
+        return (total / 12, total % 12 + 1);
+    }
+
+    private static int MonthIndexOf(int issue) =>
+        ((issue / 10000) - FirstYear) * 12 + ((issue / 100 % 100) - FirstMonth);
+
+    /// <summary>
+    /// 一个日历格。<see cref="Blank"/> 是"这个月不属于我的槽位"（首尾补白），它<b>不是</b> button。
+    /// </summary>
+    private sealed record CalCell(int Day, int Issue, int? Sec, string? Name, bool Disabled, bool IsToday)
+    {
+        public static readonly CalCell Blank = new(0, 0, null, null, true, false);
+
+        public bool HasDay => Issue != 0;
+
+        /// <summary>全名在这里（格内只放 3 字）。读屏是"名字被截断"的唯一无损出口之一。</summary>
+        public string Aria => LlkCopy.CalendarAria(Issue, Sec, Name);
+    }
+}

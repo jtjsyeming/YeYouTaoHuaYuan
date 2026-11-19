@@ -4,6 +4,8 @@
 @using Microsoft.FluentUI.AspNetCore.Components
 @using jtjsym.Services
 @inject IJSRuntime JS
+@inject LianliankanLeaderboard Board
+@inject NavigationManager Nav
 @implements IAsyncDisposable
 
 <PageTitle>连连看 · 每日一关</PageTitle>
@@ -128,6 +130,26 @@
             <div class="llk-overlay">
                 <h2 class="llk-overlay-title">全部消除</h2>
                 <p class="llk-overlay-sub">用时 @elapsedSec 秒 · 本次最快 @FormatBest(best) 秒</p>
+
+                @* H-018：留名入口。**不是必经路径** —— 不填直接「再来一局」也完全正常（榜上记「神秘嘉宾」）。
+                   提交失败一律静默（榜挂了不影响结算），所以这里只有成功态文案，没有错误文案。
+                   用裸 input 而不是 FluentTextField：后者是 shadow DOM 自定义元素，e2e 的 fill 打不到内层
+                   input（只能 pressSequentially 硬敲），而这里是**唯一**需要 e2e 填字的地方。 *@
+                @if (!submitted)
+                {
+                    <div class="llk-name-row">
+                        <input class="llk-name-input" type="text" maxlength="12"
+                               placeholder="@LlkCopy.NamePlaceholder" aria-label="你的名字"
+                               @bind="nameInput" @bind:event="oninput" />
+                        <button class="llk-name-btn" type="button" disabled="@isSubmitting"
+                                @onclick="OnSubmitNameClicked">@LlkCopy.NameButton</button>
+                    </div>
+                }
+                else
+                {
+                    <p class="llk-name-saved">@LlkCopy.LeaderboardSaved</p>
+                }
+
                 <FluentButton Class="llk-overlay-btn" Appearance="Appearance.Accent" @onclick="OnRestartClicked">再来一局</FluentButton>
             </div>
         }
@@ -414,6 +436,50 @@
         color: #455a64;
     }
 
+    /* H-018 留名区：input + 按钮并排。132 + 6 + 约 86 = 224，装得进 320 下的遮罩宽（304），不折行。
+       ⚠ 本块里**不能出现裸的小于号**（注释里也不行）—— 会被当成标签起点，整段样式编译不过（RZ10007）。 */
+    .llk-name-row {
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        gap: 6px;
+    }
+
+    .llk-name-input {
+        width: 132px;
+        height: 30px;
+        padding: 0 8px;
+        border: 1px solid #C9B7A8;
+        border-radius: 6px;
+        background: #F3ECE1;
+        color: #2B2B2B;
+        font: inherit;
+        font-size: .85rem;
+    }
+
+    .llk-name-btn {
+        height: 30px;
+        padding: 0 10px;
+        border: 1px solid #B3423C;
+        border-radius: 6px;
+        background: #B3423C;
+        color: #FFFFFF;
+        font: inherit;
+        font-size: .85rem;
+        cursor: pointer;
+    }
+
+        .llk-name-btn:disabled {
+            opacity: .6;
+            cursor: default;
+        }
+
+    .llk-name-saved {
+        margin: 0;
+        font-size: .85rem;
+        color: #B3423C;
+    }
+
     /* 玩法遮罩（H-015）：比胜局遮罩多四行文案 + 一张小图，所以 gap 收到 6、上下留 6px 内边距。
        320 下实测内容高约 229，wrap 364 —— 余量足够，不动紧凑档。 */
     .llk-rules {
@@ -476,6 +542,15 @@
 
     private int elapsedSec;
     private int? best;
+
+    /// <summary>名字输入框的当前值（H-018）。首帧从 <c>localStorage['jtjsym.llk.nickname']</c> 预填。</summary>
+    private string? nameInput;
+
+    /// <summary>本次已成功提交（防重复点击）。<b>只在成功后才置位</b> —— 失败可以再点一次。</summary>
+    private bool submitted;
+
+    /// <summary>提交往返中（按钮短暂禁用，防双击产生两次请求）。</summary>
+    private bool isSubmitting;
 
     /// <summary>读盘的两个标志（D-25 配方）：防重入闸 + 占位解锁，挤在一根上会在 await 窗口里把「—」画成「0 秒」。</summary>
     private bool isBestReading;
@@ -764,8 +839,39 @@
     {
         // 预渲染阶段就要有 48 格（服务端确定性生成 ⇒ SSR 天然带盘面，LL-01 靠这条）。
         // 计时器与存储一律等到 firstRender（只有交互实例才有 JSRuntime）。
-        issue = LianliankanCore.IssueFor(DateTimeOffset.UtcNow);
+        // H-018：期号可以来自日历页的 ?issue=（跨页进入才会走到这里，页内换期见 PickIssue 的注释）。
+        issue = PickIssue(Nav.Uri, LianliankanCore.IssueFor(DateTimeOffset.UtcNow));
         game = LianliankanCore.NewDaily(issue);
+    }
+
+    /// <summary>
+    /// 从 URL 取 <c>?issue=</c>；不合法（缺参 / 非数字 / 越界）一律<b>静默回落当日</b> —— 不弹提示、不改路由。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>用 <c>Nav.Uri</c> 手工查表，不用 <c>Nav.ToAbsoluteUri</c> 的 <c>Query</c></b>：站内 SPA 导航时
+    /// 后者可能滞后一拍。手工解析的代价是十来行，收益是"读到的就是地址栏里那一串"。</para>
+    /// <para>上界是<b>今天</b>：未来关一律回落。下界是 <see cref="LianliankanCore.MinIssue"/>。
+    /// 服务端提交那道闸（<c>SubmitAsync</c>）会再判一次 —— 这里是"给人少走一步"，不是安全边界。</para>
+    /// </remarks>
+    private static int PickIssue(string uri, int todayIssue)
+    {
+        var q = uri.IndexOf('?', StringComparison.Ordinal);
+        if (q < 0) return todayIssue;
+
+        var issue = todayIssue;
+        foreach (var kv in uri[(q + 1)..].Split('&', StringSplitOptions.RemoveEmptyEntries))
+        {
+            var eq = kv.IndexOf('=');
+            if (eq <= 0) continue;
+            if (!kv.AsSpan(0, eq).Equals("issue", StringComparison.OrdinalIgnoreCase)) continue;
+
+            if (int.TryParse(Uri.UnescapeDataString(kv[(eq + 1)..]), out var v)
+                && v >= LianliankanCore.MinIssue && v <= todayIssue)
+            {
+                issue = v;
+            }
+        }
+        return issue;
     }
 
     protected override async Task OnAfterRenderAsync(bool firstRender)
@@ -782,6 +888,16 @@
                 best = LianliankanCore.TryParseBest(raw, issue);
             }
             catch (JSException) { }                     // 隐私模式/存储被禁：保持 null，显示「—」，游戏零降级
+            catch (JSDisconnectedException) { }
+            catch (ObjectDisposedException) { }
+
+            // 昵称预填（H-018）：与纪录分开读 —— 纪录是"成绩"，昵称是"上次填过的名字"，两者生命周期不同
+            try
+            {
+                var nick = await JS.InvokeAsync<string?>("localStorage.getItem", LlkKeys.Nickname);
+                if (!string.IsNullOrWhiteSpace(nick)) nameInput = nick;
+            }
+            catch (JSException) { }
             catch (JSDisconnectedException) { }
             catch (ObjectDisposedException) { }
 
@@ -1110,7 +1226,8 @@
         if (isRestoring) return;
 
         StopClock();
-        issue = LianliankanCore.IssueFor(DateTimeOffset.UtcNow);
+        // H-018：**不重算期号**。从日历点进 20261105 再点「再来一局」，留在 20261105 ——
+        // 重算"今天"会把用户悄悄换到另一关（而标题还写着旧期号的那一刻也没了）。
         game = LianliankanCore.NewDaily(issue);
         Array.Clear(lastFace);                          // 字段 = 本局事实（D-32）：不清也不出错，但"再来一局"该是干净局
         elapsedSec = 0;
@@ -1118,15 +1235,56 @@
         isPaused = true;
         showResumeTip = false;
         showReshuffleTip = false;
+        submitted = false;                              // 新一局可以再提交一次
+        isSubmitting = false;
         // 重排动画的理论窗口不会横跨重开（重开只在 IsCleared 时，重排只在未清盘时）——
         // 但重置成本为零，且能防"动画中途被 fire-and-forget 启动、随后遮罩出现"这类将来才有的组合。
         reshufflePhase = 0;
         isReshuffling = false;
         ClearFeedback();
 
-        best = await ReadBestAsync();                   // 跨日时纪录要跟着换（同键不同 issue ⇒ 视为无记录）
+        best = await ReadBestAsync();                   // 同一期号重开：纪录不变；nameInput 保留（同一个人再玩一次）
         await RemoveSessionAsync();
         if (!disposed) StateHasChanged();
+    }
+
+    /// <summary>
+    /// 把本局成绩提交到服务端榜（H-018）。
+    /// <para><b>失败一律静默</b>：榜挂了不影响结算、也不挡「再来一局」。与 D-31「探测失败不降级」同纪律 ——
+    /// 一个可选的服务端功能不该有能力把玩家卡在结果页。</para>
+    /// <para><see cref="submitted"/> <b>只在成功落盘后</b>置位：没进榜（不够快）时按钮还在，可以换个名字再点。</para>
+    /// </summary>
+    private async Task OnSubmitNameClicked()
+    {
+        if (isSubmitting || submitted) return;
+
+        isSubmitting = true;
+        try
+        {
+            var rec = await Board.SubmitAsync(issue, elapsedSec, nameInput);
+            if (rec is null) return;                    // 闸拒 / 不够快：不提示（"没改写纪录"已由上面那行说完）
+
+            submitted = true;
+            try
+            {
+                // 记住名字：下次进来预填，省得每次重敲。存的是**归一后**的值（与榜上一致）
+                await JS.InvokeVoidAsync("localStorage.setItem", LlkKeys.Nickname, rec.Name);
+            }
+            catch (JSException) { }
+            catch (JSDisconnectedException) { }
+            catch (ObjectDisposedException) { }
+        }
+        catch (IOException) { }                         // 含 DirectoryNotFoundException：磁盘满 / 目录被清 / 权限
+        catch (UnauthorizedAccessException) { }
+        catch (JsonException) { }
+        catch (JSException) { }
+        catch (JSDisconnectedException) { }
+        catch (ObjectDisposedException) { }
+        finally
+        {
+            isSubmitting = false;
+            if (!disposed) StateHasChanged();
+        }
     }
 
     // ───────────────────────── 计时（PeriodicTimer + 互斥 + 双检） ─────────────────────────
