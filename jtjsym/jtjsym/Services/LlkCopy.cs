@@ -1,3 +1,5 @@
+using System.Globalization;
+
 namespace jtjsym.Services;
 
 /// <summary>
@@ -159,9 +161,93 @@ public static class LlkCopy
             .Where(f => LianliankanThemes.ById(f) is not null)   // id 不连续时跳过，不抛
             .Select(f => $".llk-face-{f}{{--fb:{FaceTileDataUri(f)}}}"));
 
-    /// <summary>首页副行：有纪录。</summary>
-    public static string HomeWithBest(int issue, int sec) => $"{IssueLabel(issue)} · 你的最快 {sec} 秒";
+    /// <summary>
+    /// 首页副行：有纪录。
+    /// <para>H-018 起带「（本机）」：服务端榜是另一份数据，首页这一行读的仍是 <c>localStorage</c>。
+    /// 不标就会被读成"服务器上记着我的最快成绩"，而首页恰恰<b>不读</b>服务端（零 IO）。</para>
+    /// </summary>
+    public static string HomeWithBest(int issue, int sec) => $"{IssueLabel(issue)} · 你的最快 {sec} 秒（本机）";
 
-    /// <summary>首页副行：无纪录。</summary>
-    public static string HomeNoBest(int issue) => $"{IssueLabel(issue)} · 今日还没通关";
+    /// <summary>首页副行：无纪录（同样标「本机」，理由见上）。</summary>
+    public static string HomeNoBest(int issue) => $"{IssueLabel(issue)} · 本机还没有纪录";
+
+    // ───────────────────── 服务端榜单与关卡日历（H-018） ─────────────────────
+    // 三条口径在这里落成字面量，别在页面里再拼一遍（《36》v2.1 §3.5 的"同一屏两种说法"就是散写来的）。
+
+    /// <summary>未留名的昵称。<b>与"无人通关"是两件事</b>：这里是「通关了但没留名」。</summary>
+    public const string GuestName = "神秘嘉宾";
+
+    /// <summary>格内只放 2 字（`神秘嘉宾` 4 字在 320 下顶满格宽，且会被读成"有个叫神秘嘉宾的人"）。</summary>
+    public const string GuestShort = "嘉宾";
+
+    /// <summary>格内名字最多显示几个字（文本元素）。实测 320 下 3 字 27px &lt; 可用宽。</summary>
+    public const int CalNameChars = 3;
+
+    /// <summary>无人通关的第 3 行说明（详情条与 <c>aria-label</c> 共用）。</summary>
+    public const string CalendarNoRecord = "无人通关";
+
+    /// <summary>详情条的默认文案（没点任何格子时）。</summary>
+    public const string CalendarHint = "点格子进关";
+
+    /// <summary>提交成功后的副行文案。</summary>
+    public const string LeaderboardSaved = "已记入榜单";
+
+    /// <summary>名字输入框的占位符（＝没填就是 <see cref="GuestName"/>）。</summary>
+    public const string NamePlaceholder = GuestName;
+
+    /// <summary>名字输入框的按钮。</summary>
+    public const string NameButton = "留下名字";
+
+    /// <summary>星期行，<b>周一起始</b>（与 <see cref="CalendarCells"/> 的空白格算法必须同口径）。</summary>
+    public static IReadOnlyList<string> WeekNames { get; } = new[] { "一", "二", "三", "四", "五", "六", "日" };
+
+    /// <summary>「2026年11月」。</summary>
+    public static string MonthTitle(int year, int month) => $"{year}年{month}月";
+
+    /// <summary>
+    /// 按 <b>UTF-16 文本元素</b>截断（emoji 不劈半）。<c>s[..n]</c> 会把代理对切成半个字符。
+    /// <para>日历年月（<see cref="CalName"/>）与昵称归一（<c>LianliankanLeaderboard.NormalizeName</c>）
+    /// 共用这一处 —— 两处各写一份截断，迟早一处按 char 一处按文本元素。</para>
+    /// </summary>
+    public static string TrimToTextElements(string? s, int max)
+    {
+        if (string.IsNullOrEmpty(s) || max <= 0) return string.Empty;
+        if (s.Length <= max) return s;                   // 快路径：ASCII 下 char 数 ≥ 文本元素数
+
+        var si = new StringInfo(s);
+        return si.LengthInTextElements <= max ? s : si.SubstringByTextElements(0, max);
+    }
+
+    /// <summary>格内第 2 行：<c>—</c> / <c>87秒</c>。<b>`秒` 不带空格</b>（9px 下 24.84px，再加空格就挤）。</summary>
+    public static string CalSec(int? sec) => sec is null ? NoRecord : $"{sec}秒";
+
+    /// <summary>格内第 3 行：<c>""</c>（无人通关）/ <c>嘉宾</c>（未留名）/ 名字前 3 字。</summary>
+    public static string CalName(string? name)
+    {
+        if (string.IsNullOrWhiteSpace(name)) return string.Empty;
+        var n = name.Trim();
+        return n == GuestName ? GuestShort : TrimToTextElements(n, CalNameChars);
+    }
+
+    /// <summary>「11月3日」。期号是 <c>yyyyMMdd</c> 的整数，月日直接取位。</summary>
+    public static string IssueMonthDay(int issue) => $"{issue / 100 % 100}月{issue % 100}日";
+
+    /// <summary>详情条：<c>11月3日 · 87秒 · 阿P</c> / <c>11月3日 无人通关</c>。</summary>
+    public static string CalendarDetail(int issue, int? sec, string? name) =>
+        sec is null
+            ? $"{IssueMonthDay(issue)} {CalendarNoRecord}"
+            : $"{IssueMonthDay(issue)} · {sec}秒 · {FullName(name)}";
+
+    /// <summary>
+    /// 格子的 <c>aria-label</c>：<c>11月3日 87秒 阿P</c> —— <b>全名在这里</b>（格内只放 3 字）。
+    /// <para>用空格不用 <c>·</c>：读屏会把 <c>·</c> 念成"点"或不念，空格是最稳的分隔。</para>
+    /// </summary>
+    public static string CalendarAria(int issue, int? sec, string? name) =>
+        sec is null
+            ? $"{IssueMonthDay(issue)} {CalendarNoRecord}"
+            : $"{IssueMonthDay(issue)} {sec}秒 {FullName(name)}";
+
+    /// <summary>全名（空 ⇒ <see cref="GuestName"/>）。详情条与 <c>aria-label</c> 共用。</summary>
+    public static string FullName(string? name) =>
+        string.IsNullOrWhiteSpace(name) ? GuestName : name.Trim();
 }

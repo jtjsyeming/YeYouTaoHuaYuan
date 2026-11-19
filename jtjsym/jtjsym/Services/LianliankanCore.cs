@@ -23,6 +23,13 @@ public static class LlkKeys
     /// 想看第二遍就清掉这条键（《39》§12 #7）。</para>
     /// </summary>
     public const string RulesSeen = "jtjsym.llk.rulesSeen";
+
+    /// <summary>
+    /// 玩家昵称（H-018）：<c>localStorage</c>，纯字符串。
+    /// <para><b>只是"上次填过的名字"</b>，不是身份 —— 空/缺省 ⇒ 「神秘嘉宾」。
+    /// 与 <see cref="Best"/> 分开存：纪录刷新时名字会跟着换，昵称不该被榜数据牵着走。</para>
+    /// </summary>
+    public const string Nickname = "jtjsym.llk.nickname";
 }
 
 /// <summary>
@@ -87,6 +94,14 @@ public sealed class LianliankanCore
 
     /// <summary>用时上界（秒）：一天。越界说明档被改过。</summary>
     public const int MaxElapsedSec = 86400;
+
+    /// <summary>
+    /// 可玩期号下界（H-018）：关卡开放的第一天。日历页只给这一天之后的格子，服务端也用它当第二道闸
+    /// （<c>LianliankanLeaderboard.SubmitAsync</c>）—— 会话档在浏览器侧、<c>issue</c> 可以伪造，
+    /// 页面拦截不能当唯一防线。
+    /// <para><b>上界不能写常量</b>（是"今天"），所以闸的两端不对称；要改下界只改这一处。</para>
+    /// </summary>
+    public const int MinIssue = 20261101;
 
     /// <summary>重排上限。超过就进确定性兜底，不"放水"继续摇。</summary>
     private const int ReshuffleLimit = 20;
@@ -624,14 +639,18 @@ public sealed class LianliankanCore
 
     /// <summary>
     /// 会话恢复。闸门三道（《36》v2.0 §3.1）：
-    /// ① 结构（版本 / 长度 / 值域 / 成对）；② 期号 == 今日；③ <b>不查"剩余盘可解"</b>。
+    /// ① 结构（版本 / 长度 / 值域 / 成对）；② 期号 == <paramref name="expectedIssue"/>（当前所选期号）；
+    /// ③ <b>不查"剩余盘可解"</b>。
+    /// <para><b>参数名是 <c>expectedIssue</c> 不是 <c>todayIssue</c></b>（H-018）：日历页可以打开历史关卡，
+    /// 那时"期望的期号"是所选那一期、而不是今天。行为一个字都没改 —— 改的只是名字，
+    /// 因为旧名字会诱导后来的人在这儿加一道"必须等于今天"的检查，而那恰好会把复玩旧关打死。</para>
     /// <para>第 ③ 条不是省事：v1.0 曾要求"剩余盘必须仍可解，否则丢档"，与"死局自动重排"自相矛盾 ——
     /// 恢复的死局档本来就会被重排救活，丢弃它等于把玩家打回第 1 关。</para>
     /// </summary>
-    public static LianliankanCore? TryFrom(LianliankanSnapshot? s, int todayIssue)
+    public static LianliankanCore? TryFrom(LianliankanSnapshot? s, int expectedIssue)
     {
         if (s is null || s.V != LianliankanSnapshot.CurrentVersion) return null;
-        if (s.Issue != todayIssue) return null;
+        if (s.Issue != expectedIssue) return null;
         if (s.ElapsedSec < 0 || s.ElapsedSec > MaxElapsedSec) return null;
 
         var cells = s.Cells;

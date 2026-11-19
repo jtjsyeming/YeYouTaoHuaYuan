@@ -1,4 +1,5 @@
 using Microsoft.Fast.Components.FluentUI;
+using jtjsym.Services;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -6,6 +7,10 @@ var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddRazorPages();
 builder.Services.AddServerSideBlazor();
 builder.Services.AddFluentUIComponents();
+
+// 连连看每日榜（H-018）：singleton —— 缓存 + SemaphoreSlim 都必须是进程级单例，
+// 换成 Scoped 就是"每个 circuit 一份缓存、互相覆盖"。构造只算路径、不读盘（启动 IO 失败不能让站点起不来）。
+builder.Services.AddSingleton<LianliankanLeaderboard>();
 
 var app = builder.Build();
 
