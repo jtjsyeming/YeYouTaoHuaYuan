@@ -23,7 +23,7 @@ test.describe('NAV 站点框架', () => {
       ['2048', '/game_2048'],
       ['俄罗斯方块', '/tetris'],
       ['扫雷', '/minesweeper'],
-      ['连连看', '/lianliankan'],
+      ['连连看', '/llkcalendar'],
     ];
     const navResults = [];
     for (const [text, expectPath] of navMap) {
@@ -93,6 +93,7 @@ test.describe('NAV 站点框架', () => {
       '/game_2048': '2048',
       '/tetris': '俄罗斯方块',
       '/minesweeper': '扫雷',
+      '/llkcalendar': '连连看·关卡',
       '/lianliankan': '连连看 · 每日一关',
       '/coding_place': '编程挑战',
     };

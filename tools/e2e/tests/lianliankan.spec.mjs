@@ -1,4 +1,5 @@
-// H-014 / H-015 / D-31 / D-32 / H-016 / D-33 / D-34 / D-37 / D-38 / H-017 / D-39 / P-077：每日一关连连看（LL-01~LL-37）
+// H-014 / H-015 / D-31 / D-32 / H-016 / D-33 / D-34 / D-37 / D-38 / H-017 / D-39 / P-077 / H-018：
+// 每日一关连连看（LL-01~LL-41）+ 关卡日历与服务端每日榜（LL-38~41，H-018）
 // 存储键（全部带 jtjsym. 命名空间，且都收在 LlkKeys 里）：
 //   sessionStorage['jtjsym.llk.session']  = {v:1, issue, cells[48], elapsedSec}
 //   localStorage['jtjsym.llk.best']      = {"issue":20261112,"sec":87}   ← 单键单条，越小越好
@@ -25,6 +26,8 @@
 //      另：第二击之后**不能**用 clickCell（它内含 sleep 220 = 整个淡出窗口），必须裸 click。
 import { expect, test } from '@playwright/test';
 import fs from 'node:fs';
+import os from 'node:os';
+import path from 'node:path';
 import { check, checkEq, open, openLlk, sleep, trackErrors } from './helpers.mjs';
 
 const SK = 'jtjsym.llk.session';
@@ -1442,6 +1445,239 @@ test.describe('LL 连连看', () => {
     check('LL-37-只剩字牌层', !one.bg.includes('faces.png') && one.bg.includes('data:image/svg+xml'),
       `降级后应只剩字牌图（实际 "${one.bg.slice(0, 70)}…"）；若为 none 说明改回了 background-image: none`);
     check('LL-37-字牌铺满', one.size === '100% 100%', `降级后 backgroundSize="${one.size}"（应 100% 100%）`);
+  });
+});
+
+// ───── H-018 / C-95+C-96：关卡日历（/llkcalendar）与服务端每日榜 ─────
+// 数据目录接缝：由 playwright.config.mjs 的 `webServer.env: { Lianliankan__DataDir: … }` 注入。
+// 这里按同一个 `path.join(os.tmpdir(), 'jtjsym-e2e-llk')` 自己算一遍，**不 import config** ——
+// 两处算的是同一个字符串，靠这条注释互相指向。
+// ⚠ 绝不能改成 `tools/e2e/.tmp/…`：FT-53 的豁免正则只认 `functiontest.mjs` 与 `.workbuddy/`，
+//   而 `.gitignore` 没有 `.tmp/` ⇒ 跑完 e2e 会留下未跟踪文件 ⇒ FT-53 判红（《51》§1.3）。
+const LLK_DATA_DIR = path.join(os.tmpdir(), 'jtjsym-e2e-llk');
+const LLK_DATA_FILE = path.join(LLK_DATA_DIR, 'llk-records.json');
+
+test.describe('关卡日历与服务端榜单（H-018）', () => {
+  // 本轮从空榜开始：否则"无纪录格显示 —"和"提交后出现名字"都会受上一次运行的残留影响。
+  // 服务端有进程内缓存，所以真跑门禁时应是**新起的**实例（webServer 会起；复用人工实例时
+  // LL-39 的落盘断言会把这件事说出来）。
+  test.beforeAll(() => {
+    fs.rmSync(LLK_DATA_DIR, { recursive: true, force: true });
+  });
+
+  test('LL-38 日历渲染：42 槽位、未来格禁用、无纪录格显示「—」（H-018 / C-95）', async ({ page }) => {
+    const TODAY = todayIssue();
+    const Y = Math.floor(TODAY / 10000);
+    const M = Math.floor(TODAY / 100) % 100;
+
+    await open(page, '/llkcalendar', 1200);
+
+    const g = await page.evaluate(today => {
+      const grid = document.querySelector('.llk-cal-grid');
+      const cells = [...document.querySelectorAll('.llk-cal-cell')];
+      const sec = el => el.querySelector('.llk-cal-sec').textContent.trim();
+      const name = el => el.querySelector('.llk-cal-name').textContent.trim();
+      const navs = [...document.querySelectorAll('.llk-cal-nav')];
+      // 「无纪录」的样本格：**按当前渲染结果挑一个空格**，不写死"当月 1 号"。
+      // 服务端有进程内缓存，同一台站上跑第二遍时 1 号可能已被上一遍写过（LL-39），
+      // 写死下标会把"缓存残留"误报成"日历渲染坏了"。
+      const free = cells.find(el => !el.disabled && (el.dataset.sec ?? '') === '');
+      return {
+        slots: grid ? grid.children.length : -1,
+        cells: cells.length,
+        blanks: document.querySelectorAll('.llk-cal-blank').length,
+        title: document.querySelector('.llk-cal-title')?.textContent.trim(),
+        week: [...document.querySelectorAll('.llk-cal-week span')].map(s => s.textContent.trim()).join(''),
+        future: cells.filter(c => Number(c.dataset.issue) > today).map(c => c.disabled),
+        past: cells.filter(c => Number(c.dataset.issue) <= today).map(c => c.disabled),
+        freeIssue: free ? Number(free.dataset.issue) : 0,
+        freeSec: free ? sec(free) : '(无空格)',
+        freeThird: free ? name(free) : '(无空格)',
+        freeAria: free ? free.getAttribute('aria-label') : '(无空格)',
+        detail: document.querySelector('.llk-cal-detail')?.textContent.trim(),
+        nextDisabled: navs[1]?.disabled,
+        prevDisabled: navs[0]?.disabled,
+      };
+    }, TODAY);
+
+    // 42 = 6 行 × 7 列。判定槽位而不是"日期格数"：格数随月份变（28~31），槽位恒定才是"换月不跳高度"。
+    check('LL-38-槽位', g.slots === 42 && g.cells + g.blanks === 42,
+      `槽位=${g.slots}（日期格 ${g.cells} + 空白 ${g.blanks}）`);
+    check('LL-38-星期行', g.week === '一二三四五六日', `星期行="${g.week}"`);
+    check('LL-38-月份标题', g.title === `${Y}年${M}月`, `标题="${g.title}"（应 ${Y}年${M}月，首屏落在当前月）`);
+    check('LL-38-未来格禁用', g.future.length > 0 && g.future.every(Boolean),
+      `未来格 ${g.future.length} 个，其中可点的 ${g.future.filter(v => !v).length} 个`);
+    check('LL-38-历史格可点', g.past.every(v => !v), `历史/今天共 ${g.past.length} 个，禁用的 ${g.past.filter(Boolean).length} 个`);
+    // 三级状态的第一级：无人通关 = 第 2 行「—」、第 3 行留空（不是「神秘嘉宾」—— 那是"通关未留名"）
+    check('LL-38-无纪录两行', g.freeIssue > 0 && g.freeSec === '—' && g.freeThird === '',
+      `空格（期号 ${g.freeIssue || '无'}）：第 2 行="${g.freeSec}" 第 3 行="${g.freeThird}"`);
+    check('LL-38-无纪录aria', g.freeIssue > 0
+      && g.freeAria === `${Math.floor(g.freeIssue / 100) % 100}月${g.freeIssue % 100}日 无人通关`,
+      `aria-label="${g.freeAria}"（期号 ${g.freeIssue}；本月所有可玩格都已有纪录时这里会报「无空格」）`);
+    check('LL-38-详情条默认', g.detail === '点格子进关', `详情条="${g.detail}"`);
+    check('LL-38-下个月禁用', g.nextDisabled === true, `当前月时「下个月」disabled=${g.nextDisabled}`);
+
+    // 上个月：**只在第一个月（2026年11月）禁用**。用例不写死"当前是哪个月"——
+    // 跑测日期一变，硬写就会变成"在 12 月也要求上个月禁用"这种假红。
+    const prev = page.locator('.llk-cal-nav').first();
+    if (await prev.isDisabled()) {
+      check('LL-38-月份边界', g.title === '2026年11月',
+        `「上个月」被禁用，但当前是 ${g.title}（应只在 2026年11月 禁用）`);
+    } else {
+      await prev.click();
+      await expect.poll(() => page.textContent('.llk-cal-title'), { timeout: 5000 }).not.toBe(g.title);
+      const slots2 = await page.evaluate(() => document.querySelector('.llk-cal-grid').children.length);
+      check('LL-38-换月恒 42 槽', slots2 === 42, `换月后槽位=${slots2}`);
+    }
+  });
+
+  test('LL-39 提交流程：通关 → 留名 → 日历上出现名字（H-018 / C-95）', async ({ page }) => {
+    // ⚠ 期号**不能写死**（原来写 20261105，第二轮起必红）。踩的是"删了目录、删不掉进程内缓存"：
+    //   `beforeAll` 删的是磁盘目录，而 `LianliankanLeaderboard` 的 `_cache` 在**第一次读**之后就再也不看盘
+    //   ⇒ 同一个服务进程里跑第二遍时，缓存里还留着上一遍写的 `{20261105: 5s}`，而这一遍注入的也是 5 秒
+    //   ⇒ `sec >= current.Sec` 判"不够快" ⇒ 提交被拒 ⇒ 落盘断言和「已记入榜单」一起红，
+    //   而红的样子（什么都没写）与"接缝没生效"一模一样，属最难查的一类。
+    //   实测：同一台站上连跑两遍 llk spec，第一遍绿、第二遍红。
+    // 修法：**先问服务端**（渲染出来的日历就是缓存的样子）哪一天还没有纪录，再拿那一天做提交。
+    //   这样无论跑第几遍都能拿到一个"缓存里确实没有"的期号，提交必然被采纳。
+    await page.goto('/llkcalendar', { waitUntil: 'domcontentloaded' });
+    const free = await page.evaluate(() => {
+      const c = [...document.querySelectorAll('.llk-cal-cell')]
+        .find(el => !el.disabled && (el.dataset.sec ?? '') === '');   // 无纪录的格子：第 2 行是「—」
+      return c ? Number(c.dataset.issue) : 0;
+    });
+    check('LL-39-选到空档', free > 0 && free <= todayIssue(),
+      `没找到无纪录的可玩格（${free}）—— 日历上全是纪录？本月的格子被跑满了，用例需要换月取样`);
+    const ISSUE = free || 20261105;                       // 兜底只为"下面的断言能跑完并留下可读的失败"
+    const MM = Math.floor(ISSUE / 100) % 100;
+    const DD = ISSUE % 100;
+
+    // 相邻同脸 = 0 拐可连 ⇒ 两下点完就通关。走的是真实交互，不是替身。
+    const board = cellsWith([[idx(0, 0), 1], [idx(0, 1), 1]]);
+
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await page.evaluate(([rk, sk, v]) => {
+      localStorage.setItem(rk, '1');                       // 挡玩法遮罩
+      sessionStorage.setItem(sk, v);
+    }, ['jtjsym.llk.rulesSeen', SK, JSON.stringify({ v: 1, issue: ISSUE, cells: board, elapsedSec: 5 })]);
+
+    await page.goto(`/lianliankan?issue=${ISSUE}`, { waitUntil: 'domcontentloaded' });
+    // 正面锚：恢复提示条。不用"盘面像不像"——每日真实盘也可能长这样，那会假绿。
+    await expect.poll(() => page.locator('.llk-resume-tip').count(), { timeout: 12_000 }).toBe(1);
+
+    await page.locator('.llk-cell[data-idx="0"]').click();
+    await expect.poll(() => page.locator('.llk-cell.is-selected').count(), { timeout: 5_000 }).toBe(1);
+    await page.locator('.llk-cell[data-idx="1"]').click();
+    await expect.poll(() => page.locator('.llk-overlay-title').textContent(), { timeout: 5_000 }).toBe('全部消除');
+
+    await page.locator('.llk-name-input').fill('测试者');
+    await page.locator('.llk-name-btn').click();
+    await expect.poll(() => page.locator('.llk-name-saved').textContent(), { timeout: 8_000 })
+      .toBe('已记入榜单');
+
+    // 落盘断言放在**看日历之前**：文件不在 ⇒ 直接说"当前实例用的不是 e2e 数据目录"，
+    // 而不是让下一条"日历上没有名字"莫名其妙地红。
+    check('LL-39-落盘', fs.existsSync(LLK_DATA_FILE),
+      `榜单文件不在 ${LLK_DATA_FILE}（webServer.env 没生效？或复用了手工起的实例）`);
+    const raw = fs.existsSync(LLK_DATA_FILE) ? fs.readFileSync(LLK_DATA_FILE, 'utf8') : '';
+    check('LL-39-内容', raw.includes(String(ISSUE)) && raw.includes('测试者'),
+      `文件内容="${raw.slice(0, 200)}"`);
+
+    await page.goto('/llkcalendar', { waitUntil: 'domcontentloaded' });
+    await expect(page.locator(`.llk-cal-cell[data-issue="${ISSUE}"] .llk-cal-name`))
+      .toHaveText('测试者', { timeout: 8_000 });
+
+    const cell = await page.evaluate(i => {
+      const c = document.querySelector(`.llk-cal-cell[data-issue="${i}"]`);
+      return {
+        sec: c.querySelector('.llk-cal-sec').textContent.trim(),
+        name: c.querySelector('.llk-cal-name').textContent.trim(),
+        third: c.getAttribute('aria-label'),
+      };
+    }, ISSUE);
+
+    // 秒数是**比较**不是等值：通关用时受机器速度影响（这里是注入的 5 秒 + 若干时钟拍）
+    check('LL-39-秒数', /^\d+秒$/.test(cell.sec), `第 2 行="${cell.sec}"（应 \\d+秒）`);
+    check('LL-39-名字', cell.name === '测试者', `第 3 行="${cell.name}"`);
+    check('LL-39-aria全名', cell.third === `${MM}月${DD}日 ${cell.sec.replace('秒', '')}秒 测试者`,
+      `aria-label="${cell.third}"（应 ${MM}月${DD}日 … 测试者，期号 ${ISSUE}）`);
+  });
+
+  test('LL-40 旧关复玩：?issue= 让 TryFrom 按所选期号恢复（H-018 / C-95）', async ({ page }) => {
+    const ISSUE = 20261105;
+    // 只贴两组角（2 个头像各 2 张，过成对闸）⇒ 48 格在场时一眼看出"没恢复"
+    const board = cellsWith([[idx(0, 0), 1], [idx(0, 1), 1], [idx(7, 4), 2], [idx(7, 5), 2]]);
+
+    await page.goto(`/lianliankan?issue=${ISSUE}`, { waitUntil: 'domcontentloaded' });
+    await page.evaluate(([rk, sk, v]) => {
+      localStorage.setItem(rk, '1');
+      sessionStorage.setItem(sk, v);
+    }, ['jtjsym.llk.rulesSeen', SK, JSON.stringify({ v: 1, issue: ISSUE, cells: board, elapsedSec: 5 })]);
+
+    // 刷新：URL（含 ?issue=）不变 ⇒ OnInitialized 重新解析 query。
+    // ⚠ 这就是 `?issue=` **唯一**支持的进入方式：跨页进入（或刷新）。
+    //   页内 `NavigateTo("/lianliankan?issue=…")` 是同路由，组件不重建、OnInitialized 不再跑，
+    //   期号会静默不变。将来要做"下一关"必须先把它提成路由参数（@page "/lianliankan/{Issue:int}"）。
+    await page.reload({ waitUntil: 'domcontentloaded' });
+
+    await expect(page.locator('h1')).toHaveText('地球日20261105关', { timeout: 8_000 });
+    await expect.poll(() => page.locator('.llk-resume-tip').count(), { timeout: 12_000 }).toBe(1);
+
+    const live = await page.evaluate(() => [...document.querySelectorAll('.llk-cell')]
+      .map(c => Number(c.getAttribute('data-face'))).filter(v => v !== 0).length);
+    // 若 TryFrom 还是拿"今天"当期望期号 ⇒ 期号闸丢弃这份档 ⇒ 回落真实每日盘 ⇒ 48 块
+    check('LL-40-恢复', live === 4,
+      `恢复后在场 ${live} 块（应 4；48 = TryFrom 用了今天的期号，把这份档整档丢了）`);
+    check('LL-40-期号', (await page.textContent('h1')).includes('20261105'),
+      `标题="${(await page.textContent('h1')).trim()}"`);
+  });
+
+  test('LL-41 320×568 日历布局：格宽 ≥40、无横向滚动、三行不溢出（H-018 / C-95）', async ({ browser }) => {
+    const ctx = await browser.newContext({ viewport: { width: 320, height: 568 }, isMobile: true, hasTouch: true });
+    const mp = await ctx.newPage();
+    await open(mp, '/llkcalendar', 1200);
+
+    const m = await mp.evaluate(() => {
+      const cell = document.querySelector('.llk-cal-cell');
+      const r = cell.getBoundingClientRect();
+      return {
+        w: r.width,
+        h: r.height,
+        sw: document.documentElement.scrollWidth,
+        cw: document.documentElement.clientWidth,
+      };
+    });
+
+    check('LL-41-格宽', m.w >= 40,
+      `格宽 ${m.w.toFixed(2)}px（应 ≥40；窄于此 3 字名 27px + 左右留白就挤）`);
+    check('LL-41-无横向滚动', m.sw <= m.cw, `scrollWidth=${m.sw} > clientWidth=${m.cw}`);
+    check('LL-41-格高', m.h >= 38, `格高 ${m.h.toFixed(2)}px（应 ≥38）`);
+
+    // 最坏文本能否装下：把「123秒 + 3 字名」临时写进一格再量，量完还原。
+    // ⚠ 不用真实数据：这条不该依赖 LL-39 是否跑过，而"数据里恰好没有名字"会让判据恒绿。
+    //   ——这是**刻意的 DOM 探针**，测的是版式预算，不是数据。
+    const fit = await mp.evaluate(() => {
+      const cell = document.querySelector('.llk-cal-cell');
+      const sec = cell.querySelector('.llk-cal-sec');
+      const name = cell.querySelector('.llk-cal-name');
+      const before = { sec: sec.textContent, name: name.textContent };
+      sec.textContent = '123秒';            // 9px 下 24.84px（三行里最宽的一行）
+      name.textContent = '魏老夫';           // 3 字 27px = CalName 的显示上限
+      const out = {
+        secW: sec.scrollWidth,
+        nameClip: name.scrollWidth - name.clientWidth,   // >0 = 名字被裁掉了
+        vOver: cell.scrollHeight - cell.clientHeight,    // >0 = 三行装不下（折行或溢出）
+        cellW: cell.clientWidth,
+      };
+      sec.textContent = before.sec;
+      name.textContent = before.name;
+      return out;
+    });
+    await ctx.close();
+
+    check('LL-41-秒数单行', fit.secW <= fit.cellW + 1, `123秒 宽 ${fit.secW}px，格内可用 ${fit.cellW}px`);
+    check('LL-41-名字不裁', fit.nameClip <= 0, `3 字名被裁 ${fit.nameClip}px`);
+    check('LL-41-纵向不溢', fit.vOver <= 0, `三行比格子高 ${fit.vOver}px`);
   });
 });
 

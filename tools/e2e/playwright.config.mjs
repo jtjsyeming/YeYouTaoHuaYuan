@@ -1,8 +1,18 @@
 import { defineConfig, devices } from '@playwright/test';
+import os from 'node:os';
+import path from 'node:path';
 
 const BASE_URL = process.env.BASE_URL ?? 'http://localhost:14074';
 // 发布前清单（release.manual.mjs）默认不收集 —— 它既不占"跳过"数，也不会被误当自动化门禁。
 const RELEASE = process.env.PW_RELEASE === '1';
+
+// 连连看每日榜的数据目录（H-018）。
+// ⚠ **不能**放 tools/e2e/.tmp/：FT-53 的豁免正则只认 `functiontest.mjs` 与 `.workbuddy/`，
+//   而 `.gitignore` 里没有 `.tmp/` ⇒ 跑完 e2e 会留下未跟踪文件 ⇒ FT-53 判红（红在一条与功能无关的守卫上）。
+// 用系统临时目录：天然不进工作区，Win/ubuntu 都成立。
+// spec 侧按同样的 path.join(os.tmpdir(), 'jtjsym-e2e-llk') 自己算一遍（不 import 本文件 ——
+// 两处算的是同一个字符串，靠这条注释互相指向）。
+export const LLK_DATA_DIR = path.join(os.tmpdir(), 'jtjsym-e2e-llk');
 
 export default defineConfig({
   testDir: './tests',
@@ -53,6 +63,11 @@ export default defineConfig({
     url: BASE_URL,
     reuseExistingServer: true, // VS/VS Code 调试实例已占用 14074 时直接复用
     timeout: 180_000,
+    // H-018：只写这一个变量即可 —— Playwright 的 env 是**合并**语义
+    // （`{ ...DEFAULT_ENVIRONMENT_VARIABLES, ...process.env, ...this._options.env }`，
+    // 见 playwright/lib/runner/index.js）。照抄某些文章"把 process.env 全量塞进去"会遮住
+    // 以后新增的环境变量，还会让本文件被迫 import process。
+    env: { Lianliankan__DataDir: LLK_DATA_DIR },
     stdout: 'ignore',
     stderr: 'pipe',
   },

@@ -74,7 +74,7 @@ test.describe('冒烟集（28 条 P0）', () => {
       ['2048', '/game_2048'],
       ['俄罗斯方块', '/tetris'],
       ['扫雷', '/minesweeper'],
-      ['连连看', '/lianliankan'],
+      ['连连看', '/llkcalendar'],
     ];
     const bad = [];
     for (const [text, path] of navMap) {

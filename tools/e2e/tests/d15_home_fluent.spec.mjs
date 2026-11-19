@@ -13,7 +13,7 @@ test.describe('D15 首页卡片化与 Fluent 统一', () => {
     check('D15-1', h1.includes('欢迎来到夜游桃花源') && (await page.locator('.home-card').count()) === 7, `h1="${h1}"；.home-card=${await page.locator('.home-card').count()}`);
     check(
       'D15-2',
-      JSON.stringify(hrefs) === JSON.stringify(['counter', 'loveTime', 'game_2048', 'tetris', 'minesweeper', 'lianliankan']),
+      JSON.stringify(hrefs) === JSON.stringify(['counter', 'loveTime', 'game_2048', 'tetris', 'minesweeper', 'llkcalendar']),
       `链接卡 href=${JSON.stringify(hrefs)}`,
     );
   });

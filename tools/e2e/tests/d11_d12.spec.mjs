@@ -19,7 +19,7 @@ test.describe('D-11 浏览器标题', () => {
     );
   });
 
-  test('D-11-2 八个路由标题与《09》§3.4 表一致（防回归）', async ({ page }) => {
+  test('D-11-2 九个路由标题与《09》§3.4 表一致（防回归）', async ({ page }) => {
     const expected = {
       '/': '夜游桃花源',
       '/counter': '按下试试',
@@ -28,6 +28,7 @@ test.describe('D-11 浏览器标题', () => {
       '/tetris': '俄罗斯方块',
       '/minesweeper': '扫雷',
       '/lianliankan': '连连看 · 每日一关',
+      '/llkcalendar': '连连看·关卡',
       '/coding_place': '编程挑战',
     };
     const actual = {};
