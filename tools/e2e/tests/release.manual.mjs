@@ -1,4 +1,4 @@
-// 发布前验收清单（NF-05 / NF-07 / NF-08）—— 平时**不收集**，不占门禁的"跳过"数。
+// 发布前验收清单（NF-05 / NF-07 / NF-08 / NF-11）—— 平时**不收集**，不占门禁的"跳过"数。
 //
 // 收集门控在 playwright.config.mjs 的顶层 testMatch：只有 PW_RELEASE=1 时
 // 才会把 *.manual.mjs 收进来。这样它既不制造"跳过"，也不会被误当成自动化门禁的一项。
@@ -67,4 +67,23 @@ test('NF-07 闲置 30 分钟重连', async ({ page }) => {
     return el ? getComputedStyle(el).display : 'absent';
   });
   expect(errUi, 'Blazor 错误 UI 不应被接管（display:block 即白屏）').not.toBe('block');
+});
+
+test('NF-11 榜单存储可写：/llkhealth 报 writable 且数据目录在部署目录之外（D-40 / C-99）', async ({ request }) => {
+  // D-40 事故的直接解药：以后每次发布 5 秒就能知道"榜能不能写"，
+  // 而不是等玩家点了「留下名字」发现没反应。
+  //   ① writable=true 是关键判据（**不是**"页面有没有报错"—— 读路径失败时页面照样正常渲染）；
+  //   ② kind 细分：permission ⇒ ECS 上 icacls 授权；path ⇒ 查 appsettings.Production.json 是否生效；
+  //   ③ dataDir 默认不回，?detail=1 才给，且必须落在站点目录之外（robocopy /MIR 会镜像站点目录）。
+  const res = await request.get(`${BASE}/llkhealth`);
+  expect(res.status(), '/llkhealth 应 200（D-40 取证端点）').toBe(200);
+  const body = await res.json();
+  expect(body.writable, `榜应可写；kind=${body.kind} error=${body.error}`
+    + '（permission ⇒ 授权应用池；path ⇒ 查 DataDir；io ⇒ 磁盘/只读卷）').toBe(true);
+  expect(body.kind, 'kind 应为 ok').toBe('ok');
+  expect(body.dataDir, '默认不应回绝对路径（公开端点）').toBeNull();
+
+  const detail = await (await request.get(`${BASE}/llkhealth?detail=1`)).json();
+  expect(detail.dataDir, '?detail=1 应返回绝对路径（用来确认 appsettings.Production.json 真的生效）').toBeTruthy();
+  expect(String(detail.dataDir).toLowerCase(), '数据目录必须在站点/发布目录之外').not.toContain('wwwroot');
 });
