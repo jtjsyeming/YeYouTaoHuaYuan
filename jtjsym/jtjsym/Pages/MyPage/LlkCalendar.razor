@@ -59,6 +59,13 @@
     @* 详情条：名字在格内被截到 3 字，全称唯一的显示位置就是这里（另一处是 aria-label）。
        高度固定 20px 且**始终占位** —— 否则鼠标划过时下面的内容会跳一下。 *@
     <p class="llk-cal-detail">@detailText</p>
+
+    @* 存储徽标（D-40 / C-98）：**只在异常时显示**。正常时访客不该看到内部实现；
+       它也不是常驻行 —— 320 下的纵向预算本来就只剩几十像素，多一行只在故障时出现才付得起。 *@
+    @if (badgeText is not null)
+    {
+        <p class="llk-cal-badge" role="status">@badgeText</p>
+    }
 </div>
 
 <style>
@@ -185,6 +192,15 @@
         text-align: center;
     }
 
+    /* 存储徽标：只在自检/写入失败时出现，所以按"最小高度"算（.75rem × 1.2 ≈ 14px） */
+    .llk-cal-badge {
+        margin: 0;
+        font-size: .75rem;
+        line-height: 1.2;
+        color: #B3423C;
+        text-align: center;
+    }
+
     /* 窄屏把日历"撑宽"16px：.content 是 px-4（左右各 24px），7 列在 320 - 48 = 272px 里只剩 34px/格。
        还回 16px（各留 8px 镂空）⇒ (304 − 6×3) / 7 = 40.86px，正好是《51》§1.2 实测量到的那个数。 */
     @@media (max-width: 419.98px) {
@@ -224,6 +240,9 @@
 
     private int todayIssue;
     private int monthIndex;
+
+    /// <summary>徽标文案（D-40 / C-98）：<c>null</c> = 不显示。</summary>
+    private string? badgeText;
     private int maxMonthIndex;
 
     private IReadOnlyDictionary<int, LlkRecord> records = new Dictionary<int, LlkRecord>();
@@ -254,8 +273,24 @@
             records = new Dictionary<int, LlkRecord>();
         }
 
+        // 徽标的两个来源（D-40 / C-98）：
+        // ① `?diag=1` —— 显式自检。**必须显式**：试写有副作用，挂在渲染上就把"纯读页面"变成写页面（U13-6 会红）；
+        // ② 进程里已有的结论（上次提交失败 / 上次自检）—— 纯内存读，不碰盘。
+        // 正常路径下 LastProbe 是 null ⇒ 访客看不到任何多余的一行。
+        if (HasDiag(Nav.Uri))
+        {
+            try { await Board.EnsureWritableAsync(); } catch (Exception) { }
+        }
+        if (Board.LastProbe is { Ok: false } failed) badgeText = LlkCopy.BoardUnavailableFor(failed.Kind);
+
         Build();
     }
+
+    /// <summary>
+    /// <c>?diag=1</c> 判定。只看这一个键，不做通用 query 解析 —— 这条路的用途是"运维在浏览器里打一下"，
+    /// 多写一个 parser 只会多一处要维护的东西。
+    /// </summary>
+    private static bool HasDiag(string uri) => uri.Contains("diag=1", StringComparison.Ordinal);
 
     private void PrevMonth()
     {

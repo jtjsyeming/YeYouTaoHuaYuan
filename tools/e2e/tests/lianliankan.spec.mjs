@@ -1679,6 +1679,75 @@ test.describe('关卡日历与服务端榜单（H-018）', () => {
     check('LL-41-名字不裁', fit.nameClip <= 0, `3 字名被裁 ${fit.nameClip}px`);
     check('LL-41-纵向不溢', fit.vOver <= 0, `三行比格子高 ${fit.vOver}px`);
   });
+
+  test('LL-42 提交失败有反馈：数据目录不可写时出现失败文案（D-40 / C-98）', async ({ page }) => {
+    // 构造手法：**运行期把数据目录换成同名文件**（不是用 Lianliankan__DataDir 起新站点）。
+    // 为什么不换 env：`reuseExistingServer: true` ⇒ 站点已在 14074 跑着时 `webServer.env` 一个字都不生效
+    //   （H-018 批 C 实测过：手工实例指向 E:/tmp/llk-pr-data，LL-39 因此假红一轮）。
+    //   `_dir` 是文件 ⇒ `SaveAsync` 第一行的 `Directory.CreateDirectory` 必抛 IOException（实测），
+    //   而读路径 `File.Exists(文件/子文件)` = false ⇒ 空榜、不抛 ⇒ 日历还能正常渲染，
+    //   正好把"只有提交这条路失败"隔出来。
+    // ⚠ 期号必须挑一个**服务端缓存里没有纪录**的日子：有纪录时 SubmitAsync 会先返回 null（不够快），
+    //   走的是灰字分支，断言失败文案就会变成假红。
+    await page.goto('/llkcalendar', { waitUntil: 'domcontentloaded' });
+    const free = await page.evaluate(() => {
+      const c = [...document.querySelectorAll('.llk-cal-cell')]
+        .find(el => !el.disabled && (el.dataset.sec ?? '') === '');
+      return c ? Number(c.dataset.issue) : 0;
+    });
+    check('LL-42-选到空档', free > 0, `没找到无纪录的可玩格（${free}）—— 本月被跑满了，用例需要换月取样`);
+    const ISSUE = free || 20261105;
+
+    const board = cellsWith([[idx(0, 0), 1], [idx(0, 1), 1]]);
+
+    await page.goto('/', { waitUntil: 'domcontentloaded' });
+    await page.evaluate(([rk, sk, v]) => {
+      localStorage.setItem(rk, '1');
+      sessionStorage.setItem(sk, v);
+    }, ['jtjsym.llk.rulesSeen', SK, JSON.stringify({ v: 1, issue: ISSUE, cells: board, elapsedSec: 5 })]);
+
+    await page.goto(`/lianliankan?issue=${ISSUE}`, { waitUntil: 'domcontentloaded' });
+    await expect.poll(() => page.locator('.llk-resume-tip').count(), { timeout: 12_000 }).toBe(1);
+
+    // 通关（走真实交互）
+    await page.locator('.llk-cell[data-idx="0"]').click();
+    await expect.poll(() => page.locator('.llk-cell.is-selected').count(), { timeout: 5_000 }).toBe(1);
+    await page.locator('.llk-cell[data-idx="1"]').click();
+    await expect.poll(() => page.locator('.llk-overlay-title').textContent(), { timeout: 5_000 }).toBe('全部消除');
+
+    // 换脸：目录 → 文件
+    fs.rmSync(LLK_DATA_DIR, { recursive: true, force: true });
+    fs.writeFileSync(LLK_DATA_DIR, 'x');
+    try {
+      await page.locator('.llk-name-input').fill('失败者');
+      await page.locator('.llk-name-btn').click();
+
+      await expect.poll(() => page.locator('.llk-name-error').count(), { timeout: 8_000 }).toBe(1);
+      check('LL-42-失败文案',
+        (await page.textContent('.llk-name-error')).trim() === '提交失败：纪录只保存在本机',
+        `文案="${(await page.textContent('.llk-name-error')).trim()}"`);
+
+      // 可重试：按钮还在、没被禁用、也没换成「已记入榜单」
+      const retry = await page.evaluate(() => ({
+        btn: document.querySelectorAll('.llk-name-btn').length,
+        disabled: document.querySelector('.llk-name-btn')?.disabled,
+        saved: document.querySelectorAll('.llk-name-saved').length,
+        input: document.querySelectorAll('.llk-name-input').length,
+      }));
+      check('LL-42-可重试', retry.btn === 1 && retry.disabled === false && retry.saved === 0 && retry.input === 1,
+        `按钮 ${retry.btn} 个 disabled=${retry.disabled}、已保存 ${retry.saved}、输入框 ${retry.input}`);
+
+      // 日历徽标：同一次失败已经把 LastProbe 置成 io，日历页**只读内存**就该显示出来
+      await page.goto('/llkcalendar', { waitUntil: 'domcontentloaded' });
+      await expect.poll(() => page.locator('.llk-cal-badge').count(), { timeout: 8_000 }).toBe(1);
+      check('LL-42-徽标', (await page.textContent('.llk-cal-badge')).trim() === '榜单暂时不可用（IO）',
+        `徽标="${(await page.textContent('.llk-cal-badge')).trim()}"`);
+    } finally {
+      // 必须恢复：workers:1 且同 spec 内顺序执行，污染会让后续任何一条读写都用不了这个目录
+      fs.rmSync(LLK_DATA_DIR, { force: true });
+      fs.mkdirSync(LLK_DATA_DIR, { recursive: true });
+    }
+  });
 });
 
 // ───── P-077 / C-82：reduced-motion 下重排必须"只换盘、不播动画" ─────

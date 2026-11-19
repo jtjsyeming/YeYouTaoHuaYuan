@@ -192,6 +192,30 @@ public static class LlkCopy
     /// <summary>提交成功后的副行文案。</summary>
     public const string LeaderboardSaved = "已记入榜单";
 
+    /// <summary>
+    /// 提交失败的文案（D-40 / C-98）。**"纪录只保存在本机"这半句是准确的**：
+    /// 本地 <c>jtjsym.llk.best</c> 确实已经写进去了，只有服务端榜没写 —— 说"提交失败"就够，别说"成绩丢失"。
+    /// </summary>
+    public const string SubmitFailedLocal = "提交失败：纪录只保存在本机";
+
+    /// <summary>没改写纪录（<c>SubmitAsync</c> 返回 <c>null</c>）时的灰字提示。<b>按钮仍在</b>，可换名字重试。</summary>
+    public const string NotFaster = "没能改写纪录（要更快才行）";
+
+    /// <summary>日历页徽标的通称；细分见 <see cref="BoardUnavailableFor"/>。</summary>
+    public const string BoardUnavailable = "榜单暂时不可用";
+
+    /// <summary>
+    /// 徽标文案按自检分类细分。<b>与 <c>LianliankanLeaderboard.Classify</c> 的四个 Kind 一一对应</b>，
+    /// 改一处就要改另一处（U14-2 守分类，这里只负责把分类变中文）。
+    /// </summary>
+    public static string BoardUnavailableFor(string kind) => kind switch
+    {
+        "permission" => $"{BoardUnavailable}（权限）",
+        "path" => $"{BoardUnavailable}（路径）",
+        "io" => $"{BoardUnavailable}（IO）",
+        _ => BoardUnavailable,
+    };
+
     /// <summary>名字输入框的占位符（＝没填就是 <see cref="GuestName"/>）。</summary>
     public const string NamePlaceholder = GuestName;
 

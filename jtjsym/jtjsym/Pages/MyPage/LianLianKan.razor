@@ -132,9 +132,10 @@
                 <p class="llk-overlay-sub">用时 @elapsedSec 秒 · 本次最快 @FormatBest(best) 秒</p>
 
                 @* H-018：留名入口。**不是必经路径** —— 不填直接「再来一局」也完全正常（榜上记「神秘嘉宾」）。
-                   提交失败一律静默（榜挂了不影响结算），所以这里只有成功态文案，没有错误文案。
                    用裸 input 而不是 FluentTextField：后者是 shadow DOM 自定义元素，e2e 的 fill 打不到内层
-                   input（只能 pressSequentially 硬敲），而这里是**唯一**需要 e2e 填字的地方。 *@
+                   input（只能 pressSequentially 硬敲），而这里是**唯一**需要 e2e 填字的地方。
+                   D-40 / C-98：**失败不再静默** —— 偶发 IO 静默是对的，但永久性权限故障被静默抹成
+                   "点了没反应"，把一次运维遗漏放大成了看起来像 bug 的黑洞。三态各有各的字。 *@
                 @if (!submitted)
                 {
                     <div class="llk-name-row">
@@ -144,6 +145,14 @@
                         <button class="llk-name-btn" type="button" disabled="@isSubmitting"
                                 @onclick="OnSubmitNameClicked">@LlkCopy.NameButton</button>
                     </div>
+                    @if (submitError is not null)
+                    {
+                        <p class="llk-name-error" role="status">@submitError</p>
+                    }
+                    else if (submitNote is not null)
+                    {
+                        <p class="llk-name-note" role="status">@submitNote</p>
+                    }
                 }
                 else
                 {
@@ -480,6 +489,23 @@
         color: #B3423C;
     }
 
+    /* D-40：提交失败（红）/ 不够快（灰）。行高压到 1.2 —— 320 下胜局遮罩的纵向余量本来就紧，
+       这一行只在失败时出现，但仍按最小高度算（实测多 14px 不进滚动）。 */
+    .llk-name-error,
+    .llk-name-note {
+        margin: 0;
+        font-size: .75rem;
+        line-height: 1.2;
+    }
+
+    .llk-name-error {
+        color: #B3423C;
+    }
+
+    .llk-name-note {
+        color: #455a64;
+    }
+
     /* 玩法遮罩（H-015）：比胜局遮罩多四行文案 + 一张小图，所以 gap 收到 6、上下留 6px 内边距。
        320 下实测内容高约 229，wrap 364 —— 余量足够，不动紧凑档。 */
     .llk-rules {
@@ -551,6 +577,15 @@
 
     /// <summary>提交往返中（按钮短暂禁用，防双击产生两次请求）。</summary>
     private bool isSubmitting;
+
+    /// <summary>
+    /// 提交失败文案（D-40 / C-98）。<c>null</c> = 无错。<b>不复用 <see cref="submitted"/></b>：
+    /// 那个是"已进榜"，这个是"没存上"，两者语义相反，挤在一个字段上迟早把重试路径写死。
+    /// </summary>
+    private string? submitError;
+
+    /// <summary>不够快（<c>SubmitAsync</c> 返回 <c>null</c>）时的灰字提示；按钮仍然在，可换名字重试。</summary>
+    private string? submitNote;
 
     /// <summary>读盘的两个标志（D-25 配方）：防重入闸 + 占位解锁，挤在一根上会在 await 窗口里把「—」画成「0 秒」。</summary>
     private bool isBestReading;
@@ -1237,6 +1272,8 @@
         showReshuffleTip = false;
         submitted = false;                              // 新一局可以再提交一次
         isSubmitting = false;
+        submitError = null;                             // D-40：上一局的失败/不够快提示不能留到下一局
+        submitNote = null;
         // 重排动画的理论窗口不会横跨重开（重开只在 IsCleared 时，重排只在未清盘时）——
         // 但重置成本为零，且能防"动画中途被 fire-and-forget 启动、随后遮罩出现"这类将来才有的组合。
         reshufflePhase = 0;
@@ -1250,19 +1287,30 @@
 
     /// <summary>
     /// 把本局成绩提交到服务端榜（H-018）。
-    /// <para><b>失败一律静默</b>：榜挂了不影响结算、也不挡「再来一局」。与 D-31「探测失败不降级」同纪律 ——
-    /// 一个可选的服务端功能不该有能力把玩家卡在结果页。</para>
-    /// <para><see cref="submitted"/> <b>只在成功落盘后</b>置位：没进榜（不够快）时按钮还在，可以换个名字再点。</para>
+    /// <para><b>三态</b>（D-40 / C-98）：落盘成功 ⇒「已记入榜单」；不够快 ⇒ 灰字提示、<b>按钮仍在</b>（可换名字再点）；
+    /// 落盘失败 ⇒ 红字「提交失败：纪录只保存在本机」。<b>"失败一律静默"正是本轮要修的东西</b>：
+    /// 偶发 IO 故障静默是对的，但永久性权限故障被它抹成"点了没反应"，等于把一次运维遗漏放大成看起来像 bug 的黑洞。</para>
+    /// <para><b>断连类仍然静默</b>（<c>JSDisconnectedException</c> / <c>ObjectDisposedException</c>）：circuit 已经死了，
+    /// 改 UI 没有意义，连 <c>StateHasChanged</c> 都可能再抛一次。</para>
+    /// <para>失败文案只说"没存上"，<b>不把异常类型或路径写给访客</b> —— 分类与路径由服务端日志和 <c>/llkhealth</c> 说。</para>
+    /// <para><see cref="submitted"/> <b>只在成功落盘后</b>置位：没进榜（不够快/失败）时按钮还在，可以再点。</para>
     /// </summary>
     private async Task OnSubmitNameClicked()
     {
         if (isSubmitting || submitted) return;
 
         isSubmitting = true;
+        submitError = null;                             // 重试要先把上一轮的提示清掉，否则"红字还在但这次成功了"
+        submitNote = null;
         try
         {
             var rec = await Board.SubmitAsync(issue, elapsedSec, nameInput);
-            if (rec is null) return;                    // 闸拒 / 不够快：不提示（"没改写纪录"已由上面那行说完）
+            if (rec is null)
+            {
+                // 闸拒 / 不够快。闸在 UI 上不可达（页面已拦未来关与越界秒数），所以这里实际只覆盖"不够快"
+                submitNote = LlkCopy.NotFaster;
+                return;
+            }
 
             submitted = true;
             try
@@ -1274,12 +1322,13 @@
             catch (JSDisconnectedException) { }
             catch (ObjectDisposedException) { }
         }
-        catch (IOException) { }                         // 含 DirectoryNotFoundException：磁盘满 / 目录被清 / 权限
-        catch (UnauthorizedAccessException) { }
-        catch (JsonException) { }
-        catch (JSException) { }
-        catch (JSDisconnectedException) { }
+        catch (JSDisconnectedException) { }             // circuit 已死：改 UI 无意义
         catch (ObjectDisposedException) { }
+        catch (Exception)
+        {
+            // 权限 / 路径 / IO / 未知一律同一句对外文案：访客不需要（也不该看到）内部路径与异常名
+            submitError = LlkCopy.SubmitFailedLocal;
+        }
         finally
         {
             isSubmitting = false;
