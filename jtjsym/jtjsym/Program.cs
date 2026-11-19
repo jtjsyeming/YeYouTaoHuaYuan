@@ -29,6 +29,23 @@ app.UseStaticFiles();
 
 app.UseRouting();
 
+// 排行榜存储自检（D-40 / C-97）：发布验收第 1 步，也是"数据到底存在哪、能不能写"的第一探针。
+// 放在 MapFallbackToPage 之前 —— fallback 的 Order 最低、理论上抢不走，但写前面省得以后有人调了顺序再回来查。
+// 返回里不带异常消息、默认也不带绝对路径（?detail=1 才给），因为这是个公开端点。
+app.MapGet("/llkhealth", async (LianliankanLeaderboard board, string? detail) =>
+{
+    var probe = await board.EnsureWritableAsync();
+    // 收 string 而不是 bool：最小 API 的 bool 绑定只认 "true"/"false"，运维手打 `?detail=1` 会 400
+    var showDir = detail is "1" or "true" or "yes";
+    return Results.Json(new
+    {
+        writable = probe.Ok,
+        kind = probe.Kind,                                     // ok | permission | path | io | unknown
+        error = probe.Error,                                   // 异常类型名；null = 无
+        dataDir = showDir ? board.DataDir : null,               // 默认不回路径，避免公开
+    });
+});
+
 app.MapBlazorHub();
 app.MapFallbackToPage("/_Host");
 

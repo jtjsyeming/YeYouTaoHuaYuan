@@ -5,7 +5,7 @@ using Xunit;
 namespace jtjsym.Tests;
 
 /// <summary>
-/// H-018 服务端榜单：<c>LianliankanLeaderboard</c> 的落盘口径（U13-1~8）。
+/// H-018 服务端榜单：<c>LianliankanLeaderboard</c> 的落盘口径（U13-1~8）与存储自检（U14-1~3，D-40）。
 /// </summary>
 /// <para>
 /// <b>每个用例一份独立 DataDir</b>（<c>Path.GetTempPath()/llk-tests/{guid}</c>），<c>Dispose</c> 里删。
@@ -269,5 +269,87 @@ public sealed class LlkLeaderboardTests : IDisposable
     {
         Assert.Null(await _board.SubmitAsync(Today, sec, "越界"));
         Assert.False(File.Exists(FilePath));
+    }
+
+    // ───────────────────────── 存储自检（U14 / D-40） ─────────────────────────
+
+    /// <summary>
+    /// U14-1：可写目录报 <c>ok</c>；<c>DataDir</c> 指向一个<b>已存在的文件</b>时必报 <c>io</c>
+    /// （<c>Directory.CreateDirectory</c> 对这种路径抛 <c>IOException</c>，实测）；
+    /// 同一实例 10 秒内重复调用走缓存 —— 否则 <c>/llkhealth</c> 就成了"谁都能打的 IO 压测"。
+    /// </summary>
+    /// <remarks>
+    /// <b>为什么没有"无权限目录"这一格</b>：`%windir%\System32\config` 在**管理员**身份下是可写的，
+    /// 判据会随运行身份翻转（CI 与开发机还不一样）。权限/路径/IO 的细分交给 U14-2 的纯函数映射表，
+    /// 这里只用"父路径是文件"这种与身份无关的确定性构造。
+    /// </remarks>
+    [Fact]
+    public async Task U14_1_Probe_TellsWritableFromUnwritable_AndCaches()
+    {
+        // ① 可写目录
+        var ok = await _board.EnsureWritableAsync();
+        Assert.True(ok.Ok);
+        Assert.Equal("ok", ok.Kind);
+        Assert.Null(ok.Error);
+
+        // ② DataDir 指向已存在的文件
+        var tmpRoot = Path.Combine(Path.GetTempPath(), "llk-tests");
+        Directory.CreateDirectory(tmpRoot);
+        var asFile = Path.Combine(tmpRoot, Guid.NewGuid().ToString("N") + ".file");
+        File.WriteAllText(asFile, "x");
+        try
+        {
+            var probe = await NewBoard(asFile).EnsureWritableAsync();
+            Assert.False(probe.Ok);
+            Assert.Equal("io", probe.Kind);
+            Assert.Equal(nameof(IOException), probe.Error);   // 只放类型名，不放消息（消息里是绝对路径）
+        }
+        finally
+        {
+            File.Delete(asFile);
+        }
+
+        // ③ 10 秒缓存：目录删了仍报 ok ⇒ 证明第二次没真去试写
+        Directory.Delete(_dir, recursive: true);
+        var cached = await _board.EnsureWritableAsync();
+        Assert.True(cached.Ok);
+        Assert.False(Directory.Exists(_dir), "缓存命中时不该重建目录");
+    }
+
+    /// <summary>
+    /// U14-2：异常 → 分类。<b>顺序陷阱</b>：<c>DirectoryNotFoundException</c> / <c>PathTooLongException</c>
+    /// 都继承自 <c>IOException</c>，switch 里排在它后面就会被归成 <c>io</c>，而"路径配错"正是本轮要区分的一种。
+    /// </summary>
+    [Theory]
+    [InlineData(typeof(UnauthorizedAccessException), "permission")]
+    [InlineData(typeof(DirectoryNotFoundException), "path")]
+    [InlineData(typeof(PathTooLongException), "path")]
+    [InlineData(typeof(NotSupportedException), "path")]
+    [InlineData(typeof(ArgumentException), "path")]
+    [InlineData(typeof(IOException), "io")]
+    [InlineData(typeof(InvalidOperationException), "unknown")]
+    public void U14_2_Classify_MapsEveryFamily(Type exType, string kind)
+    {
+        var ex = (Exception)Activator.CreateInstance(exType)!;
+        Assert.Equal(kind, LianliankanLeaderboard.Classify(ex));
+    }
+
+    /// <summary>
+    /// U14-3：自检<b>不污染数据</b> —— 目录内容一份不差、不建空榜、<c>selfcheck.tmp</c> 必须删掉。
+    /// 红检：去掉 <c>finally</c> 里的删除 ⇒ 本条红。
+    /// </summary>
+    [Fact]
+    public async Task U14_3_Probe_LeavesNoTrace()
+    {
+        Directory.CreateDirectory(_dir);
+        var before = Directory.GetFileSystemEntries(_dir).OrderBy(x => x, StringComparer.Ordinal).ToArray();
+
+        var probe = await _board.EnsureWritableAsync();
+        Assert.True(probe.Ok);
+
+        var after = Directory.GetFileSystemEntries(_dir).OrderBy(x => x, StringComparer.Ordinal).ToArray();
+        Assert.Equal(before, after);
+        Assert.False(File.Exists(FilePath), "自检不许顺手建一份空榜");
+        Assert.False(File.Exists(Path.Combine(_dir, "selfcheck.tmp")), "自检临时文件必须删掉");
     }
 }

@@ -1,6 +1,7 @@
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.Json.Serialization;
+using Microsoft.Extensions.Logging;
 
 namespace jtjsym.Services;
 
@@ -10,6 +11,17 @@ namespace jtjsym.Services;
 /// 唯一目的就是"这个数字是什么时候写进来的"在翻文件时能看一眼。</para>
 /// </summary>
 public sealed record LlkRecord(int Sec, string Name, string Ts);
+
+/// <summary>
+/// 存储自检结果（D-40 / C-97）。
+/// <para><see cref="Kind"/> 是给人和脚本看的<b>分类</b>：<c>ok</c> / <c>permission</c> / <c>path</c> / <c>io</c> / <c>unknown</c>。
+/// <see cref="Error"/> 只放<b>异常类型名</b>，不放消息 —— 消息里带绝对路径，而 <c>/llkhealth</c> 是公开端点。</para>
+/// </summary>
+public sealed record LlkStorageProbe(bool Ok, string Kind, string? Error)
+{
+    /// <summary>唯一"健康"的那个实例：判定只比 <see cref="Ok"/>，别比引用。</summary>
+    public static readonly LlkStorageProbe Healthy = new(true, "ok", null);
+}
 
 /// <summary>
 /// 连连看每日榜（H-018）：进程内单例 + 单文件 JSON + 懒加载缓存 + 原子写。
@@ -57,11 +69,33 @@ public sealed class LianliankanLeaderboard
     /// <summary>进程内缓存。懒加载一次，写后整体替换。<c>null</c> = 还没读过。</summary>
     private Dictionary<int, LlkRecord>? _cache;
 
+    private readonly ILogger<LianliankanLeaderboard>? _log;
+
+    /// <summary>自检临时文件名。<b>与榜单的 <c>.tmp</c> 分开</b>，否则删自检残留会把正在写的档删掉。</summary>
+    private const string ProbeFileName = "selfcheck.tmp";
+
+    /// <summary>自检结果缓存时长：被打也不该变成 IO 压测。</summary>
+    private static readonly TimeSpan ProbeTtl = TimeSpan.FromSeconds(10);
+
+    /// <summary>
+    /// 最近一次自检结果。<b><c>null</c> = 这辈子还没探过</b> —— 日历页徽标据此"初值未知则不显示"。
+    /// 除了 <see cref="EnsureWritableAsync"/>，<see cref="SaveAsync"/> 的成败也会刷新它，
+    /// 否则没人访问 <c>/llkhealth</c> 时徽标永远不出现，等于没做。
+    /// </summary>
+    private volatile LlkStorageProbe? _probe;
+
+    private DateTimeOffset _probeAt;
+
     /// <summary>
     /// 构造<b>只算路径、不读盘</b>：启动时的 IO 失败不能让站点起不来。
     /// </summary>
-    public LianliankanLeaderboard(IConfiguration cfg)
+    /// <param name="logger">
+    /// 可空：单测直接 <c>new</c> 时不必造一个 logger。<b>写失败必须留痕</b>——
+    /// D-40 事故的另一半就是"ECS 侧 <c>stdoutLogEnabled=false</c> + 代码里一个日志都不打"。
+    /// </param>
+    public LianliankanLeaderboard(IConfiguration cfg, ILogger<LianliankanLeaderboard>? logger = null)
     {
+        _log = logger;
         var configured = cfg["Lianliankan:DataDir"];
         _dir = Path.GetFullPath(string.IsNullOrWhiteSpace(configured)
             ? Path.Combine(AppContext.BaseDirectory, "..", "llk-data")   // 发布目录的**兄弟**目录：robocopy /MIR 碰不到
@@ -180,6 +214,79 @@ public sealed class LianliankanLeaderboard
         return cleaned.Length == 0 ? LlkCopy.GuestName : LlkCopy.TrimToTextElements(cleaned, MaxNameLength);
     }
 
+    // ───────────────────────── 自检（D-40 / C-97） ─────────────────────────
+
+    /// <summary>最近一次自检结果；<c>null</c> = 还没探过（徽标据此不显示）。</summary>
+    public LlkStorageProbe? LastProbe => _probe;
+
+    /// <summary>
+    /// 异常 → 分类。自检与提交反馈<b>共用这一处</b>，别在两处各写一套 <c>switch</c>
+    /// —— 两套分类迟早对不上，而"到底是什么失败"正是这次事故的核心。
+    /// </summary>
+    /// <remarks>
+    /// <b>顺序要紧</b>：<see cref="DirectoryNotFoundException"/> / <see cref="PathTooLongException"/>
+    /// 都继承自 <see cref="IOException"/>，必须排在它前面，否则路径类故障会被归成 <c>io</c>。
+    /// </remarks>
+    public static string Classify(Exception ex) => ex switch
+    {
+        UnauthorizedAccessException => "permission",
+        DirectoryNotFoundException => "path",
+        PathTooLongException => "path",
+        NotSupportedException => "path",          // 路径含非法字符 / 不是绝对路径
+        ArgumentException => "path",
+        IOException => "io",                      // 磁盘满、被独占、网络盘掉线
+        _ => "unknown",
+    };
+
+    /// <summary>
+    /// 真的试写一次：建目录 → 写 <c>selfcheck.tmp</c> → 删掉。<b>失败不抛</b>，返回分类。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>为什么不能只看 <c>Directory.CreateDirectory</c></b>：它对已存在的目录是幂等的、不抛；
+    /// 权限不足往往在随后的 <c>WriteAllTextAsync</c> 才炸（实测）。只看建目录 ⇒ 权限故障自检报"健康"。</para>
+    /// <para><b>为什么只能显式调用</b>（<c>/llkhealth</c>、日历页 <c>?diag=1</c>）：试写有副作用。
+    /// 挂在日历页渲染上就把"纯读页面"变成写页面，U13-6 当场变红。</para>
+    /// </remarks>
+    public async Task<LlkStorageProbe> EnsureWritableAsync(CancellationToken ct = default)
+    {
+        var cached = _probe;
+        if (cached is not null && DateTimeOffset.UtcNow - _probeAt < ProbeTtl) return cached;
+
+        await _gate.WaitAsync(ct);
+        try
+        {
+            cached = _probe;                                              // 双检：拿锁期间可能刚有人探过
+            if (cached is not null && DateTimeOffset.UtcNow - _probeAt < ProbeTtl) return cached;
+
+            var tmp = Path.Combine(_dir, ProbeFileName);
+            LlkStorageProbe probe;
+            try
+            {
+                Directory.CreateDirectory(_dir);
+                await File.WriteAllTextAsync(tmp, "ok", ct);
+                probe = LlkStorageProbe.Healthy;
+            }
+            catch (Exception ex)
+            {
+                probe = new LlkStorageProbe(false, Classify(ex), ex.GetType().Name);
+                _log?.LogWarning(ex, "llk 榜数据目录不可写：dir={Dir} kind={Kind}", _dir, probe.Kind);
+            }
+            finally
+            {
+                // 成功也要删 —— 自检不许留痕（U14-3）；删不掉不算失败，下次自检会覆盖它
+                try { File.Delete(tmp); } catch { }
+            }
+
+            _probe = probe;
+            _probeAt = DateTimeOffset.UtcNow;
+            return probe;
+        }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
     // ───────────────────────── 存取 ─────────────────────────
 
     /// <summary>
@@ -220,19 +327,36 @@ public sealed class LianliankanLeaderboard
     }
 
     /// <summary>整份替换写：建目录 → 写 <c>.tmp</c> → 同卷 rename（原子）。</summary>
+    /// <remarks>
+    /// 失败<b>记一条日志再原样抛出</b>：调用方（页面）负责给用户看文案，这里负责让运维在日志里看得见。
+    /// D-40 事故里"点了没反应"能挂一整轮，正是因为 catch 全吞、日志一条没有。
+    /// </remarks>
     private async Task SaveAsync(Dictionary<int, LlkRecord> map, CancellationToken ct)
     {
-        Directory.CreateDirectory(_dir);                  // ⚠ 每次都要：跑批中途目录会被清（见类注释）
-
-        var payload = new Dictionary<int, LlkFileRecord>(map.Count);
-        foreach (var (issue, rec) in map)
+        try
         {
-            payload[issue] = new LlkFileRecord { Sec = rec.Sec, Name = rec.Name, Ts = rec.Ts };
-        }
+            Directory.CreateDirectory(_dir);              // ⚠ 每次都要：跑批中途目录会被清（见类注释）
 
-        var tmp = FilePath + ".tmp";
-        await File.WriteAllTextAsync(tmp, JsonSerializer.Serialize(payload, JsonOpts), ct);
-        File.Move(tmp, FilePath, overwrite: true);
+            var payload = new Dictionary<int, LlkFileRecord>(map.Count);
+            foreach (var (issue, rec) in map)
+            {
+                payload[issue] = new LlkFileRecord { Sec = rec.Sec, Name = rec.Name, Ts = rec.Ts };
+            }
+
+            var tmp = FilePath + ".tmp";
+            await File.WriteAllTextAsync(tmp, JsonSerializer.Serialize(payload, JsonOpts), ct);
+            File.Move(tmp, FilePath, overwrite: true);
+
+            _probe = LlkStorageProbe.Healthy;              // 写成功了 ⇒ 目录确实可写，徽标该灭
+            _probeAt = DateTimeOffset.UtcNow;
+        }
+        catch (Exception ex)
+        {
+            _probe = new LlkStorageProbe(false, Classify(ex), ex.GetType().Name);
+            _probeAt = DateTimeOffset.UtcNow;
+            _log?.LogError(ex, "llk 榜写入失败：dir={Dir} kind={Kind}", _dir, Classify(ex));
+            throw;
+        }
     }
 
     /// <summary>落盘形状：<c>{"20261101":{"sec":123,"name":"阿P","ts":"2026-11-01T21:04:11+08:00"}}</c>。</summary>
