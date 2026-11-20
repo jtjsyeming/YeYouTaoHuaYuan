@@ -1,3 +1,4 @@
+using System.Text.Json;
 using jtjsym.Services;
 using Xunit;
 
@@ -273,6 +274,89 @@ public class LianliankanCoreTests
 
         // 全 0 = 已通关的盘：结构上"成对"成立，但恢复出来只会立刻弹一次胜利遮罩
         Assert.Null(LianliankanCore.TryFrom(Mutate(s => Array.Fill(s.Cells!, 0)), Today));
+    }
+
+    // ─────────────── 起表时刻与限时（D-42 / H-020，U15-1 ~ U15-4） ───────────────
+
+    /// <summary>
+    /// U15-1：起表时刻往返 —— <c>ToSnapshot(startedAt)</c> → <c>TryFrom</c> → <c>StartedAtOf</c> 恒等。
+    /// <para>容差 ±1 秒是毫秒截断，不是"差不多就行"：<c>ToUnixTimeMilliseconds</c> 无损，
+    /// 所以这里其实只差一次 <c>now</c> 的采样。真正要钉的是"同一个时刻，不是重新起表"。</para>
+    /// </summary>
+    [Fact]
+    public void StartedAt_RoundTrip_PreservesInstant()
+    {
+        var core = LianliankanCore.NewDaily(Today);
+        var t0 = new DateTimeOffset(2026, 11, 20, 9, 30, 0, TimeSpan.Zero);
+
+        var snap = core.ToSnapshot(47, t0);
+        Assert.Equal(t0.ToUnixTimeMilliseconds(), snap.StartedAtUnixMs);   // 落进快照的确实是它
+
+        var back = LianliankanCore.TryFrom(snap, Today);
+        Assert.NotNull(back);
+
+        var got = LianliankanCore.StartedAtOf(snap, DateTimeOffset.UtcNow);
+        Assert.True(Math.Abs((got - t0).TotalSeconds) <= 1, $"往返后起表时刻 {got:O}，原始 {t0:O}");
+    }
+
+    /// <summary>
+    /// U15-2：老档折算 —— 没有 <c>startedAtMs</c> 的 v1 档，按"此刻往前推 elapsedSec"折算。
+    /// <para><b>必须断言两个方向</b>：① 折算值确实在 <c>now - 50s</c> 附近；② <c>ElapsedSec</c>
+    /// 再大也不越界（坏档夹到 <c>MaxElapsedSec</c>）—— 后者是 <c>StartedAtOf</c> 为 public 的代价。</para>
+    /// </summary>
+    [Fact]
+    public void StartedAt_LegacySnapshot_DerivesFromElapsed()
+    {
+        var now = new DateTimeOffset(2026, 11, 20, 12, 0, 0, TimeSpan.Zero);
+
+        // 老档：JSON 里根本没有 startedAtMs 这个键（与 Hints 缺席同型）
+        var legacy = JsonSerializer.Deserialize<LianliankanSnapshot>(
+            """{"v":1,"issue":20261112,"cells":[1,1],"elapsedSec":50}""")!;
+        Assert.Null(legacy.StartedAtUnixMs);
+
+        var got = LianliankanCore.StartedAtOf(legacy, now);
+        Assert.True(Math.Abs((now - got).TotalSeconds - 50) <= 1, $"折算差 {Math.Abs((now - got).TotalSeconds)} 秒（应 ≈50）");
+
+        // 坏值不走样：夹到一天，不会算出"1970 年起的表"
+        var broken = new LianliankanSnapshot { ElapsedSec = int.MaxValue };
+        Assert.Equal(now.AddSeconds(-LianliankanCore.MaxElapsedSec), LianliankanCore.StartedAtOf(broken, now));
+    }
+
+    /// <summary>U15-3：限时边界单点 —— 299 不算超时、300 算、301 也算（含等号，H-020）。</summary>
+    [Theory]
+    [InlineData(0, false)]
+    [InlineData(299, false)]
+    [InlineData(300, true)]
+    [InlineData(301, true)]
+    public void IsOverLimit_Boundary(int sec, bool expected) =>
+        Assert.Equal(expected, LianliankanCore.IsOverLimit(sec));
+
+    /// <summary>
+    /// U15-4：<b>加字段不升版本</b> —— 这条直接钉住《39》§4 拍板 4。
+    /// <para>三个断言缺一不可：① <c>ToSnapshot</c> 产出的 <c>V</c> 仍是 <c>CurrentVersion</c>；
+    /// ② 带 <c>startedAtMs</c> 的新档照样过 <c>TryFrom</c>；③ <b>不带</b> <c>startedAtMs</c>
+    /// 也不带 <c>hints</c> 的老档（H-015 之前那批）照样过 —— 若有人"顺手把版本升到 2"，
+    /// ① 会红；若有人把版本闸改成白名单却漏了一档，③ 会红。</para>
+    /// <para>⚠ 别把这条写成"断言 <c>CurrentVersion == 1</c>"：那是把常量复制成第二份真源，
+    /// 想升版本时要么改两处、要么被迫删断言。断言的是**同源**，不是具体数字。</para>
+    /// </summary>
+    [Fact]
+    public void Snapshot_AddingStartedAt_KeepsVersion()
+    {
+        var core = LianliankanCore.NewDaily(Today);
+
+        // ① 新档：带 startedAt，V 仍是当前版本
+        var fresh = core.ToSnapshot(9, DateTimeOffset.UtcNow);
+        Assert.Equal(LianliankanSnapshot.CurrentVersion, fresh.V);
+        Assert.NotNull(fresh.StartedAtUnixMs);
+        Assert.NotNull(LianliankanCore.TryFrom(fresh, Today));
+
+        // ② 老档：没有 startedAtMs（也没有 hints）—— 加字段之前落的那批，必须原样能恢复
+        var old = JsonSerializer.Deserialize<LianliankanSnapshot>(
+            $$"""{"v":{{LianliankanSnapshot.CurrentVersion}},"issue":{{Today}},"cells":{{JsonSerializer.Serialize(core.Cells)}},"elapsedSec":3}""")!;
+        var restored = LianliankanCore.TryFrom(old, Today);
+        Assert.NotNull(restored);
+        Assert.Equal(LianliankanCore.HintTotal, restored!.HintsLeft);      // 缺省补满
     }
 
     // ─────────────────────────── 今日最快（秒，越小越好） ───────────────────────────

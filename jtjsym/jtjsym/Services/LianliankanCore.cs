@@ -58,6 +58,19 @@ public sealed class LianliankanSnapshot
     /// 升版本反而要同时把 <c>TryFrom</c> 的"只认当前版本"改成白名单，以后每加一版都得回来改。</para>
     /// </summary>
     [JsonPropertyName("hints")] public int? Hints { get; set; }
+
+    /// <summary>
+    /// 起表时刻（Unix 毫秒，UTC）。<b>可空</b>：旧档没有这个字段 ⇒ 读出来 <c>null</c> ⇒ 用
+    /// <see cref="ElapsedSec"/> 折算（见 <see cref="LianliankanCore.StartedAtOf"/>）。
+    /// <para><b>不升 <see cref="CurrentVersion"/></b>，同 <see cref="Hints"/> 的理由（《39》§4 拍板 4）：
+    /// 加一个可选字段是向后兼容的结构变化，升版本反而要把 <c>TryFrom</c> 的"只认当前版本"改成白名单。</para>
+    /// <para><b>存 Unix 毫秒而不是 <c>DateTime</c></b>：<c>DateTime</c> 带 <c>Kind</c>，序列化写墙钟、
+    /// 反序列化可能按 UTC 解释 —— 那个混用在"跨时区 + 夏令时"下是经典坑。毫秒是个纯数字，没有二义。
+    /// 用 <c>DateTimeOffset.UtcNow</c> 与全项目同一口径（见 <c>IssueFor</c>）。</para>
+    /// <para>有了它，<b>时间就不再只存在于 tick 计数器里</b>（D-42）：切页 / 刷新 / 锁屏 / 崩溃重启
+    /// 都能用"现在 − 起表时刻"重算回来，而 <see cref="ElapsedSec"/> 退化成"上一次存档时的读数"。</para>
+    /// </summary>
+    [JsonPropertyName("startedAtMs")] public long? StartedAtUnixMs { get; set; }
 }
 
 /// <summary>本地榜的载荷：<c>{"issue":20261112,"sec":87}</c>（《36》v2.1 §4.1）。</summary>
@@ -94,6 +107,18 @@ public sealed class LianliankanCore
 
     /// <summary>用时上界（秒）：一天。越界说明档被改过。</summary>
     public const int MaxElapsedSec = 86400;
+
+    /// <summary>
+    /// 单局限时（H-020）：<b>用满即判负</b>（<c>300</c> 秒整那一拍就算超时）。
+    /// <para><b>与 <see cref="MaxElapsedSec"/> 是两件事</b>：那个是"档被改过"的<b>结构闸</b>（一天），
+    /// 这个是<b>产品规则</b>。别把两者合并 —— 结构闸要宽到能装下任何合法老档，规则闸要窄到能当玩法。</para>
+    /// <para>放 Core 而不是页面：判定（<see cref="IsOverLimit"/>）与文案（<c>LlkCopy</c> 里那句"用满 N 秒"）
+    /// 必须同源，否则改限时会出现"判定 300、文案 180"。</para>
+    /// </summary>
+    public const int TimeLimitSec = 300;
+
+    /// <summary>用满限时了吗（H-020）。<b>含等号</b>：<c>300</c> 秒整即判负。</summary>
+    public static bool IsOverLimit(int elapsedSec) => elapsedSec >= TimeLimitSec;
 
     /// <summary>
     /// 可玩期号下界（H-018）：关卡开放的第一天。日历页只给这一天之后的格子，服务端也用它当第二道闸
@@ -628,14 +653,33 @@ public sealed class LianliankanCore
 
     // ───────────────────────── 快照 ─────────────────────────
 
-    public LianliankanSnapshot ToSnapshot(int elapsedSec) => new()
+    public LianliankanSnapshot ToSnapshot(int elapsedSec, DateTimeOffset? startedAt = null) => new()
     {
         V = LianliankanSnapshot.CurrentVersion,
         Issue = Issue,
         Cells = (int[])_cells.Clone(),
         ElapsedSec = elapsedSec,
         Hints = HintsLeft,
+        // D-42：起表时刻进快照。**没起表（startedAt is null）就写 null** ——
+        // "打开页面还没点"这种档不该带一个起表时刻，否则刷新一下就把空等的时间算进成绩。
+        StartedAtUnixMs = startedAt?.ToUnixTimeMilliseconds(),
     };
+
+    /// <summary>
+    /// 从快照里取起表时刻（D-42）。新档直接读 <see cref="LianliankanSnapshot.StartedAtUnixMs"/>；
+    /// 老档（无该字段）按"读到它的此刻往前推 <c>elapsedSec</c> 秒"折算。
+    /// </summary>
+    /// <remarks>
+    /// <para><b>老档的代价要说清</b>：折算结果是"从现在倒推"，等于假设"存档那一刻正是最后一次读数"。
+    /// 于是老档"关掉等一天再打开"不会被惩罚（而新档会）。这只在迁移那一次发生，
+    /// 之后落盘的档都带真实起表时刻 —— 可接受，且不会误判成作弊。</para>
+    /// <para><c>Math.Clamp</c> 兜住坏档：<c>elapsedSec</c> 已经在 <see cref="TryFrom"/> 过了值域闸，
+    /// 但这里是 <b>public static</b>、单测与会话页都会直接调，不能假设调用方先过了闸。</para>
+    /// </remarks>
+    public static DateTimeOffset StartedAtOf(LianliankanSnapshot s, DateTimeOffset now) =>
+        s.StartedAtUnixMs is { } ms
+            ? DateTimeOffset.FromUnixTimeMilliseconds(ms)
+            : now.AddSeconds(-Math.Clamp(s.ElapsedSec, 0, MaxElapsedSec));
 
     /// <summary>
     /// 会话恢复。闸门三道（《36》v2.0 §3.1）：
