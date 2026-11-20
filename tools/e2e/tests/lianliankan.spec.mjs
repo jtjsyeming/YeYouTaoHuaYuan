@@ -325,7 +325,9 @@ test.describe('LL 连连看', () => {
     await expect.poll(() => page.locator('.llk-overlay').count(), { timeout: 7000 }).toBe(1);
     const sub = ((await page.textContent('.llk-overlay-sub')) || '').trim();
     const elapsed = await readElapsed(page);
-    check('LL-06', /用时 \d+ 秒/.test(sub) && elapsed >= 1, `遮罩="${sub}" 用时=${elapsed}`);
+    // 副行两半都要断：只断「用时」时，把「本关最快」写回「本次最快」也不会红（D-41）。
+    check('LL-06', /用时 \d+ 秒/.test(sub) && /本关最快 \d+ 秒/.test(sub) && elapsed >= 1,
+      `遮罩="${sub}" 用时=${elapsed}`);
     await expect.poll(() => sessionRaw(page), { timeout: 5000 }).toBeNull();
   });
 
@@ -346,6 +348,11 @@ test.describe('LL 连连看', () => {
     await expect.poll(() => readBestStored(page), { timeout: 6000 }).not.toBe(null);
     const first = storedSec(await readBestStored(page));
     check('LL-07-刷新', first !== null && first < 999, `999 → ${first}`);
+
+    // 状态行文案 + 数值格式（FormatBest 只给数字，不带「秒」）。
+    // 用 ^…$ 而不是 includes('本关最快')：后者把「本关最快：—」也算过 —— 那正好是"纪录没写进去"的症状。
+    const bestTxt = await readBestText(page);
+    check('LL-07-文案', /^本关最快：\d+$/.test(bestTxt), `状态行="${bestTxt}"（应「本关最快：秒数」）`);
 
     // ② 预置 1 秒（打不破）→ 通关后仍是 1
     await setBest(page, JSON.stringify({ issue, sec: 1 }));

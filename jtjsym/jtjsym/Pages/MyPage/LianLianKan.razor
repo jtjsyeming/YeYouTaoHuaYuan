@@ -22,7 +22,7 @@
         <button class="llk-hint-btn" type="button"
                 disabled="@HintDisabled"
                 @onclick="OnHintClicked">@LlkCopy.HintButton(game.HintsLeft)</button>
-        <p class="llk-stat llk-best">本次最快：@(isBestLoaded ? FormatBest(best) : LlkCopy.NoRecord)</p>
+        <p class="llk-stat llk-best">@(LlkCopy.BestLabel)：@(isBestLoaded ? FormatBest(best) : LlkCopy.NoRecord)</p>
     </div>
 
     @* 三条提示共用这一个槽：任何时刻最多一行（D-30）。
@@ -129,7 +129,7 @@
         {
             <div class="llk-overlay">
                 <h2 class="llk-overlay-title">全部消除</h2>
-                <p class="llk-overlay-sub">用时 @elapsedSec 秒 · 本次最快 @FormatBest(best) 秒</p>
+                <p class="llk-overlay-sub">用时 @elapsedSec 秒 · @LlkCopy.BestLabel @FormatBest(best) 秒</p>
 
                 @* H-018：留名入口。**不是必经路径** —— 不填直接「再来一局」也完全正常（榜上记「神秘嘉宾」）。
                    用裸 input 而不是 FluentTextField：后者是 shadow DOM 自定义元素，e2e 的 fill 打不到内层
@@ -913,7 +913,7 @@
     {
         if (!firstRender) return;                       // 规避 ServerPrerendered 的预渲染实例
 
-        // ① 今日最快
+        // ① 本关最快（按期号取，可能是日历里选中的历史关）
         if (!isBestReading)
         {
             isBestReading = true;
@@ -1401,7 +1401,7 @@
         if (!disposed) StateHasChanged();
     }
 
-    // ───────────────────────── 今日最快（秒，越小越好） ─────────────────────────
+    // ───────────────────────── 本关最快（秒，越小越好） ─────────────────────────
 
     private async Task<int?> ReadBestAsync()
     {

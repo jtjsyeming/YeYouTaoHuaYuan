@@ -684,12 +684,14 @@ public sealed class LianliankanCore
         return core;
     }
 
-    // ───────────────────────── 今日最快（秒，越小越好） ─────────────────────────
+    // ───────────────────────── 本关最快（秒，越小越好） ─────────────────────────
 
     /// <summary>
-    /// 解析本地榜。坏值（非 JSON / 期号不是今天 / <c>sec &lt; 1</c> / 超出一天）一律当"没有纪录"。
+    /// 解析本地榜。坏值（非 JSON / 期号与当前这关不符 / <c>sec &lt; 1</c> / 超出一天）一律当"没有纪录"。
     /// <para><b>方向与 2048/Tetris 相反</b>（越小越好），照抄 <c>Score &gt; Best</c> 会静默地永不刷新 ——
     /// 同 <c>MinesweeperCore.TryParseBest</c>（《35》C-59 踩过）。</para>
+    /// <param name="todayIssue">要取的期号 —— 今日那关，或日历里选中的历史关（<c>?issue=</c>）。
+    /// <b>不是"必须等于今天"</b>：这里只做"这一条是不是这一关的"比对（《53》D-41 改口）。</param>
     /// </summary>
     public static int? TryParseBest(string? raw, int todayIssue)
     {
@@ -705,7 +707,7 @@ public sealed class LianliankanCore
             return null;                      // "abc" / 半截 JSON
         }
 
-        if (rec is null || rec.Issue != todayIssue) return null;   // 跨天残留：不显示昨天的成绩
+        if (rec is null || rec.Issue != todayIssue) return null;   // 期号不符：不显示别关的成绩
         if (rec.Sec < 1 || rec.Sec > MaxElapsedSec) return null;
         return rec.Sec;
     }
