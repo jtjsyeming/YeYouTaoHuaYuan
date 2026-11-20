@@ -15,7 +15,13 @@
            ② Fluent 的自定义元素有 shadow DOM，月份标题的宽度/对齐要跟它斗；③ 这个按钮没有图标语义。 *@
         <button type="button" class="llk-cal-nav" disabled="@(monthIndex <= 0)"
                 aria-label="上个月" @onclick="PrevMonth">‹</button>
-        <span class="llk-cal-title">@LlkCopy.MonthTitle(CurYear, CurMonth)</span>
+        @* H-023：生肖月主题。**必须是独立的同级元素**，不能拼进 .llk-cal-title ——
+           LL-38 断的是那个节点的整段 textContent（`${Y}年${M}月`），拼进去就必红（《57》§7.1-1）。
+           月首取 1 日：点阵只按月份算，日号不影响。 *@
+        <div class="llk-cal-month">
+            <span class="llk-cal-title">@LlkCopy.MonthTitle(CurYear, CurMonth)</span>
+            <span class="llk-cal-zodiac">@LlkCopy.ZodiacLabel(CurYear * 10000 + CurMonth * 100 + 1)</span>
+        </div>
         <button type="button" class="llk-cal-nav" disabled="@(monthIndex >= maxMonthIndex)"
                 aria-label="下个月" @onclick="NextMonth">›</button>
     </div>
@@ -89,6 +95,21 @@
     .llk-cal-title {
         font-size: 1rem;
         font-weight: 600;
+    }
+
+    /* H-023：月份标题与生肖主题竖排 —— 横向塞进 head 会把两个翻页按钮挤到贴边。
+       加这一行约 13px 高，320×568 下日历页仍有富余（实测见执行记录）。 */
+    .llk-cal-month {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        line-height: 1.15;
+    }
+
+    .llk-cal-zodiac {
+        font-size: .72rem;
+        color: #8C6A55;
+        white-space: nowrap;
     }
 
     /* 边界处用 disabled 而不是隐藏：位置不跳动，且"到头了"这件事看得见 */

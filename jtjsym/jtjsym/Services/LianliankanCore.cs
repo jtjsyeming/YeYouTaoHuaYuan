@@ -15,7 +15,21 @@ public static class LlkKeys
     public const string Session = "jtjsym.llk.session";
 
     /// <summary>今日最快：<c>{"issue":20261112,"sec":87}</c>。<c>localStorage</c>，单键单条。</summary>
+    /// <remarks>
+    /// <b>只装"今天"这一关</b>（P-105 / H-023）：历史关走 <see cref="BestFor"/> 的子键。
+    /// 改口径前它是"最后一次通关的那一关"，于是玩历史关会把今日纪录顶掉且不可恢复。
+    /// </remarks>
     public const string Best = "jtjsym.llk.best";
+
+    /// <summary>
+    /// 历史关的最快（P-105 甲案）：<c>jtjsym.llk.best.20260315</c>。
+    /// <para><b>主键继续只装今天</b>，历史关各自一把子键 —— 这样"玩历史关"与"今日纪录"在存储层就物理隔离，
+    /// 不依赖任何读写顺序或比较逻辑。键数上限 = 可玩天数（<c>MinIssue</c> 起 324 个），
+    /// 单个 JSON 约 30 B，全填满 ~10 KB，与 <c>localStorage</c> 的 5 MB 配额无关。</para>
+    /// <para>零迁移：老版本写在主键里的那条如果恰好是某个历史关，读的时候会回退到主键比对
+    /// （见页面 <c>ReadBestAsync</c>），不需要一次性搬运脚本。</para>
+    /// </summary>
+    public static string BestFor(int issue) => $"{Best}.{issue}";
 
     /// <summary>
     /// 玩法遮罩是否看过（H-015）：<c>localStorage</c>，"1" = 已看过。
@@ -125,8 +139,11 @@ public sealed class LianliankanCore
     /// （<c>LianliankanLeaderboard.SubmitAsync</c>）—— 会话档在浏览器侧、<c>issue</c> 可以伪造，
     /// 页面拦截不能当唯一防线。
     /// <para><b>上界不能写常量</b>（是"今天"），所以闸的两端不对称；要改下界只改这一处。</para>
+    /// <para><b>H-023 起放宽到 2026-01-01</b>（原 <c>20261101</c>）：生肖月主题要求「历史月也能进」，
+    /// 否则日历翻不回 1 月、一年只有当月四天可玩。放宽把历史关从 20 天变成 <b>324 天</b> ——
+    /// 因此它必须先有 P-105 的双键（<see cref="LlkKeys.BestFor"/>）兜住，否则玩任何历史关都会把今日纪录顶掉。</para>
     /// </summary>
-    public const int MinIssue = 20261101;
+    public const int MinIssue = 20260101;
 
     /// <summary>重排上限。超过就进确定性兜底，不"放水"继续摇。</summary>
     private const int ReshuffleLimit = 20;

@@ -352,4 +352,20 @@ public sealed class LlkLeaderboardTests : IDisposable
         Assert.False(File.Exists(FilePath), "自检不许顺手建一份空榜");
         Assert.False(File.Exists(Path.Combine(_dir, "selfcheck.tmp")), "自检临时文件必须删掉");
     }
+
+    // ───────────────────────── U16-4 可玩下界（H-023） ─────────────────────────
+
+    /// <summary>
+    /// U16-4：<c>MinIssue</c> 放宽到 <b>20260101</b>，服务端闸跟着放开，但再往前一天仍然拒收。
+    /// <para><b>两半都要断</b>：只断"20251231 被拒"的话，把常量改回 20261101 也照样绿（它必然拒收更早的期号）；
+    /// 只断常量值的话，"服务端闸没跟着常量走"发现不了。所以先钉常量、再验闸的两侧。</para>
+    /// </summary>
+    [Fact]
+    public async Task U16_4_MinIssue_Is2026JanAndGateFollowsIt()
+    {
+        Assert.Equal(20260101, LianliankanCore.MinIssue);
+
+        Assert.Null(await _board.SubmitAsync(20251231, 42, "早于下界"));        // 下界前一天：拒收
+        Assert.NotNull(await _board.SubmitAsync(LianliankanCore.MinIssue, 43, "恰好下界"));  // 下界当天：放行
+    }
 }

@@ -31,6 +31,10 @@
                 disabled="@HintDisabled"
                 @onclick="OnHintClicked">@LlkCopy.HintButton(game.HintsLeft)</button>
         <p class="llk-stat llk-best">@(LlkCopy.BestLabel)：@(isBestLoaded ? FormatBest(best) : LlkCopy.NoRecord)</p>
+        @* H-023：生肖月主题。**独立 span**，不挤进 .llk-elapsed / .llk-best —— 那两个节点被 e2e 的
+           readElapsed / readBestText 取"第一个数字"，塞进去就把「狗月 · 十一月」读成用时（《54》同类事故）。
+           文案同时是"可辨认性"的兜底：8×6 点阵认不出是哪个生肖，看字就知道（《57》§4.2）。 *@
+        <span class="llk-stat llk-zodiac">@LlkCopy.ZodiacLabel(issue)</span>
     </div>
 
     @* 三条提示共用这一个槽：任何时刻最多一行（D-30）。
@@ -87,6 +91,7 @@
                      role="gridcell"
                      data-idx="@idx"
                      data-face="@(face > 0 ? face.ToString() : null)"
+                     data-llk-zodiac="@(LianliankanThemes.IsZodiacCell(issue, idx) ? "1" : null)"
                      style="--c:@pos.Col;--r:@pos.Row;--fc:@(accent ?? "#8C8F96")"
                      aria-label="@(name ?? "空")"
                      @onclick="() => OnCellClickedAsync(idx)">
@@ -131,6 +136,9 @@
                 <p class="llk-rules-line">@LlkCopy.RuleHints</p>
                 @* H-020：限时也要在规则里说，否则「时间到」是玩家第一次听说有这回事 *@
                 <p class="llk-rules-line">@LlkCopy.RuleTime</p>
+                @* H-023：只说"每月换一个生肖图案"，不点名当月 —— 点名的说法留给状态行（避免两处口径打架）。
+                   ⚠ 加这一行会让 LL-15 的规则行数判据 5 → 6（它断的是行数，不是内容）。 *@
+                <p class="llk-rules-line">@LlkCopy.RuleTheme</p>
                 <FluentButton Class="llk-overlay-btn" Appearance="Appearance.Accent" @onclick="OnRulesStartClicked">@LlkCopy.RulesStart</FluentButton>
             </div>
         }
@@ -230,6 +238,24 @@
         font-size: .9rem;
         font-weight: 600;
         color: #B3423C;
+    }
+
+    /* 生肖月主题（H-023）：形状格叠一层淡主色。
+       ⚠ **必须是 ::after，不能是 box-shadow**：.llk-cell 的边框在两个分支里写法不同
+         （兜底分支 box-shadow:inset 0 0 0 1px，覆盖分支 border:1px + box-shadow:none），
+         染色若也走 box-shadow 就得两处各写一遍，且后写的会**整体覆盖**而不是叠加 ——
+         实测追加 `inset 0 0 0 100px rgba(...)` 后那 1px 灰边整条消失。
+         ::after 与边框完全解耦，overflow:hidden + border-radius:6px 自动把它裁进圆角。
+       ⚠ **pointer-events:none 不能省**：染色层盖在格子上，漏了这行手点就点不到格子
+         （@@onclick 在父元素上能冒泡，而 e2e 用 dispatchEvent 直达格心 —— 症状是"本地手点不好使、e2e 全绿"）。
+       染色只由 data-llk-zodiac 驱动，与 data-face / is-gone 无关：格子被消除时父元素 opacity 过渡
+       会让染色一起淡出，正是想要的反馈。 */
+    .llk-cell[data-llk-zodiac="1"]::after {
+        content: "";
+        position: absolute;
+        inset: 0;
+        background: rgba(179, 66, 60, 0.16);
+        pointer-events: none;
     }
 
     .llk-board-wrap {
@@ -622,7 +648,16 @@
 
 @code {
     /// <summary>今日期号。预渲染实例与交互实例都按"此刻"算，同一天必一致（跨日那一秒的极端情况由期号闸兜住）。</summary>
+    private readonly int todayIssue = LianliankanCore.IssueFor(DateTimeOffset.UtcNow);
+
     private int issue = LianliankanCore.IssueFor(DateTimeOffset.UtcNow);
+
+    /// <summary>
+    /// 本关最快的存储键（P-105 甲案）：<b>今日用主键、历史关用子键</b>。
+    /// <para>不改这条的话，H-023 把 <see cref="LianliankanCore.MinIssue"/> 放宽到 2026-01 之后，
+    /// 玩任何历史关都会<b>无条件覆盖</b>今日纪录 —— 324 天全都踩得着，而且没有任何提示。</para>
+    /// </summary>
+    private string BestKey => issue == todayIssue ? LlkKeys.Best : LlkKeys.BestFor(issue);
 
     private LianliankanCore game = LianliankanCore.NewDaily(LianliankanCore.IssueFor(DateTimeOffset.UtcNow));
 
@@ -1006,14 +1041,10 @@
         if (!isBestReading)
         {
             isBestReading = true;
-            try
-            {
-                var raw = await JS.InvokeAsync<string?>("localStorage.getItem", LlkKeys.Best);
-                best = LianliankanCore.TryParseBest(raw, issue);
-            }
-            catch (JSException) { }                     // 隐私模式/存储被禁：保持 null，显示「—」，游戏零降级
-            catch (JSDisconnectedException) { }
-            catch (ObjectDisposedException) { }
+            // P-105：键的选择（今日主键 / 历史关子键）与老档回退都收在 ReadBestAsync 一处。
+            // 这里再写一份 "getItem(LlkKeys.Best) + TryParseBest" 就是第三份拷贝 —— 改键必漏，
+            // 而漏的症状恰好是"历史关永远显示 —"（e2e LL-52 抓的就是这个）。
+            best = await ReadBestAsync();               // 隐私模式/存储被禁时它内部吞掉 ⇒ null ⇒ 显示「—」
 
             // 昵称预填（H-018）：与纪录分开读 —— 纪录是"成绩"，昵称是"上次填过的名字"，两者生命周期不同
             try
@@ -1595,8 +1626,19 @@
     {
         try
         {
-            var raw = await JS.InvokeAsync<string?>("localStorage.getItem", LlkKeys.Best);
-            return LianliankanCore.TryParseBest(raw, issue);
+            var raw = await JS.InvokeAsync<string?>("localStorage.getItem", BestKey);
+            var value = LianliankanCore.TryParseBest(raw, issue);
+
+            // 零迁移（P-105）：老版本把**所有**关的成绩都写进主键。历史关的子键还没有时，
+            // 回退读一次主键、按期号比对 —— 命中就显示出来，下次通关自然落到子键。
+            // ⚠ 读路径**不回写**（U13-6：读路径绝不建目录/写盘），迁移靠"下次通关"自然完成。
+            if (value is null && BestKey != LlkKeys.Best)
+            {
+                var legacy = await JS.InvokeAsync<string?>("localStorage.getItem", LlkKeys.Best);
+                value = LianliankanCore.TryParseBest(legacy, issue);
+            }
+
+            return value;
         }
         catch (JSException) { }
         catch (JSDisconnectedException) { }
@@ -1610,8 +1652,9 @@
 
         try
         {
-            // 载荷由 Core 序列化（键名/字段名只有一处），页面不手拼 JSON
-            await JS.InvokeVoidAsync("localStorage.setItem", LlkKeys.Best, LianliankanCore.BestJson(issue, best.Value));
+            // 载荷由 Core 序列化（键名/字段名只有一处），页面不手拼 JSON。
+            // 键随 BestKey 走：今日覆盖主键、历史关写自己的子键，两者互不影响（P-105）。
+            await JS.InvokeVoidAsync("localStorage.setItem", BestKey, LianliankanCore.BestJson(issue, best.Value));
         }
         catch (JSException) { }
         catch (JSDisconnectedException) { }
