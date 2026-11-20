@@ -135,15 +135,75 @@ test.afterEach(async ({}, testInfo) => {
   }
 });
 
+// ─────────────── 导航重试：只对"连不上"这一个物理故障开小口（P-117） ───────────────
+//
+// 为什么需要（2026-11-20 全量跑批被外部强杀 3 次，成片 `ERR_CONNECTION_REFUSED`）：
+// `workers: 1` + `fullyParallel: false` ⇒ 站点一死，**其后每一条**用例都在 `open()` 里红。
+// 那些红与产品无关，却把整轮结论染成"大面积回归"。这里只把"连不上"这一种错误重试掉。
+//
+// ⚠ 四条边界写死，防被后续改成吞错器：
+//   ① 白名单外一律原样抛（TimeoutError / ERR_NAME_NOT_RESOLVED / ERR_CERT_* / ERR_ABORTED 都不重试）；
+//   ② 预算按**墙钟**算 —— 数次数时最坏路径是 5 × 20s = 100s，表现从"报错"变成"卡住"，更难查；
+//   ③ 不引入 `retries`（config 里 `retries: 0` 是有意的：计时断言不许用重试掩盖抖动）；
+//   ④ 重试必须 `console.warn` 可见 —— 否则无从判断"这条是重试救回来的还是压根没红"。
+const TRANSIENT_GOTO = [
+  'ERR_CONNECTION_REFUSED',
+  'ERR_CONNECTION_RESET',
+  'ERR_EMPTY_RESPONSE',
+  'fetch failed',
+];
+const GOTO_BUDGET_MS = 15_000;             // 墙钟总预算，不是"次数 × 单次超时"
+
+/**
+ * 跑一次导航，失败且属于白名单内则退避重试。
+ *
+ * `page.__net` 的记账水位（`mark`）是必须的：`requestfailed` 监听器会把**失败那次导航**的连接拒绝
+ * 记进 `page.__net`，重试成功后那条仍在 ⇒ 此后每个失败用例的诊断快照都带一条
+ * `requestfailed: … ERR_CONNECTION_REFUSED`，下一个人会以为"这轮真的连不上"。
+ *
+ * 回滚用 `splice(mark, failed)` 而不是"清空到末尾"：一次失败导航可能连带留下子资源条目，
+ * 固定删 `failed` 条既准确，又不会顺带吞掉成功那次加载里的真 4xx。
+ * 失败到最终**抛出**时不回滚 —— 那时这条记账正是最有价值的证据。
+ */
+async function navigateWithRetry(page, doNav) {
+  netFailures(page);                        // 幂等，只挂一次；此后任何导航的 4xx 都自动记账
+  const mark = page.__net.length;
+  const t0 = Date.now();
+  let failed = 0;                           // 失败次数 = 失败导航留下的条目数
+  for (;;) {
+    try {
+      await doNav();
+      break;
+    } catch (e) {
+      const msg = String(e).split('\n')[0];
+      const transient = TRANSIENT_GOTO.some(s => msg.includes(s));
+      if (!transient || Date.now() - t0 > GOTO_BUDGET_MS) throw e;
+      failed++;
+      console.warn(`[open] 连接失败，${failed}s 后重试（${msg}）`);
+      await sleep(1000 * failed);
+    }
+  }
+  if (failed) page.__net.splice(mark, failed);
+}
+
+/** `page.goto` 的重试版。参数与 `page.goto` 同形，默认值与 `open()` 原来的用法一致。 */
+export const gotoWithRetry = (page, target, opts = { waitUntil: 'domcontentloaded', timeout: 20000 }) =>
+  navigateWithRetry(page, () => page.goto(target, opts));
+
+/** `page.reload` 的重试版。
+ *  P-117 §2.3-4：`openLlk` 的 `reload` 与 `open` 之间隔着一个 `evaluate`（几十~几百 ms），
+ *  站点完全可能正好在这段里被杀。别信"窗口已过"，同一个 helper 走一遍。 */
+export const reloadWithRetry = (page, opts = { waitUntil: 'domcontentloaded', timeout: 20000 }) =>
+  navigateWithRetry(page, () => page.reload(opts));
+
 /**
  * 打开页面并等 Blazor Server 电路就绪。
  * 说明：Blazor Server 没有稳定的"就绪"信号，故沿用原脚本的 window.Blazor + 固定等待，
  * 不用 networkidle（SignalR 长连接会让它永远不 idle）。
  */
 export async function open(page, path, settle = 1500) {
-  netFailures(page);                        // 幂等，只挂一次；此后任何导航的 4xx 都自动记账
   lastOpenedPage = page;
-  await page.goto(path, { waitUntil: 'domcontentloaded', timeout: 20000 });
+  await gotoWithRetry(page, path);
   await page.waitForFunction(() => !!window.Blazor, null, { timeout: 15000 }).catch(() => {});
   await sleep(settle);
 }
@@ -158,7 +218,7 @@ export async function open(page, path, settle = 1500) {
 export async function openLlk(page, settle = 1600) {
   await open(page, '/lianliankan', settle);
   await page.evaluate(() => localStorage.setItem('jtjsym.llk.rulesSeen', '1'));
-  await page.reload({ waitUntil: 'domcontentloaded' });
+  await reloadWithRetry(page);              // 与 open 之间隔着一次 evaluate：站点可能正好在这段里被杀
   await page.waitForFunction(() => !!window.Blazor, null, { timeout: 15000 }).catch(() => {});
   await sleep(settle);
 }

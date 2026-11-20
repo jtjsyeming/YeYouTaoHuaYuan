@@ -5,6 +5,13 @@ import path from 'node:path';
 const BASE_URL = process.env.BASE_URL ?? 'http://localhost:14074';
 // 发布前清单（release.manual.mjs）默认不收集 —— 它既不占"跳过"数，也不会被误当自动化门禁。
 const RELEASE = process.env.PW_RELEASE === '1';
+// P-118 §3.1：有外部看护（tools/e2e/site-runner.mjs）时，本 config **完全不碰站点**。
+//
+// 为什么必须二选一：`url: BASE_URL` + `reuseExistingServer: true` 的组合下，只要 BASE_URL 换成
+// 14075 且那一瞬站点没在跑，Playwright 会执行 `command` 起一个 **14074** 的站，然后死等 14075
+// 到 `timeout: 180_000` ⇒ 整批红，而且症状是"卡住 3 分钟"而非"port 不对"。
+// 更糟的是它会和看护抢同一个日志文件（`>` 截断 ⇒ TRIS-23 的字节基线被清空）。
+const SITE_MANAGED = process.env.PW_SITE_MANAGED === '1';
 
 // 连连看每日榜的数据目录（H-018）。
 // ⚠ **不能**放 tools/e2e/.tmp/：FT-53 的豁免正则只认 `functiontest.mjs` 与 `.workbuddy/`，
@@ -54,12 +61,17 @@ export default defineConfig({
   //   环境回落为 Production 后 StaticWebAssets 不再从构建输出提供，`_content/Microsoft.Fast.Components.FluentUI/*`
   //   全部 404 → Fluent 自定义元素不会升级，<fluent-option> 以行内元素撑出 2.7~3.1 倍页宽，
   //   所有"横向溢出/尺寸"类断言都会得到假结果（实测见 2026-11-01 D11-D12 执行记录）。
-  webServer: {
+  // PW_SITE_MANAGED=1 ⇒ undefined：Playwright 接受该值，既不启动也不探活（P-118 §3.1 乙方案）。
+  webServer: SITE_MANAGED ? undefined : {
     // `> jtjsym-site.log 2>&1` 是 TRIS-23 的验收依据：shell 把两条流都送进文件，
     // 于是 stdout/stderr 维持原样即可（11-13「stdout:'ignore' 让死因不可见」的教训由
     // 这个文件承接，且比 pipe 更持久 —— 跑批结束、进程退了，文件还在）。
     // cwd = 本 config 所在目录 ⇒ 落 tools/e2e/jtjsym-site.log，被既有 `*-site.log` 规则忽略。
-    command: 'dotnet run --project ../../jtjsym/jtjsym --no-launch-profile --environment Development --urls http://localhost:14074 > jtjsym-site.log 2>&1',
+    // ⚠ 端口必须跟随 BASE_URL：旧写法写死 14074，配上 `url: BASE_URL` 后会出现
+    //   "BASE_URL=14075 但起的是 14074，然后死等 14075 到 180s" 的整批卡死。
+    //   有看护时本段整体不生效（SITE_MANAGED），两套启动器不会同时抢端口，故拼 BASE_URL 安全。
+    // ⚠ `--project` 用相对本 config 的路径（Playwright 以 config 目录为 cwd），别改成相对仓库根。
+    command: `dotnet run --project ../../jtjsym/jtjsym --no-launch-profile --environment Development --urls ${BASE_URL} > jtjsym-site.log 2>&1`,
     url: BASE_URL,
     reuseExistingServer: true, // VS/VS Code 调试实例已占用 14074 时直接复用
     timeout: 180_000,
