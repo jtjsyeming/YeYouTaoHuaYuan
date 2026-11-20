@@ -92,6 +92,12 @@ public static class LlkCopy
     /// </summary>
     public static string RuleTime => $"· 单局限时 {LianliankanCore.TimeLimitSec} 秒";
 
+    /// <summary>
+    /// 第 6 行：生肖月主题（H-023）。<b>只说明"每月换一个图案"，不点名当月</b> ——
+    /// 点名的那个说法在状态行（<see cref="ZodiacLabel"/>），两处都点名就会出现"遮罩写狗月、标题写猪月"。
+    /// </summary>
+    public const string RuleTheme = "· 每月换一个生肖图案";
+
     /// <summary>遮罩按钮。</summary>
     public const string RulesStart = "开始";
 
@@ -289,6 +295,32 @@ public static class LlkCopy
 
     /// <summary>「2026年11月」。</summary>
     public static string MonthTitle(int year, int month) => $"{year}年{month}月";
+
+    // ───────────────────── 生肖月主题文案（H-023 / C-106） ─────────────────────
+
+    /// <summary>生肖名（下标 0..11 = 鼠..猪）。<b>顺序必须与 <see cref="LianliankanThemes.ZodiacArt"/> 对齐</b>（U16-5 守）。</summary>
+    private static readonly string[] ZodiacNames =
+        { "鼠", "牛", "虎", "兔", "龙", "蛇", "马", "羊", "猴", "鸡", "狗", "猪" };
+
+    /// <summary>「十一月」—— 写给"月名"用的中文数字，不复用数字月份（日历标题另有 <see cref="MonthTitle"/> 的阿拉伯数字口径）。</summary>
+    public static string MonthCn(int month) => month switch
+    {
+        1 => "一月", 2 => "二月", 3 => "三月", 4 => "四月", 5 => "五月", 6 => "六月",
+        7 => "七月", 8 => "八月", 9 => "九月", 10 => "十月", 11 => "十一月", 12 => "十二月",
+        _ => string.Empty,
+    };
+
+    /// <summary>
+    /// 「狗月 · 十一月」—— 盘面状态行与日历月份副标题共用。
+    /// <para>文案是"可辨认性"的兜底手段（《57》§4.2 第 3 条）：8×6 点阵认不出是哪个生肖，
+    /// 玩家看字就知道。</para>
+    /// </summary>
+    public static string ZodiacLabel(int issue)
+    {
+        var name = ZodiacNames[LianliankanThemes.ZodiacIndex(issue)];
+        var month = MonthCn(issue / 100 % 100);
+        return month.Length == 0 ? $"{name}月" : $"{name}月 · {month}";
+    }
 
     /// <summary>
     /// 按 <b>UTF-16 文本元素</b>截断（emoji 不劈半）。<c>s[..n]</c> 会把代理对切成半个字符。
