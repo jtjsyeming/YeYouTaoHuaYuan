@@ -684,10 +684,11 @@ test.describe('LL 连连看', () => {
 
     const label = await page.getAttribute('[role="dialog"]', 'aria-label');
     const lines = await page.$$eval('.llk-rules-line', els => els.map(e => e.textContent.trim()));
-    // H-020 起多了第 5 行「· 单局限时 300 秒」。**断行数而不是断内容**：内容由 LlkCopy 单点生成，
-    // 与 Core 的 TimeLimitSec 同源，这里再抄一遍"300"就是把常量复制成第二份真源。
-    check('LL-15-文案', label === '连连看玩法' && lines.length === 5,
-      `aria-label="${label}"，规则行数=${lines.length}（应 5：对脸/拐数/虚线/提示/限时）`);
+    // H-020 起多了第 5 行「· 单局限时 300 秒」，H-023 起又多了第 6 行「· 每月换一个生肖图案」。
+    // **断行数而不是断内容**：内容由 LlkCopy 单点生成，与 Core 的 TimeLimitSec 同源，
+    // 这里再抄一遍"300"就是把常量复制成第二份真源。（第 6 行的内容由 LL-51 精确断。）
+    check('LL-15-文案', label === '连连看玩法' && lines.length === 6,
+      `aria-label="${label}"，规则行数=${lines.length}（应 6：对脸/拐数/虚线/提示/限时/生肖）`);
 
     // 遮罩只盖 .llk-board-wrap，状态行在它上方仍可点 ⇒ 按钮必须自己 disabled，
     // 否则遮罩期点提示会起表 + 白扣一次，而高亮被遮住根本看不见
@@ -2095,5 +2096,158 @@ test.describe('reduced-motion 降级', () => {
       `重排后 ${after.filter(v => v > 0).length} 块；序列应与注入时不同（原样是死局，Reshuffle 不会停在那里）`);
     check('LL-32-可消', await eliminateAnyPair(page), '重排后两两试过都没消掉（说明不是合法可解盘）');
     check('LL-32-无console报错', errs.length === 0, errs.slice(0, 3).join(' | '));
+  });
+});
+
+// ───────────────────────── 生肖月主题（H-023 / C-106~C-108） ─────────────────────────
+// 形状挂在**格位**上（data-llk-zodiac + ::after 染色），与 cells、快照、成对闸全不相干 ——
+// 所以这里的判据只有两类：① 染色格集合是不是当月那张图；② 生肖文案是不是当月那个。
+test.describe('生肖月主题（H-023）', () => {
+  const ZODIAC_NAMES = '鼠牛虎兔龙蛇马羊猴鸡狗猪';
+  const MONTH_CN = ['一月', '二月', '三月', '四月', '五月', '六月',
+                    '七月', '八月', '九月', '十月', '十一月', '十二月'];
+
+  /**
+   * C# 侧点阵的**真源**：直接读源码解析，不在测试里抄第二份。
+   * 抄一份的代价是"改图必漏测试"，而漏了的样子是"染色全对但图案是上个月的"—— 看不出来。
+   */
+  const readArt = () => {
+    const src = fs.readFileSync(
+      new URL('../../../jtjsym/jtjsym/Services/LianliankanThemes.cs', import.meta.url), 'utf8');
+    const block = src.slice(src.indexOf('ZodiacArt'), src.indexOf('public static int ZodiacIndex'));
+    return [...block.matchAll(/new\[\]\s*\{\s*("[.#]{6}"(?:\s*,\s*"[.#]{6}")*)\s*\}/g)]
+      .map(m => m[1].split(',').map(s => s.trim().replace(/"/g, '')));
+  };
+
+  /** 点阵 → 形状格的 idx 升序数组（`art[r][c] === '#' ? r*6+c`）。 */
+  const shapeIdx = art => {
+    const out = [];
+    art.forEach((row, r) => [...row].forEach((ch, c) => { if (ch === '#') out.push(r * COLS + c); }));
+    return out;
+  };
+
+  test('LL-49 日历能翻回 2026-01：连点到「上个月」禁用（H-023 / MinIssue 放宽）', async ({ page }) => {
+    await open(page, '/llkcalendar', 1200);
+
+    const prev = page.locator('.llk-cal-nav').first();
+    let clicks = 0;
+    // 不写死"翻 10 次"：跑测日期一变（12 月、次年）次数就不同。上限 36 只为防死循环，
+    // 真死循环时下面那条"翻到头"会带着实际次数判红。
+    // ⚠ 每次点击后必须等标题真的变了再进下一轮：不等的话下一轮的 isDisabled 读到的是上一帧，
+    //   于是会对着**已禁用**的按钮 click ⇒ Playwright 等 enabled 等到 10s 超时（首跑就是这么红的）。
+    while (!(await prev.isDisabled()) && clicks < 36) {
+      const before = await page.textContent('.llk-cal-title');
+      await prev.click();
+      await expect.poll(() => page.textContent('.llk-cal-title'), { timeout: 4000 }).not.toBe(before);
+      clicks++;
+    }
+
+    const end = await page.evaluate(() => {
+      const cells = [...document.querySelectorAll('.llk-cal-cell')];
+      const day1 = cells.find(c => c.dataset.issue?.endsWith('0101'));
+      return {
+        title: document.querySelector('.llk-cal-title')?.textContent.trim(),
+        zodiac: document.querySelector('.llk-cal-zodiac')?.textContent.trim(),
+        prevDisabled: document.querySelector('[aria-label="上个月"]')?.disabled,
+        cells: cells.length,
+        day1Disabled: day1 ? day1.disabled : null,
+        day1Issue: day1 ? Number(day1.dataset.issue) : 0,
+      };
+    });
+
+    check('LL-49-翻到头', end.title === '2026年1月' && end.prevDisabled === true,
+      `点 ${clicks} 次后标题="${end.title}"、「上个月」disabled=${end.prevDisabled}（应 2026年1月 + 禁用）`);
+    // 结构性判据，不判"全部是 —"：2026-01 的格子可能被 LL-39/release 跑过而带上纪录
+    check('LL-49-格数', end.cells === 31, `2026 年 1 月格数=${end.cells}（应 31）`);
+    check('LL-49-首日可点', end.day1Issue === 20260101 && end.day1Disabled === false,
+      `1 日格期号=${end.day1Issue} disabled=${end.day1Disabled}（MinIssue 放宽后应可点）`);
+    check('LL-49-生肖副标题', end.zodiac === '鼠月 · 一月', `生肖副标题="${end.zodiac}"（2026-01 = 鼠）`);
+  });
+
+  test('LL-50 盘面染色格与当月点阵逐格一致（H-023）', async ({ page }) => {
+    const today = todayIssue();
+    const month = Math.floor(today / 100) % 100;
+    const arts = readArt();
+    check('LL-50-点阵可解析', arts.length === 12 && arts.every(a => a.length === 8),
+      `从 C# 源码解析到 ${arts.length} 张（应 12 张 × 8 行）`);
+
+    const expected = shapeIdx(arts[(month - 1) % 12]);
+    await openLlk(page);
+
+    const got = await page.$$eval('.llk-cell[data-llk-zodiac="1"]',
+      els => els.map(e => Number(e.dataset.idx)).sort((a, b) => a - b));
+    // 逐格比而不是比数量：行列写反（idx/6 ↔ idx%6）时格数一模一样，只有集合能抓
+    check('LL-50-集合', JSON.stringify(got) === JSON.stringify(expected),
+      `染色格 ${got.length} 个，期望 ${expected.length} 个（第 ${month} 张图）；实测=${JSON.stringify(got)}`);
+
+    // 染色层真的画出来了：::after 的背景色是**直接证据**（data 属性只证明"该染"，不证明"染上了"）
+    const paint = await page.evaluate(() => {
+      const el = document.querySelector('.llk-cell[data-llk-zodiac="1"]');
+      if (!el) return null;
+      const cs = getComputedStyle(el, '::after');
+      return { bg: cs.backgroundColor, pe: cs.pointerEvents, content: cs.content };
+    });
+    check('LL-50-染色层',
+      !!paint && paint.bg === 'rgba(179, 66, 60, 0.16)' && paint.content !== 'none' && paint.pe === 'none',
+      paint ? `::after 背景=${paint.bg}、content=${paint.content}、pointer-events=${paint.pe}`
+            : '找不到带 data-llk-zodiac 的格子');
+
+    // pointer-events:none 的后果判据：真点一下，格子必须能被选中（染色层不许吃掉点击）
+    const target = expected[0];
+    await page.locator(`.llk-cell[data-idx="${target}"]`).click();
+    await expect.poll(() => page.locator('.llk-cell.is-selected').count(), { timeout: 3000 }).toBe(1);
+    check('LL-50-可点', (await page.locator('.llk-cell.is-selected').count()) === 1,
+      `点击染色格 idx=${target} 后选中数=${await page.locator('.llk-cell.is-selected').count()}（应 1）`);
+  });
+
+  test('LL-51 生肖文案：状态行与规则遮罩第 6 行（H-023）', async ({ page }) => {
+    // 先看首访规则遮罩（此时 rulesSeen 还没写）
+    await open(page, '/lianliankan', 1400);
+    await expect.poll(() => page.locator('.llk-rules-line').count(), { timeout: 6000 }).toBe(6);
+    const lines = await page.$$eval('.llk-rules-line', els => els.map(e => e.textContent.trim()));
+
+    const today = todayIssue();
+    const month = Math.floor(today / 100) % 100;
+    const expected = `${ZODIAC_NAMES[(month - 1) % 12]}月 · ${MONTH_CN[month - 1]}`;
+
+    // 文案断言用 === 而不是 includes：`includes('狗月')` 会放过「狗月 · —」这种"月名没写进去"的症状
+    check('LL-51-规则行', lines[5] === '· 每月换一个生肖图案', `第 6 行="${lines[5]}"`);
+
+    await openLlk(page);
+    // catch 兜住"节点根本不存在"：让红报文说"状态行=\"\""，而不是抛一个定位超时（后者看不出缺的是什么）
+    const label = ((await page.textContent('.llk-zodiac').catch(() => '')) || '').trim();
+    check('LL-51-状态行', label === expected, `状态行="${label}"（应「${expected}」）`);
+
+    // 独立 span：不许挤进 .llk-elapsed / .llk-best（那两个节点被 readElapsed / readBestText 取数字）
+    const elapsed = await readElapsed(page);
+    check('LL-51-不污染读数', elapsed === 0 && !(await readBestText(page)).includes('月'),
+      `用时读数=${elapsed}（应 0）、本关最快="${await readBestText(page)}"（不该含「月」）`);
+  });
+
+  test('LL-52 历史关与今日纪录在存储层隔离（H-023 / P-105 甲案双键）', async ({ page }) => {
+    // 这条**不在《57》的 LL-49~51 里**，是为 P-105 补的：文档 §7.2 要求放宽 MinIssue 之前先修 P-105，
+    // 而修法的实质是"今日用主键、历史关用子键"。没有这条用例时，把页面改回单键也全绿。
+    const today = todayIssue();
+    const past = 20260315;                       // 固定的历史关（早于 MinIssue 之后任何一次跑测日期）
+    const MAIN = 'jtjsym.llk.best';
+    const PAST_KEY = `${MAIN}.${past}`;
+
+    await open(page, '/lianliankan', 1200);
+    // 今日纪录 42 秒：若历史关读的是主键，它就会显示成"本关最快：42"
+    await page.evaluate(([k, t]) => localStorage.setItem(k, JSON.stringify({ issue: t, sec: 42 })), [MAIN, today]);
+
+    await open(page, `/lianliankan?issue=${past}`, 1400);
+    check('LL-52-历史关不读今日', (await readBestText(page)) === '本关最快：—',
+      `历史关（${past}）的「本关最快」="${await readBestText(page)}"（应 —：今日纪录不许串过来）`);
+
+    // 反向：历史关自己的子键要读得到
+    await page.evaluate(([k, p]) => localStorage.setItem(k, JSON.stringify({ issue: p, sec: 77 })), [PAST_KEY, past]);
+    await open(page, `/lianliankan?issue=${past}`, 1400);
+    check('LL-52-子键可读', (await readBestText(page)) === '本关最快：77',
+      `历史关的「本关最快」="${await readBestText(page)}"（应 77：子键 ${PAST_KEY}）`);
+
+    const keys = await page.evaluate(() => Object.keys(localStorage).filter(k => k.startsWith('jtjsym.llk.best')).sort());
+    check('LL-52-键分离', keys.includes(MAIN) && keys.includes(PAST_KEY) && MAIN !== PAST_KEY,
+      `localStorage 里的最快键=${JSON.stringify(keys)}（应同时有主键与 ${past} 子键）`);
   });
 });
