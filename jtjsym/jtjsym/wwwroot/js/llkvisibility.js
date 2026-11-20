@@ -1,48 +1,36 @@
-// 夜游桃花源 连连看切后台暂停（《36》v2.0 §3.4）+ sprite 可用性探测（H-016 / D-33 / D-34）
+// 夜游桃花源 连连看 sprite 可用性探测（H-016 / D-33 / D-34）+ 减动效偏好（D-31）
 //
 // 为什么另写一个模块而不是复用 gamekeyboard.js：
 //   gamekeyboard 的 register 会接管四个方向键并把 keydown 全拦下来，而连连看没有键盘操作 ——
 //   复用它等于给一个纯点击的游戏装上"方向键被吃掉"的副作用。
-//   但 interop 的注册 / 注销 / dotNetRef 释放这套形状照抄（D-24 已验证可用），只保留 visibility 那一条。
 //
 // 为什么 H-016 的探测也放这里：本模块**已经在 firstRender 加载**、也已经在 DisposeAsync 释放；
 //   而 llkline.js 是"首次画线"才按需加载的 —— 把探测塞进去等于每次进页面都拉一遍连接线模块。
 //
-// 为什么必须暂停：计时器在服务端跑，标签页隐藏时照走 —— 切后台 5 分钟回来"用时"直接 +300 秒，
-// 竞速成绩当场报废。v1.0 曾写"不做后台暂停"，那条对连连看不成立。
+// ⚠ D-42 起**不再有切后台暂停**：计时改成"现在 − 起表时刻"，起表时刻进会话快照，
+//   切页 / 刷新 / 锁屏 / 崩溃重启都能重算回来 ⇒ 切后台期间的时间本来就该算（否则 300 秒限时形同虚设）。
+//   旧做法是"隐藏时派发 PauseTimer 把 tick 停掉"，但它只停了计数器、没有留住时间，
+//   于是"切页 4 秒"变成"永久丢 4 秒"——既不公平，也能被"反复切页"利用来刷新成绩。
+//   连带删掉的死代码：visibilitychange 监听、handler、RELEASE_DELAY_MS、unloading、pagehide 标记。
+//   （pagehide 当初只为"延迟 invoke 别在断连时发出"服务，没有 invoke 就没有它存在的理由。）
+//   ⚠ 模块本身必须留：sprite 探测、prefersReducedMotion 与 window.__jtjsymLlkVisReady
+//   （P-039 的就绪信号）都还在用。
 let ref = null;
-let handler = null;
 let currentId = 0;
 let seq = 0;
-let unloading = false;   // 页面正在卸载（导航离开 / 关页）
-
-// 延迟一拍再 invoke：导航期间 visibilitychange 会先于卸载触发，
-// 而那一刻 SignalR 可能已经断开，直接 invoke 会让 blazor.server.js 打出
-// "Cannot send data if the connection is not in the 'Connected' State."（污染 NF-06）
-const RELEASE_DELAY_MS = 150;
 
 /**
- * 注册可见性监听，返回注册 id；调用方保存它，Dispose 时传给 unregister。
- * @param {DotNetObjectReference} dotNetRef 组件引用，需提供 PauseTimer()
+ * 注册，返回注册 id；调用方保存它，Dispose 时传给 unregister。
+ * <para>D-42 起它只做"幂等清理 + 就绪信号"。</para>
+ * @param {DotNetObjectReference} dotNetRef 形参**保留**：页面有 3 处调用点（首帧 / 恢复 / 探测），
+ *   删了要同步改三处、纯 diff 噪音；同时 ref 留作将来真需要回 C# 时的接缝（当前无人读）。
  */
 export function register(dotNetRef) {
-  remove();               // 幂等：先拆旧监听（含上一页遗留）
+  remove();               // 幂等：先拆旧状态（含上一页遗留）
   ref = dotNetRef;
-  unloading = false;
-
-  handler = () => {
-    if (!document.hidden) return;
-    window.setTimeout(() => {
-      if (unloading || !ref) return;
-      ref.invokeMethodAsync('PauseTimer').catch(() => {});
-    }, RELEASE_DELAY_MS);
-  };
-
-  document.addEventListener('visibilitychange', handler);
-  window.addEventListener('pagehide', onPageHide);
 
   currentId = ++seq;
-  // 就绪信号：e2e 不该靠"固定等 X ms"来猜监听装好没有（P-039 的教训）
+  // 就绪信号：e2e 不该靠"固定等 X ms"来猜注册好了没有（P-039 的教训）
   window.__jtjsymLlkVisReady = true;
   return currentId;
 }
@@ -65,7 +53,8 @@ export function unregister(id) {
 }
 
 function onPageHide() {
-  unloading = true;
+  // D-42：pagehide 已不再需要（它当初只服务"延迟 invoke 别在断连时发出"）。
+  // 保留这个空函数是给 remove() 的对称性留位；真要加"关页前做点什么"时改这里。
 }
 
 // ───────────────── sprite 可用性探测（H-016 / D-33 / D-34） ─────────────────
@@ -224,11 +213,9 @@ function probeSprite(url, timeoutMs, onLateOk) {
 }
 
 function remove() {
-  if (handler) document.removeEventListener('visibilitychange', handler);
-  window.removeEventListener('pagehide', onPageHide);
-  handler = null;
   // D-34：**必须**在这里停退避复查。`unregister()` 走的就是 remove()，而 Blazor Server 的
   // 站内导航不触发 `pagehide` —— 只挂 pagehide 等于 SPA 切页后定时器继续跑（对已卸载的 DOM 空转）。
+  // D-42：visibilitychange 与 pagehide 两条监听都已删除（见文件头），这里没有 DOM 监听可摘。
   stopRecover();
   window.__jtjsymLlkVisReady = false;
 }

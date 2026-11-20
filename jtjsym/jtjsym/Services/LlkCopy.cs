@@ -16,8 +16,12 @@ public static class LlkCopy
     /// <summary>「地球日20261112关」。</summary>
     public static string IssueLabel(int issue) => $"{IssueLabelPrefix}{issue}关";
 
-    /// <summary>恢复提示。与扫雷同款语气：先说"已恢复"，再说"怎么继续"。</summary>
-    public const string ResumeTip = "已恢复上一局（计时已暂停，点棋盘继续）";
+    /// <summary>
+    /// 恢复提示。与扫雷同款语气：先说"已恢复"，再说"怎么继续"。
+    /// <para><b>D-42 起不说"计时已暂停"</b>：恢复后时间接着走（起表时刻存在快照里，切页/刷新都不丢），
+    /// 旧文案「计时已暂停，点棋盘继续」在新实现下是<b>假话</b> —— 玩家会以为不点就不计时。</para>
+    /// </summary>
+    public const string ResumeTip = "已恢复上一局，接着计时";
 
     /// <summary>死局重排飘字。</summary>
     public const string ReshuffleTip = "无解自动重排";
@@ -82,8 +86,61 @@ public static class LlkCopy
     /// <summary>第 4 行：提示次数。</summary>
     public const string RuleHints = "· 卡住了点「提示」，每局三次";
 
+    /// <summary>
+    /// 第 5 行：限时（H-020）。<b>秒数从 Core 取</b>，不在这里写 300 ——
+    /// 判定（<c>LianliankanCore.IsOverLimit</c>）与这句话必须同源，否则改限时会出现"判定 300、文案 180"。
+    /// </summary>
+    public static string RuleTime => $"· 单局限时 {LianliankanCore.TimeLimitSec} 秒";
+
     /// <summary>遮罩按钮。</summary>
     public const string RulesStart = "开始";
+
+    // ───────────────────────── 超时与结算（H-020 / H-021） ─────────────────────────
+
+    /// <summary>超时遮罩标题。</summary>
+    public const string TimeoutTitle = "时间到";
+
+    /// <summary>超时遮罩副行。同样从 Core 取秒数。</summary>
+    public static string TimeoutSub => $"游戏结束 · 用满 {LianliankanCore.TimeLimitSec} 秒";
+
+    /// <summary>
+    /// 状态行尾随的剩余时间（<b>只在最后 60 秒出现</b>）。
+    /// <para>不改成倒计时：状态行是"正计时"口径，全站一致（扫雷/2048 也是正计时）；
+    /// 而 320 下这一行本来就快要折行，多一个常驻数字会把它顶成两行。只在"真正需要知道"的那一分钟出现。</para>
+    /// </summary>
+    public static string RemainTip(int remainSec) => $"剩 {remainSec} 秒";
+
+    /// <summary>从第几秒开始显示剩余时间。<b>= 限时 − 60</b>，别单独写一个魔法数。</summary>
+    public const int RemainTipFromSec = LianliankanCore.TimeLimitSec - 60;
+
+    /// <summary>遮罩里的「再来一局」。收进来是因为胜利与超时两个遮罩都要用，散写迟早一处改了另一处没改。</summary>
+    public const string PlayAgain = "再来一局";
+
+    /// <summary>遮罩里的「返回关卡选择」。</summary>
+    public const string BackToCalendar = "返回关卡选择";
+
+    /// <summary>首次通关的结算行（H-021）。中性，不带感叹号。</summary>
+    public const string FirstClear = "首次通关，已记下本关纪录";
+
+    /// <summary>差值显示上限。桩数据下 999 → 5 会写出「快 994 秒」，读着像 bug。</summary>
+    public const int MaxGapSec = 99;
+
+    /// <summary>
+    /// 通关结算行（H-021）：三分支。返回 <c>null</c> = 这一局不加行（平纪录 / 更慢）。
+    /// </summary>
+    /// <param name="oldBest">刷新之前的纪录。<c>null</c> = 本关第一次通关。</param>
+    /// <param name="elapsedSec">本局用时。</param>
+    /// <remarks>
+    /// <b>必须在 <c>TryUpdateBest</c> 之前调用</b> —— 之后 <c>best</c> 已经是新值，差值恒 0。
+    /// 差值夹上限（<see cref="MaxGapSec"/>）而不是原样相减：极端桩数据下那个数字看着像缺陷。
+    /// </remarks>
+    public static string? ClearNote(int? oldBest, int elapsedSec)
+    {
+        if (oldBest is null) return FirstClear;
+        if (elapsedSec >= oldBest) return null;                 // 平纪录也不算"刷新"（与 TryUpdateBest 的相等不刷新同口径）
+        var faster = Math.Clamp(oldBest.Value - elapsedSec, 1, MaxGapSec);
+        return $"刷新本关纪录！比之前快 {faster} 秒";
+    }
 
     // ───────────────────────── 兜底字牌（H-016 / D-33） ─────────────────────────
     // "图挂了"时格面上不再有图案，只剩这两字。**不用 Name[..2] 截断**：

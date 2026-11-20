@@ -16,6 +16,14 @@
 <div class="llk-container">
     <div class="llk-status">
         <p class="llk-stat llk-elapsed">用时：@elapsedSec 秒</p>
+        @* H-020：最后 60 秒才出现的低干扰提示。**不改成倒计时** —— 全站计时口径都是正计时
+           （扫雷/2048 同款），而 320 下这一行本来就贴着折行线，常驻一个数字会把它顶成两行。
+           ⚠ 单独的 <span> 而不是塞进 .llk-elapsed：e2e 的 readElapsed 取该节点第一个数字，
+             塞进去会让"剩 1 秒"被读成用时 1 秒（LL-08/43/44 都依赖那个读数）。 *@
+        @if (RemainSec is { } remain)
+        {
+            <span class="llk-stat llk-remain">@LlkCopy.RemainTip(remain)</span>
+        }
         @* 提示按钮进状态行（H-015）：整行 +4px（18 → 22），LL-11 的余量 58 → 54。
            用原生 <button> 而不是 FluentButton —— 后者 32px 高会把状态行直接撑到 32。
            次数由 Core 给（HintButton），页面不自己减。 *@
@@ -121,15 +129,24 @@
                 <p class="llk-rules-line">@LlkCopy.RuleTurns</p>
                 <p class="llk-rules-line">@LlkCopy.RuleHintLine</p>
                 <p class="llk-rules-line">@LlkCopy.RuleHints</p>
+                @* H-020：限时也要在规则里说，否则「时间到」是玩家第一次听说有这回事 *@
+                <p class="llk-rules-line">@LlkCopy.RuleTime</p>
                 <FluentButton Class="llk-overlay-btn" Appearance="Appearance.Accent" @onclick="OnRulesStartClicked">@LlkCopy.RulesStart</FluentButton>
             </div>
         }
 
         @if (game.IsCleared)
         {
-            <div class="llk-overlay">
+            <div class="llk-overlay llk-win" role="dialog" aria-label="通关">
                 <h2 class="llk-overlay-title">全部消除</h2>
                 <p class="llk-overlay-sub">用时 @elapsedSec 秒 · @LlkCopy.BestLabel @FormatBest(best) 秒</p>
+
+                @* H-021 结算行：三分支（首次 / 刷新纪录 + 差值 / 不加行）。文案由 LlkCopy.ClearNote 单点生成，
+                   页面只决定"有没有这一行"。 ⚠ 不加行时不留空 <p> —— 遮罩的 gap 会把它算成一行空白。 *@
+                @if (clearNote is not null)
+                {
+                    <p class="llk-clear-note" role="status">@clearNote</p>
+                }
 
                 @* H-018：留名入口。**不是必经路径** —— 不填直接「再来一局」也完全正常（榜上记「神秘嘉宾」）。
                    用裸 input 而不是 FluentTextField：后者是 shadow DOM 自定义元素，e2e 的 fill 打不到内层
@@ -159,7 +176,25 @@
                     <p class="llk-name-saved">@LlkCopy.LeaderboardSaved</p>
                 }
 
-                <FluentButton Class="llk-overlay-btn" Appearance="Appearance.Accent" @onclick="OnRestartClicked">再来一局</FluentButton>
+                @* H-021：两个按钮并排（320 下实测余量 231px，不会挤压）。 *@
+                <div class="llk-overlay-actions">
+                    <FluentButton Class="llk-overlay-btn" Appearance="Appearance.Accent" @onclick="OnRestartClicked">@LlkCopy.PlayAgain</FluentButton>
+                    <FluentButton Class="llk-overlay-btn" @onclick="OnBackToCalendarClicked">@LlkCopy.BackToCalendar</FluentButton>
+                </div>
+            </div>
+        }
+
+        @* H-020：超时遮罩。**不写 best、不进榜**（TryUpdateBest 只在胜利路径）——
+           所以这里没有留名入口，也不该出现「本关最快」，否则读着像"超时也算成绩"。 *@
+        @if (isTimedOut)
+        {
+            <div class="llk-overlay llk-timeout" role="dialog" aria-label="时间到">
+                <h2 class="llk-overlay-title">@LlkCopy.TimeoutTitle</h2>
+                <p class="llk-overlay-sub">@LlkCopy.TimeoutSub</p>
+                <div class="llk-overlay-actions">
+                    <FluentButton Class="llk-overlay-btn" Appearance="Appearance.Accent" @onclick="OnRestartClicked">@LlkCopy.PlayAgain</FluentButton>
+                    <FluentButton Class="llk-overlay-btn" @onclick="OnBackToCalendarClicked">@LlkCopy.BackToCalendar</FluentButton>
+                </div>
             </div>
         }
     </div>
@@ -186,6 +221,15 @@
     .llk-stat {
         margin: 0;
         font-size: .95rem;
+    }
+
+    /* H-020：最后 60 秒的剩余时间。**只在那一分钟出现**，所以它带来的折行只发生在
+       "已经在赶时间"的时候 —— LL-11 打开的是干净页面（用时 0），看不见这条。
+       用朱砂色而不是红底/闪烁：棋盘才是主视觉，状态行不该抢。 */
+    .llk-remain {
+        font-size: .9rem;
+        font-weight: 600;
+        color: #B3423C;
     }
 
     .llk-board-wrap {
@@ -445,6 +489,27 @@
         color: #455a64;
     }
 
+    /* H-021：结算行（首次通关 / 刷新纪录）。比副行更靠前地把"这一局怎么样"说出来，
+       所以用朱砂色而不是灰蓝 —— 它是这一屏最该被看见的一句话。
+       ⚠ 本块里**不能出现裸的小于号**（注释里也不行）。 */
+    .llk-clear-note {
+        margin: 0;
+        font-size: .9rem;
+        font-weight: 600;
+        color: #B3423C;
+        text-align: center;
+    }
+
+    /* H-021：遮罩底部按钮行。两个 FluentButton 并排（各约 96 / 112px + 8 gap 装得进 320 下的 304px），
+       flex-wrap 是保险：真到了更窄的屏或按钮文案变长，宁可折成两行也不要横向溢出。 */
+    .llk-overlay-actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: center;
+        gap: 8px;
+    }
+
     /* H-018 留名区：input + 按钮并排。132 + 6 + 约 86 = 224，装得进 320 下的遮罩宽（304），不折行。
        ⚠ 本块里**不能出现裸的小于号**（注释里也不行）—— 会被当成标签起点，整段样式编译不过（RZ10007）。 */
     .llk-name-row {
@@ -593,8 +658,32 @@
 
     private int selectedIdx = -1;
 
-    /// <summary>计时暂停：初值 true（首次点击才起表），恢复即暂停，切后台也置 true。</summary>
-    private bool isPaused = true;
+    /// <summary>
+    /// <b>起表时刻</b>（D-42）。<c>null</c> = 还没起表 —— 页面打开时它必须是 <c>null</c>，
+    /// 否则"打开就计时"（旧 <c>isPaused = true</c> 初值承担的正是这个语义）。
+    /// <para>这是整套计时的**唯一真相**：用时 = 现在 − 它。切页 / 刷新 / 锁屏 / 崩溃重启都靠它重算，
+    /// tick 只负责"把新读数刷到屏幕上"。</para>
+    /// </summary>
+    private DateTimeOffset? startedAt;
+
+    /// <summary>
+    /// 已超时（H-020）。<b>锁盘</b>：点击入口直接返回、tick 不再推进、遮罩弹出。
+    /// <para>与 <c>game.IsCleared</c> 并列而不是合成一个字段：通关有成绩、超时没有，
+    /// 两条路径的后续（进榜 / 删档）完全不同。</para>
+    /// </summary>
+    private bool isTimedOut;
+
+    /// <summary>
+    /// 通关结算行（H-021）。<c>null</c> = 这一局不加行（平纪录 / 更慢）。
+    /// <para><b>必须在 <c>TryUpdateBest</c> 之前算</b>：之后 <c>best</c> 已是新值，差值恒 0。
+    /// 字符串由 <see cref="LlkCopy.ClearNote"/> 单点生成，页面不拼文案。</para>
+    /// </summary>
+    private string? clearNote;
+
+    /// <summary>剩余秒数（<c>null</c> = 不在最后 60 秒，状态行不显示）。</summary>
+    private int? RemainSec => elapsedSec >= LlkCopy.RemainTipFromSec && !game.IsCleared && !isTimedOut
+        ? Math.Max(0, LianliankanCore.TimeLimitSec - elapsedSec)
+        : null;
 
     private bool showResumeTip;
     private bool showReshuffleTip;
@@ -978,17 +1067,32 @@
                     else
                     {
                         game = restored;
-                        elapsedSec = snap!.ElapsedSec;
                         selectedIdx = -1;
-                        isPaused = true;                // 恢复即暂停（与扫雷同口径）
-                        showResumeTip = true;
 
-                        // 死局档不丢弃：恢复后第一帧就重排（v2.0 §0 #7 —— 丢弃等于把玩家打回第 1 关）
-                        // 这里用 await：它在 try 内，finally 的 isRestoring = false 自然排在动画之后
-                        // ⇒ 恢复场景 isRestoring 与 isReshuffling 双闸挡输入，不必额外处理。
-                        if (!game.HasAnyPair())
+                        // D-42：**起表时刻从快照来，不是"现在"**。老档（无 startedAtMs）由 Core 折算。
+                        //   随后 elapsedSec 立刻按时间差算一遍 —— 于是"上一次存档之后"的时间
+                        //   （切页 / 刷新 / 锁屏期间的真实流逝）一次补齐，不再依赖 tick 是否在跑。
+                        startedAt = LianliankanCore.StartedAtOf(snap!, DateTimeOffset.UtcNow);
+                        elapsedSec = ElapsedSeconds();
+
+                        // H-020：恢复出来的档可能已经用满限时 ⇒ 直接进超时态（不再"接着玩"）。
+                        //   这条不能省：tick 要等一拍才判，那一拍里玩家是能点动的。
+                        if (LianliankanCore.IsOverLimit(elapsedSec))
                         {
-                            await ReshuffleWithTransitionAsync();
+                            await OnTimeoutAsync();
+                        }
+                        else
+                        {
+                            showResumeTip = true;           // 超时局不说"已恢复，接着计时"（那是假话）
+                            StartClock();                    // D-42：恢复后时间接着走，不等首点
+
+                            // 死局档不丢弃：恢复后第一帧就重排（v2.0 §0 #7 —— 丢弃等于把玩家打回第 1 关）
+                            // 这里用 await：它在 try 内，finally 的 isRestoring = false 自然排在动画之后
+                            // ⇒ 恢复场景 isRestoring 与 isReshuffling 双闸挡输入，不必额外处理。
+                            if (!game.HasAnyPair())
+                            {
+                                await ReshuffleWithTransitionAsync();
+                            }
                         }
 
                         StateHasChanged();
@@ -1153,7 +1257,9 @@
         // isReshuffling：动画 470ms 内的输入一律"吞"掉，不排队 —— 死局瞬间玩家没有有效操作可丢，
         // 排队要存点击参数 + 去重 + 动画后重放，复杂度不值。代价：窗口内第一击无反馈（与 isRestoring 同手感）。
         // reduced-motion 时这条自动失效（isReshuffling 从 true 到 false 之间没有 await 让出，从未被渲染）。
-        if (isRestoring || isReshuffling || showRules || game.IsCleared) return;
+        // isTimedOut（H-020）：锁盘。**必须在这里**，不能只靠遮罩挡点击 —— 遮罩只盖 .llk-board-wrap，
+        //   而棋盘恰好在 wrap 里（这条与提示按钮的禁用口径同源）。
+        if (isRestoring || isReshuffling || showRules || game.IsCleared || isTimedOut) return;
 
         var face = game.Cells[idx];
         if (face == 0) return;                          // 空格：不参与选中
@@ -1166,7 +1272,15 @@
             // 反馈的 1.6s 过后被"盖住"的重排提示会再冒出来，文字闪一下（D-30）。
             showReshuffleTip = false;
             selectedIdx = idx;
-            ResumeClock();
+            ResumeClock();                              // startedAt ??= now：首点起表
+
+            // ★ 选中分支**前置判**超时（H-020）：否则玩家可以靠不断点空格/换选把超时无限推后
+            //   （每点一下都会重新渲染，而 tick 只在 InvokeAsync 里判）。消除分支不能前置 —— 见下。
+            if (LianliankanCore.IsOverLimit(ElapsedSeconds()))
+            {
+                _ = OnTimeoutAsync();
+                return;
+            }
             if (!disposed) StateHasChanged();
             return;
         }
@@ -1212,19 +1326,38 @@
             showReshuffleTip = false;
             ClearFeedback();                            // 消成功就把失败提示与提示高亮一起收掉
             ResumeClock();
+            // 存档 / 结算前把读数收口到"真实用时"：tick 一秒一拍，此刻的 elapsedSec 可能是上一拍的旧值，
+            // 直接拿它存档会让"最后一次存档之后"的那段时间仍然是黑的（D-42 的另一半）。
+            elapsedSec = Math.Max(elapsedSec, ElapsedSeconds());
 
             if (game.IsCleared)
             {
                 StopClock();
                 // 0 秒会被永久锁死（同《35》D-27 口径）：首点起表 + 1 秒一拍，理论上仍可能同秒清空
                 if (elapsedSec < 1) elapsedSec = 1;
+
+                // ★ 通关优先（H-020）：最后一对在 299.x 秒点下时 tick 可能已经越过 300。
+                //   这里**不判超时** —— "限时内完成"是产品承诺，不该被 tick 的 1 秒粒度吃掉。
+                //   代价是理论上可以"300 秒后靠一击通关"，但那需要玩家在超时遮罩弹出前的一瞬点中，
+                //   而遮罩与 StopClock 都在同一帧里落地 ⇒ 窗口只有一次 SignalR 往返。
+                var oldBest = best;                     // ★ 必须在 TryUpdateBest 之前取：之后 best 已是新值
                 var next = LianliankanCore.TryUpdateBest(best, elapsedSec);
                 if (next is not null) best = next;
+                clearNote = LlkCopy.ClearNote(oldBest, elapsedSec);   // H-021 三分支
                 await PersistBestAsync();               // 落盘点 ①：胜利瞬间（与遮罩同帧）
                 await RemoveSessionAsync();             // 已通关的盘没有可恢复的语义
             }
             else
             {
+                // ★ 超时的另一半（H-020）：非通关才判。放在"消除之后"而不是点击开头，
+                //   正是为了让限时内点下的最后一对能进上面的胜利路径（通关优先）。
+                if (LianliankanCore.IsOverLimit(elapsedSec))
+                {
+                    _ = OnTimeoutAsync();
+                    if (!disposed) StateHasChanged();
+                    return;
+                }
+
                 if (!game.HasAnyPair())                 // 死局：自动重排，别让玩家卡死
                 {
                     // fire-and-forget：主流程不等这 470ms（否则"消除 → 存档 → 渲染"整条链一起被推迟）。
@@ -1267,7 +1400,10 @@
         Array.Clear(lastFace);                          // 字段 = 本局事实（D-32）：不清也不出错，但"再来一局"该是干净局
         elapsedSec = 0;
         selectedIdx = -1;
-        isPaused = true;
+        // D-42：新一局回到"还没起表"（不是"暂停"）—— startedAt 为 null 才是页面打开时的初态。
+        startedAt = null;
+        isTimedOut = false;                             // H-020：超时后「再来一局」要能重新开局
+        clearNote = null;                               // H-021：上一局的结算行不能留到下一局
         showResumeTip = false;
         showReshuffleTip = false;
         submitted = false;                              // 新一局可以再提交一次
@@ -1336,12 +1472,30 @@
         }
     }
 
-    // ───────────────────────── 计时（PeriodicTimer + 互斥 + 双检） ─────────────────────────
+    // ───────────────────────── 计时（时间差 + 节拍器 + 互斥 + 双检） ─────────────────────────
 
-    /// <summary>起表 / 续走。首次点击与"恢复后第一次点击"走同一条。</summary>
+    /// <summary>
+    /// 当前用时（秒）。<b>是时间差，不是计数器</b>（D-42）—— tick 停了、漏拍了、组件被 dispose 了，
+    /// 只要 <see cref="startedAt"/> 还在，这个数就永远是对的。
+    /// </summary>
+    /// <remarks>
+    /// <c>Math.Max(0, …)</c> 是必须的：系统时间被调回（或用户在"跨时区"的机器上改了时钟）时
+    /// <c>UtcNow - startedAt</c> 是负数，状态行会显示「用时：-3 秒」。
+    /// </remarks>
+    private int ElapsedSeconds()
+    {
+        if (startedAt is not { } t) return 0;
+        return Math.Max(0, (int)(DateTimeOffset.UtcNow - t).TotalSeconds);
+    }
+
+    /// <summary>
+    /// 起表 / 续走。首次点击与之后每一次点击走同一条（H-020 的点击入口也要调它）。
+    /// <para><b><c>??=</c> 是关键</b>：只补"从没起过"，绝不重置 —— 恢复出来的档带真起表时刻，
+    /// 点击不能把它刷新成"现在"（那等于每次点击白送一分钟）。</para>
+    /// </summary>
     private void ResumeClock()
     {
-        isPaused = false;
+        startedAt ??= DateTimeOffset.UtcNow;
         StartClock();
     }
 
@@ -1377,13 +1531,26 @@
         {
             while (await timer.WaitForNextTickAsync(token))
             {
-                if (disposed || isPaused || game.IsCleared) continue;
+                if (disposed || isTimedOut || startedAt is null || game.IsCleared) continue;
 
                 await InvokeAsync(() =>
                 {
-                    if (disposed || isPaused || game.IsCleared) return;
-                    elapsedSec++;
-                    StateHasChanged();
+                    if (disposed || isTimedOut || game.IsCleared) return;
+
+                    // ★ 重算而不是 ++（D-42 的关键一行）：tick 只是"刷新显示"的节拍器，
+                    //   漏拍（线程池排队 / 浏览器后台节流 / 断连重连）会在下一拍自动补齐，
+                    //   而不是永久少一秒。写成 elapsedSec++ 的话，任何一次"停表"都会变成"丢时间"。
+                    var sec = ElapsedSeconds();
+                    if (LianliankanCore.IsOverLimit(sec))
+                    {
+                        _ = OnTimeoutAsync();           // 超时判定下沉到 Core，文案与判定同源
+                        return;
+                    }
+                    if (sec != elapsedSec)
+                    {
+                        elapsedSec = sec;
+                        StateHasChanged();
+                    }
                 });
             }
         }
@@ -1392,14 +1559,35 @@
         catch (InvalidOperationException) { }           // circuit 已断，InvokeAsync 无法排队
     }
 
-    /// <summary>切后台暂停（由 <c>wwwroot/js/llkvisibility.js</c> 调用）。</summary>
-    [JSInvokable]
-    public void PauseTimer()
+    /// <summary>
+    /// 超时收尾（H-020）。<b>幂等</b>：tick 与点击入口都可能先到，两边都会调。
+    /// </summary>
+    /// <remarks>
+    /// <para>读数<b>冻结在 300</b>，不显示 301 —— 遮罩上"用满 300 秒"与状态行必须是同一个数，
+    /// 否则玩家会看到"用满 300 秒"下面写着 302 秒。</para>
+    /// <para><b>删档是必须的</b>：超时局若还能恢复，下次进页面立刻又超时，等于永久锁死这一关
+    /// （LL-46 守的就是这条）。</para>
+    /// <para>不写 best、不进榜：<c>TryUpdateBest</c> 只在胜利路径。</para>
+    /// </remarks>
+    private async Task OnTimeoutAsync()
     {
+        if (isTimedOut || disposed) return;
+
+        // ★ 通关优先（H-020 竞态的另一半）：tick 的 `_ = OnTimeoutAsync()` 是 fire-and-forget，
+        //   它可能在"最后一对已经消掉、胜利遮罩正在渲染"之后才落地。那时若照样置 isTimedOut，
+        //   上面两个 `@if`（IsCleared / isTimedOut）会**同时成立**、叠出两个遮罩。
+        //   放在这里而不是模板里加 `&& !isTimedOut`：治因比治果稳 —— 状态本身就不该出现。
         if (game.IsCleared) return;
-        isPaused = true;
+
+        isTimedOut = true;
+        elapsedSec = LianliankanCore.TimeLimitSec;
+        StopClock();
+        await RemoveSessionAsync();
         if (!disposed) StateHasChanged();
     }
+
+    /// <summary>返回关卡选择（H-021）。胜利与超时两个遮罩共用。</summary>
+    private void OnBackToCalendarClicked() => Nav.NavigateTo("/llkcalendar");
 
     // ───────────────────────── 本关最快（秒，越小越好） ─────────────────────────
 
@@ -1438,7 +1626,8 @@
 
         try
         {
-            var json = JsonSerializer.Serialize(game.ToSnapshot(elapsedSec));
+            // D-42：起表时刻一起落盘 —— 这是"时间不再依赖 tick"的落地点。
+            var json = JsonSerializer.Serialize(game.ToSnapshot(elapsedSec, startedAt));
             await JS.InvokeVoidAsync("sessionStorage.setItem", LlkKeys.Session, json);
         }
         catch (JSException) { }
