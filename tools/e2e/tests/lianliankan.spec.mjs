@@ -99,9 +99,19 @@ const readLineSvg = page =>
     };
   });
 
-/** 注入一份会话档并 reload（reload 后 sessionStorage 仍在，正是"切页/刷新回来"的真实路径）。 */
-const seedSession = async (page, { cells, elapsed = 5, issue = todayIssue() }) => {
-  const payload = JSON.stringify({ v: 1, issue, cells, elapsedSec: elapsed });
+/**
+ * 注入一份会话档并 reload（reload 后 sessionStorage 仍在，正是"切页/刷新回来"的真实路径）。
+ *
+ * `startedAtMs`（D-42）：起表时刻（Unix 毫秒）。**默认 null = 老档形态** ——
+ * Core 的 `StartedAtOf` 会按"读到它的此刻往前推 elapsedSec"折算，于是"刚起表 elapsedSec 秒"。
+ * 要造"已经玩了 301 秒"这种档，就显式传 `Date.now() - 301000`：
+ * 光传 `elapsedSec: 301` 是不够的（那只是"上一次存档的读数"，起表时刻会被折算成"现在刚起表"）。
+ *
+ * ⚠ `startedAtMs: null` 会显式写进 JSON。`null` 与"字段缺席"在 `long?` 上都读成 null，
+ *   两种写法等价，不必特殊处理（LL-44 用"带值"那条，其余用例沿用 null）。
+ */
+const seedSession = async (page, { cells, elapsed = 5, issue = todayIssue(), startedAtMs = null }) => {
+  const payload = JSON.stringify({ v: 1, issue, cells, elapsedSec: elapsed, startedAtMs });
   await page.evaluate(([k, v]) => sessionStorage.setItem(k, v), [SK, payload]);
   await page.reload({ waitUntil: 'domcontentloaded' });
   await page.waitForFunction(() => !!window.Blazor, null, { timeout: 15000 }).catch(() => {});
@@ -295,7 +305,11 @@ test.describe('LL 连连看', () => {
 
     const tipText = (await page.textContent('.llk-reshuffle-tip').catch(() => ''))?.trim() ?? '';
     check('LL-05-飘字', tipText === '无解自动重排', `飘字="${tipText}"`);
-    check('LL-05-暂停', (await readElapsed(page)) === 7, `恢复即暂停，用时=${await readElapsed(page)}（应 7）`);
+    // D-42 起恢复后**接着走**（不再"恢复即暂停"）：这里只断言"档里的 7 秒被读出来了、没归零"。
+    // ⚠ 别写 `=== 7`：seedSession 自带 sleep(1100)，读数必然已经 +1 或 +2。
+    //   也别写死上界 —— 机器慢时重排动画（600ms）也会算进去。
+    check('LL-05-读数', (await readElapsed(page)) >= 7,
+      `恢复后用时=${await readElapsed(page)}（应 ≥7；0 = 档被成对闸丢弃、回落每日盘）`);
 
     // 重排后必须存在可连对：按头像逐个试，只要有一次真的消掉了就说明"重新可消"
     let eliminated = false;
@@ -376,7 +390,7 @@ test.describe('LL 连连看', () => {
     check('LL-07-坏值', (await readBestText(page)).includes('—'), `榜文案="${await readBestText(page)}"`);
   });
 
-  test('LL-08 会话保持：切页回来盘面一致、暂停态、点一格才续走', async ({ page }) => {
+  test('LL-08 会话保持：切页回来盘面一致、时间接着走、点一格不掐表', async ({ page }) => {
     await openLlk(page);
     await seedSession(page, {
       cells: cellsWith([[idx(0, 0), 1], [idx(0, 1), 1], [idx(7, 4), 2], [idx(7, 5), 2]]),
@@ -397,9 +411,13 @@ test.describe('LL 连连看', () => {
     checkEq('LL-08-盘面', after, before);
     check('LL-08-提示', (await page.locator('.llk-resume-tip').count()) === 1, '恢复提示未出现');
 
+    // D-42：恢复后时间**接着走**（旧实现这里断言"不变"，那是"恢复即暂停"）。
+    // ⚠ 容差只能取 +1：sleep(1600) 在 1 秒一拍的节拍器上最多走 2 拍，
+    //    而读数本身滞后 tick 至多 1 秒。断言 +2 会偶发红。
     const paused = await readElapsed(page);
     await sleep(1600);
-    check('LL-08-暂停', (await readElapsed(page)) === paused, `暂停态用时 ${paused}s → ${await readElapsed(page)}s（应不变）`);
+    const resumed = await readElapsed(page);
+    check('LL-08-恢复续走', resumed >= paused + 1, `恢复后 ${paused}s → ${resumed}s（应 ≥ ${paused + 1}；不变 = 还停在"恢复即暂停"）`);
 
     const live = (await readCells(page)).findIndex(v => v > 0);
     await clickCell(page, live);
@@ -407,7 +425,11 @@ test.describe('LL 连连看', () => {
     check('LL-08-续走', (await readElapsed(page)) > paused, `点一格后用时=${await readElapsed(page)}s（应 > ${paused}）`);
   });
 
-  test('LL-09 切后台不涨时：注入 visibilityState=hidden → 2 秒后用时不变', async ({ page }) => {
+  test('LL-09 切后台继续涨（不再主动暂停）：注入 visibilityState=hidden → 用时照常涨', async ({ page }) => {
+    // ⚠ 这条**不是 D-42 的主闸**（主闸是 LL-45）。
+    //   实测反证（《54》§4.2）：只删 llkvisibility.js 的派发、**保留 elapsedSec++**，
+    //   隐藏期间 tick 仍在跑 ⇒ elapsedSec 继续涨 ⇒ 本条照样绿。
+    //   它守的其实是另一件事："没人把 PauseTimer 那条派发又加回来"。
     await openLlk(page);
     await seedSession(page, { cells: cellsWith([[idx(0, 0), 1], [idx(0, 1), 1], [idx(7, 4), 2], [idx(7, 5), 2]]), elapsed: 2 });
 
@@ -423,11 +445,11 @@ test.describe('LL 连连看', () => {
       document.dispatchEvent(new Event('visibilitychange'));
     });
 
-    await sleep(700);                          // 让 150ms 延迟派发 + 一次 render 落地
-    const paused = await readElapsed(page);
+    await sleep(700);                          // 旧实现会在这 150ms 延迟派发 + 一次 render 里停下
+    const hiddenAt = await readElapsed(page);
     await sleep(1800);
     const later = await readElapsed(page);
-    check('LL-09', later === paused, `隐藏后 ${paused}s → ${later}s（应不变；隐藏前在走=${running}s）`);
+    check('LL-09', later > hiddenAt, `隐藏后 ${hiddenAt}s → ${later}s（应继续涨；隐藏前在走=${running}s）`);
   });
 
   test('LL-10 窄屏横向：375 / 320 无横向溢出', async ({ browser }) => {
@@ -505,8 +527,9 @@ test.describe('LL 连连看', () => {
       elapsed: 5,
     });
 
-    // 前置：档真被接受了。「用时 5 秒」是没被丢弃的指纹 —— 干净的每日盘恒为 0 秒。
-    check('LL-13-前置', (await readElapsed(page)) === 5, `用时=${await readElapsed(page)}（5=档已恢复；0=被成对闸丢弃、回落每日盘）`);
+    // 前置：档真被接受了。「≥5 秒」是没被丢弃的指纹 —— 干净的每日盘恒为 0 秒（还没起表）。
+    // ⚠ D-42 起恢复后接着走，所以是 `>=` 不是 `===`（seedSession 自带 sleep(1100) 会让它 +1）。
+    check('LL-13-前置', (await readElapsed(page)) >= 5, `用时=${await readElapsed(page)}（≥5=档已恢复；0=被成对闸丢弃、回落每日盘）`);
 
     // 角色名从 aria-label 反查，不写死中文：换角色（LianliankanThemes）时这条断言不用跟着改，
     // 顺带交叉校验了「提示里的名字」与「格子自己的无障碍名」是同一套。
@@ -661,8 +684,10 @@ test.describe('LL 连连看', () => {
 
     const label = await page.getAttribute('[role="dialog"]', 'aria-label');
     const lines = await page.$$eval('.llk-rules-line', els => els.map(e => e.textContent.trim()));
-    check('LL-15-文案', label === '连连看玩法' && lines.length === 4,
-      `aria-label="${label}"，规则行数=${lines.length}（应 4）`);
+    // H-020 起多了第 5 行「· 单局限时 300 秒」。**断行数而不是断内容**：内容由 LlkCopy 单点生成，
+    // 与 Core 的 TimeLimitSec 同源，这里再抄一遍"300"就是把常量复制成第二份真源。
+    check('LL-15-文案', label === '连连看玩法' && lines.length === 5,
+      `aria-label="${label}"，规则行数=${lines.length}（应 5：对脸/拐数/虚线/提示/限时）`);
 
     // 遮罩只盖 .llk-board-wrap，状态行在它上方仍可点 ⇒ 按钮必须自己 disabled，
     // 否则遮罩期点提示会起表 + 白扣一次，而高亮被遮住根本看不见
@@ -1754,6 +1779,235 @@ test.describe('关卡日历与服务端榜单（H-018）', () => {
       fs.rmSync(LLK_DATA_DIR, { force: true });
       fs.mkdirSync(LLK_DATA_DIR, { recursive: true });
     }
+  });
+});
+
+// ───── D-42 / H-020 / H-021：计时改成时间差 + 300 秒限时 + 结算体验（C-101~C-103） ─────
+//
+// 判据纪律（这三条是这个主题最容易写错的地方）：
+//   ① **时间差 ≠ 计数器**。要证明"时间不再依赖 tick"，必须走**会 dispose 组件**的路径（切页），
+//      而不是派发 hidden —— 后者旧实现也照样涨（《54》§4.2 的实测反证），只能当辅助闸（LL-09）。
+//   ② **容差只能往小取**。切页前读数本身滞后 tick 至多 1 秒，返回后是精确值 ⇒
+//      "离开 3 秒"只能断言 `+2`；断言 `+3` 会偶发红。
+//   ③ **超时读数是冻结值**。300 秒整即判负、显示 300 而不是 301/302 ——
+//      注入 301 秒的档若显示 301，说明"冻结在限时"那条没做。
+//
+// 编号接上一批（LL-42）。表里原本缺 LL-46，本批补齐；LL-48 补的是「首点起表」这个
+// **零覆盖**点（42 条里没有一条断言"点之前 elapsed 恒 0"，删掉 startedAt 初值也不会红）。
+
+test.describe('计时与限时（D-42 / H-020 / H-021）', () => {
+  test('LL-43 恢复即超时：注入已用满 301 秒的档 → 时间到遮罩、锁盘、无留名入口（H-020）', async ({ page }) => {
+    await openLlk(page);
+    // ⚠ **必须传 startedAtMs**。光传 elapsedSec: 301 是没用的 —— 那只表示"上一次存档的读数"，
+    //   而 StartedAtOf 会把它折算成"现在刚起表"（于是用时 0、不超时），用例会假绿。
+    const payload = JSON.stringify({
+      v: 1,
+      issue: todayIssue(),
+      cells: cellsWith([[idx(0, 0), 1], [idx(0, 1), 1], [idx(7, 4), 2], [idx(7, 5), 2]]),
+      elapsedSec: 301,
+      startedAtMs: Date.now() - 301_000,
+    });
+    // ⚠ **不走 seedSession**：它自带 sleep(1100)，等于把"打开即超时"这条判据让给 tick
+    //   （而 tick 的判定是 LL-44 守的）。这里要的是"恢复流程自己就判" —— 不删档、不等一拍。
+    await page.evaluate(([k, v]) => sessionStorage.setItem(k, v), [SK, payload]);
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => !!window.Blazor, null, { timeout: 15000 }).catch(() => {});
+
+    // 恢复流程的两种结局：好的 ⇒ 直接弹超时遮罩；坏的 ⇒ 弹「已恢复上一局，接着计时」。
+    // 用"两者谁先出现"来分辨，而不是等够时间再看遮罩 —— 等久了 tick 会把坏实现救回来。
+    await expect.poll(() => page.locator('.llk-timeout, .llk-resume-tip').count(), { timeout: 8000 }).toBeGreaterThan(0);
+    const atOnce = await page.locator('.llk-timeout').count();
+    const tip = await page.locator('.llk-resume-tip').count();
+    check('LL-43-恢复即判', atOnce === 1 && tip === 0,
+      `恢复完成后：超时遮罩 ${atOnce} 个、恢复提示 ${tip} 个（应 1 / 0 —— 超时局不该说"接着计时"）`);
+
+    // catch(() => '')：遮罩没出现时 textContent 会等到用例超时，把"断言失败"变成"用例崩溃"，
+    // 丢掉前面已经采到的证据（LL-43-恢复即判 那条才是主判据）。
+    const title = ((await page.textContent('.llk-timeout .llk-overlay-title').catch(() => '')) || '').trim();
+    const sub = ((await page.textContent('.llk-timeout .llk-overlay-sub').catch(() => '')) || '').trim();
+    check('LL-43-文案', title === '时间到' && sub === '游戏结束 · 用满 300 秒', `标题="${title}" 副行="${sub}"`);
+
+    // 读数冻结在限时：注入的是 301~302 秒，显示 300 才是"冻结"，显示 301+ 就是没冻。
+    check('LL-43-冻结', (await readElapsed(page)) === 300, `用时=${await readElapsed(page)}（应 300，不是 301/302）`);
+
+    // 超时局不进榜、也没有留名入口 —— 有输入框就等于把"超时"当成成绩在收集名字。
+    // ⚠ 记录行要读**遮罩自己的文本**，不能拿 `.llk-timeout .llk-best` 去数节点：
+    //   `.llk-best` 在状态行里、根本不在遮罩内，那个选择器恒返回 0（假断言，永远绿）。
+    const nameUi = await page.evaluate(() => ({
+      input: document.querySelectorAll('.llk-name-input').length,
+      btn: document.querySelectorAll('.llk-name-btn').length,
+      text: (document.querySelector('.llk-timeout')?.textContent ?? ''),
+    }));
+    check('LL-43-无留名', nameUi.input === 0 && nameUi.btn === 0 && !nameUi.text.includes('本关最快'),
+      `输入框 ${nameUi.input}、按钮 ${nameUi.btn}、遮罩含「本关最快」=${nameUi.text.includes('本关最快')}`);
+
+    // 锁盘：考的是 C# 侧的守卫，不是"遮罩挡住了"。
+    // ⚠ **不能用 `click({ force: true })`**：force 只跳过 actionability 检查，**不改变事件目标**
+    //   ——坐标上最顶层的元素是遮罩，事件照样命中遮罩，`.llk-cell` 根本收不到 ⇒ 这条断言恒绿（实测踩过）。
+    //   `dispatchEvent('click')` 才把事件直接派发到格子本身，绕过命中测试。
+    // ⚠ 守卫有**两道**（入口的 `isTimedOut` + 选中分支的 `IsOverLimit`），单独撤一道这条不会红 ——
+    //   红检要两道一起撤才能证明它有效（实测：只撤入口那道仍绿）。
+    await page.locator(`.llk-cell[data-idx="${idx(0, 0)}"]`).dispatchEvent('click');
+    await sleep(600);
+    check('LL-43-锁盘', (await page.locator('.llk-cell.is-selected').count()) === 0,
+      `超时后派发点击仍选中了 ${await page.locator('.llk-cell.is-selected').count()} 格`);
+
+    // 超时局不可恢复：档必须被删（否则每次进页面都是超时死循环 —— LL-46 守同一条的另一端）
+    check('LL-43-删档', (await sessionRaw(page)) === null, `sessionStorage 仍有档：${await sessionRaw(page)}`);
+
+    check('LL-43-按钮', (await page.locator('.llk-timeout .llk-overlay-btn').count()) === 2,
+      `超时遮罩按钮 ${await page.locator('.llk-timeout .llk-overlay-btn').count()} 个（应 2：再来一局 / 返回关卡选择）`);
+  });
+
+  test('LL-44 到点自动超时：注入已用 298 秒的档 → 数秒内自己弹出（H-020）', async ({ page }) => {
+    await openLlk(page);
+    // 298 秒 + seedSession 自带的 sleep(1100) ⇒ 打开时约 299 秒，**还没到限时**。
+    // 于是这条考的是 tick 的判定（而 LL-43 考的是恢复流程的判定）—— 两条各守一处，缺一不可。
+    await seedSession(page, {
+      cells: cellsWith([[idx(0, 0), 1], [idx(0, 1), 1], [idx(7, 4), 2], [idx(7, 5), 2]]),
+      elapsed: 298,
+      startedAtMs: Date.now() - 298_000,
+    });
+
+    // 打开那一刻不该已经超时（否则说明折算错了，这条就成了 LL-43 的重复）
+    const atOpen = await page.locator('.llk-timeout').count();
+    check('LL-44-前置', atOpen === 0, `打开时已弹超时遮罩 ${atOpen} 个（应 0 —— 档里只有 299 秒）`);
+
+    await expect.poll(() => page.locator('.llk-timeout').count(), { timeout: 8000 }).toBe(1);
+    check('LL-44-冻结', (await readElapsed(page)) === 300, `用时=${await readElapsed(page)}（应 300）`);
+
+    // tick 已经退出：再等 2 秒读数也不该继续涨
+    await sleep(2000);
+    check('LL-44-停表', (await readElapsed(page)) === 300, `2 秒后用时=${await readElapsed(page)}（应仍 300）`);
+  });
+
+  test('LL-45 切页时间不丢（D-42 主闸）：离开 3 秒回来，用时比走表前至少多 2', async ({ page }) => {
+    await openLlk(page);
+    await seedSession(page, {
+      cells: cellsWith([[idx(0, 0), 1], [idx(0, 1), 1], [idx(7, 4), 2], [idx(7, 5), 2]]),
+      elapsed: 4,
+    });
+
+    // 点一格起表，再让表真走 2 秒 —— 走表前读数太小（4）的话，"丢 3 秒"和"没丢"分不开
+    await clickCell(page, idx(0, 0));
+    await sleep(2200);
+    const before = await readElapsed(page);
+    check('LL-45-前置', before >= 5, `走表前用时=${before}（应 ≥5，否则这条判不出"丢没丢"）`);
+
+    // ⚠⚠ **必须是站内导航，不能用 page.goto**。两条都是实测踩出来的：
+    //   ① `page.goto` 是整页导航：circuit 当场断掉，DisposeAsync 里的 `SaveSessionAsync`
+    //      会抛 JSDisconnectedException 被吞 ⇒ 档停在**上一次消除**的读数（本例是 4 秒），
+    //      于是回来读到 5 秒、比走表前的 7 秒还小 —— 看起来像 D-42 没修（实测红过一次）。
+    //   ② 更重要的：`page.goto` 回来后 tick 是"重新起了一个"，考的是"能不能读档"，
+    //      不是"时间差成不成立"。站内导航（组件 dispose、tick 真停、interop 仍在）才是文档 §4.1
+    //      说的"切页"，也是 LL-45 唯一的判别力来源。
+    // 标记断言：给 window 打个印记，整页导航会把它抹掉 ⇒ 印记还在 = 这次确实是站内导航。
+    //   没有这条，"用例悄悄退化成整页刷新"会重新变成假绿（而且不报错，最难查）。
+    await page.evaluate(() => { window.__llk45 = 1; });
+    await page.evaluate(() => {
+      const a = [...document.querySelectorAll('a')].find(x => x.getAttribute('href') === '/');
+      if (a) a.click();                    // evaluate 里点：窄屏下导航栏可能是折叠的，locator 会因不可见超时
+    });
+    await page.waitForURL(u => new URL(u).pathname === '/', { timeout: 10000 }).catch(() => {});
+    await sleep(3000);                       // 离开 3 秒
+
+    await page.goBack({ waitUntil: 'domcontentloaded' }).catch(() => {});   // 后退 = popstate = SPA 导航
+    await page.waitForURL(u => new URL(u).pathname === '/lianliankan', { timeout: 12000 }).catch(() => {});
+    await page.waitForFunction(() => !!window.Blazor, null, { timeout: 15000 }).catch(() => {});
+    await sleep(1400);
+
+    const spa = await page.evaluate(() => window.__llk45 === 1);
+    check('LL-45-站内', spa, '这次切页必须走站内导航（window 印记被抹掉 = 发生了整页重载，本用例就不成立）');
+
+    const after = await readElapsed(page);
+    // +2 不是 +3：离开前那一次读数本身滞后 tick 至多 1 秒（readElapsed 读的是上一次
+    // 拍子写进 DOM 的值，而返回后 ElapsedSeconds() 是精确的）。断言 +3 会偶发红。
+    check('LL-45', after >= before + 2,
+      `离开前 ${before}s → 回来 ${after}s（应 ≥ ${before + 2}；回到存档值 ≈4 就是 D-42 的原始缺陷）`);
+  });
+
+  test('LL-46 超时后刷新 ⇒ 不再超时，且是全新盘（H-020）', async ({ page }) => {
+    await openLlk(page);
+    await seedSession(page, {
+      cells: cellsWith([[idx(0, 0), 1], [idx(0, 1), 1], [idx(7, 4), 2], [idx(7, 5), 2]]),
+      elapsed: 305,
+      startedAtMs: Date.now() - 305_000,
+    });
+    await expect.poll(() => page.locator('.llk-timeout').count(), { timeout: 8000 }).toBe(1);
+
+    // 刷新 = 同一份 sessionStorage 再读一次。若超时局没删档，这里会立刻又超时 ⇒ 永久锁死这一关。
+    await page.reload({ waitUntil: 'domcontentloaded' });
+    await page.waitForFunction(() => !!window.Blazor, null, { timeout: 15000 }).catch(() => {});
+    await sleep(1400);
+
+    check('LL-46-不重弹', (await page.locator('.llk-timeout').count()) === 0,
+      `刷新后仍弹超时遮罩 ${await page.locator('.llk-timeout').count()} 个（超时局必须删档）`);
+    const live = (await readCells(page)).filter(v => v > 0).length;
+    check('LL-46-新盘', live === 48, `剩余块数=${live}（应 48：全新的每日盘，不是那张 4 块的残局）`);
+    check('LL-46-归零', (await readElapsed(page)) === 0, `用时=${await readElapsed(page)}（新盘还没起表）`);
+  });
+
+  test('LL-47 结算体验：破纪录祝贺行 + 两遮罩都能返回关卡选择（H-021）', async ({ page }) => {
+    await openLlk(page);
+
+    // ① 破纪录：先写一条 60 秒的纪录，再以 5~6 秒通关 ⇒ 差值约 54 秒（不会撞到 99 的上限）
+    await setBest(page, JSON.stringify({ issue: todayIssue(), sec: 60 }));
+    await seedSession(page, { cells: cellsWith([[idx(0, 0), 5], [idx(0, 1), 5]]), elapsed: 5 });
+    await clickCell(page, idx(0, 0));
+    await clickCell(page, idx(0, 1));
+    await expect.poll(() => page.locator('.llk-win').count(), { timeout: 8000 }).toBe(1);
+
+    // ⚠ 断言用 `^…$` 整句匹配而不是 includes：这样"FormatBest 只给数字不带秒"、
+    //   "差值被写成 0"、"文案只改了一半"都会红（D-41 的教训）。
+    const note = ((await page.textContent('.llk-clear-note').catch(() => '')) || '').trim();
+    const m = /^刷新本关纪录！比之前快 (\d+) 秒$/.exec(note);
+    check('LL-47-祝贺行', m !== null && Number(m[1]) > 0 && Number(m[1]) < 99,
+      `结算行="${note}"（应「刷新本关纪录！比之前快 N 秒」，N ∈ 1..98）`);
+
+    // ② 返回关卡选择
+    await page.locator('.llk-win .llk-overlay-btn').last().click();
+    await sleep(1400);
+    check('LL-47-返回', page.url().includes('/llkcalendar'), `点击后 url=${page.url()}`);
+
+    // ③ 超时遮罩也有同一个按钮（两条路径都得回去，不能只有胜利那条）
+    await openLlk(page);
+    await seedSession(page, {
+      cells: cellsWith([[idx(0, 0), 1], [idx(0, 1), 1], [idx(7, 4), 2], [idx(7, 5), 2]]),
+      elapsed: 302,
+      startedAtMs: Date.now() - 302_000,
+    });
+    await expect.poll(() => page.locator('.llk-timeout').count(), { timeout: 8000 }).toBe(1);
+    await page.locator('.llk-timeout .llk-overlay-btn').last().click();
+    await sleep(1400);
+    check('LL-47-超时返回', page.url().includes('/llkcalendar'), `超时遮罩返回后 url=${page.url()}`);
+  });
+
+  test('LL-48 首点起表：空等 4 秒仍是 0，且点一格后的第一个读数只从 0 起算（D-42 的"未起表"语义）', async ({ page }) => {
+    // 这条守的是本次改造**最容易误删**的一处：旧实现靠 `isPaused = true` 初值表达"还没起表"，
+    // 而 D-42 把它换成了 `startedAt is null`。而 42 条既有用例里**没有一条**会发现改错
+    // （它们只在点击之后断言 >N）。
+    await openLlk(page);
+
+    const t0 = await readElapsed(page);
+    check('LL-48-初值', t0 === 0, `刚打开用时=${t0}（应 0）`);
+
+    await sleep(3000);                       // 加上 openLlk 自带的 1.2 秒，累计空等 > 4 秒
+    const t1 = await readElapsed(page);
+    check('LL-48-空等', t1 === 0, `空等 4 秒后用时=${t1}（应 0）`);
+
+    // ★ 关键判据：**点完之后的第一个读数**必须从 0 起算。
+    //   只断言"点击后 > 0"是抓不住初值被写成 `DateTimeOffset.UtcNow` 的（实测红检 R-D1 就漏了）——
+    //   因为 tick 只在点击后才启动，那个缺陷的可见形态是"第一次读数 = 空等时间 + 1"，
+    //   玩家看到的是"我什么都没干，一点就 5 秒了"。所以这里必须卡上界。
+    //   ⚠ 先 poll 到首跳再断言上界，不要用固定 sleep：连跑时机器负载高，
+    //     一拍 + SignalR 往返偶尔超过 1.3 秒 ⇒ 读到 0 ⇒ 假红（实测连跑红、单跑绿）。
+    const cells = await readCells(page);
+    const live = cells.findIndex(v => v > 0);
+    await page.locator(`.llk-cell[data-idx="${live}"]`).click();
+    await expect.poll(() => readElapsed(page), { timeout: 8000 }).toBeGreaterThan(0);
+    const t2 = await readElapsed(page);
+    check('LL-48-点击起表', t2 >= 1 && t2 <= 3,
+      `点一格后首个读数=${t2}（应 1~3：起表从点击算；≥4 就是"打开即起表"）`);
   });
 });
 
