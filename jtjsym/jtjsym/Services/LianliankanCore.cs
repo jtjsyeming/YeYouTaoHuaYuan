@@ -48,9 +48,12 @@ public static class LlkKeys
 
 /// <summary>
 /// 对局快照：<c>sessionStorage['jtjsym.llk.session']</c> 的载荷（《36》v2.0 §3.5）。
-/// <para>棋盘一维 48 格，<c>0</c> = 空、<c>1..24</c> = 头像编号。<b>没有派生字段</b> ——
-/// 连连看的连通性按需算、不缓存，所以 D-26 那种"恢复时漏重建字段"的缺陷形态在这里不存在；
-/// 这道闸要写全的是<b>结构</b>（长度 / 值域 / 成对），不是补丁（《36》v2.0 §3.1 末注）。</para>
+/// <para>棋盘一维 <b>320 格</b>（H-023 起；之前是 48），<c>0</c> = 空、<c>1..24</c> = 头像编号、
+/// <c>-1</c> = 黑块。<b>没有派生字段</b> —— 连连看的连通性按需算、不缓存，所以 D-26 那种
+/// "恢复时漏重建字段"的缺陷形态在这里不存在；这道闸要写全的是<b>结构</b>（长度 / 值域 / 成对），
+/// 不是补丁（《36》v2.0 §3.1 末注）。</para>
+/// <para><b>48 长度的老档零迁移地作废</b>：长度闸（<c>cells.Length != CellCount</c>）本身就拒它，
+/// 不需要升版本、也不需要一次性搬运脚本（《57》v2.7 §7.4）。</para>
 /// </summary>
 public sealed class LianliankanSnapshot
 {
@@ -114,24 +117,48 @@ public sealed record LlkPath(IReadOnlyList<(int R, int C)> Points, int Turns);
 /// </summary>
 public sealed class LianliankanCore
 {
-    public const int Rows = 8;
-    public const int Cols = 6;
-    public const int CellCount = Rows * Cols;      // 48 = 24 对
+    /// <summary>棋盘行数（H-023 起 20：生肖点阵是 20×16 —— 16 列的横向比例才装得下一个"兽形"）。</summary>
+    public const int Rows = 20;
+
+    /// <summary>棋盘列数。</summary>
+    public const int Cols = 16;
+
+    /// <summary>
+    /// <b>格位数</b>恒为 320（不是方块数）。下标换算、快照长度、DOM 格数、寻路状态编码全按它。
+    /// <para>可消除方块数按月不同（134~216），那个量是 <see cref="LianliankanThemes.PlayableCount"/> ——
+    /// <b>两个量不能合并</b>：把 <c>_cells</c> 改成"只装方块"会同时打断 <c>Index(r,c)</c> 的还原、
+    /// 快照长度闸、<c>PairShuffleMoves</c> 的置换、以及渲染的格位对齐（《57》v2.7 §2）。</para>
+    /// </summary>
+    public const int CellCount = Rows * Cols;      // 320 个格位
+
     public const int FaceCount = 24;
+
+    /// <summary>
+    /// 黑块的格值（H-023）。<b>是 <c>-1</c> 而不是"另立一张 bool 表"</b>：快照要能自证 ——
+    /// 格值随档往返，而"从点阵推黑块"会在 e2e 的合成盘上凭空画出整只生肖（造盘用例注入 4 块残局，
+    /// 盘上却站着 190 个黑块）。
+    /// <para>代价是 Core 里所有「空 / 占位」判据都得从 <c>!= 0</c> / <c>== 0</c> 改成
+    /// <c>&gt; 0</c> / <c>&lt;= 0</c>（共 9 处，逐条见 <c>U17-1..5</c>）。漏一处就是静默坏：
+    /// 黑块被成对消掉、被洗走、或者被当成障碍以外的"空"。</para>
+    /// </summary>
+    public const int Obstacle = -1;
 
     /// <summary>用时上界（秒）：一天。越界说明档被改过。</summary>
     public const int MaxElapsedSec = 86400;
 
     /// <summary>
-    /// 单局限时（H-020）：<b>用满即判负</b>（<c>300</c> 秒整那一拍就算超时）。
+    /// 单局限时（H-020 / H-023 重新核算）：<b>用满即判负</b>（<c>500</c> 秒整那一拍就算超时）。
     /// <para><b>与 <see cref="MaxElapsedSec"/> 是两件事</b>：那个是"档被改过"的<b>结构闸</b>（一天），
     /// 这个是<b>产品规则</b>。别把两者合并 —— 结构闸要宽到能装下任何合法老档，规则闸要窄到能当玩法。</para>
     /// <para>放 Core 而不是页面：判定（<see cref="IsOverLimit"/>）与文案（<c>LlkCopy</c> 里那句"用满 N 秒"）
-    /// 必须同源，否则改限时会出现"判定 300、文案 180"。</para>
+    /// 必须同源，否则改限时会出现"判定 500、文案 180"。</para>
+    /// <para><b>300 → 500 的依据不是感觉</b>（《57》v2.7 §4.1）：一局只有 67~108 对（不是满盘 160 对），
+    /// 每对 4.6~7.5 秒，300 秒对「鸡」那张（67 对）只剩 4.5 秒/对，比 v2.2 的满盘口径紧 1.4 倍。
+    /// 500 秒把最紧的那张放回 7.5 秒/对。</para>
     /// </summary>
-    public const int TimeLimitSec = 300;
+    public const int TimeLimitSec = 500;
 
-    /// <summary>用满限时了吗（H-020）。<b>含等号</b>：<c>300</c> 秒整即判负。</summary>
+    /// <summary>用满限时了吗（H-020）。<b>含等号</b>：<c>500</c> 秒整即判负。</summary>
     public static bool IsOverLimit(int elapsedSec) => elapsedSec >= TimeLimitSec;
 
     /// <summary>
@@ -196,8 +223,10 @@ public sealed class LianliankanCore
     // ───────────────────────── 生成 ─────────────────────────
 
     /// <summary>
-    /// 按 <paramref name="issue"/> 确定性铺盘：24 个头像各 ×2 → Fisher-Yates → 铺满 48 格。
+    /// 按 <paramref name="issue"/> 确定性铺盘：可消除格上放 24 张脸（<b>按对定额</b>）→ Fisher-Yates → 铺开。
     /// <para>同一天（同 issue）无论谁来跑，盘面逐格相同 —— 这是"每日一关"的全部技术含义。</para>
+    /// <para>格位角色（空 / 脸 / 黑块）来自 <see cref="LianliankanThemes.CellKind"/>：那 12 张点阵既是
+    /// "这一关长什么样"的唯一真源，也是"哪里有方块"的唯一真源。</para>
     /// </summary>
     public static LianliankanCore NewDaily(int issue)
     {
@@ -216,27 +245,58 @@ public sealed class LianliankanCore
         return core;
     }
 
+    /// <summary>
+    /// 按点阵铺盘（H-023）。
+    /// <para><b>按对定额</b>：先把"对数"在 24 张脸之间尽量均分（<c>q</c> 或 <c>q+1</c> 对），
+    /// 再把每对的两次出现打散到可消除格上。这样每种脸的张数恒为偶数、且落在 4~10 之间
+    /// （97 对 ⇒ 23 张脸 4 对 + 1 张脸 5 对 = 8/10 张），成对闸与"看起来像随机"这两件事同时满足。
+    /// <para>⚠ <b>不能写成"24 张脸各 2 张"</b>（v1.x 的铺法）：那两个量在 320 格盘上根本对不上 ——
+    /// 48 张脸填不满 194 个格位，<c>RemainingCount</c> 会永远停在 146。
+    /// </para>
+    /// </summary>
     private void FillAllShuffled()
     {
-        var values = new int[CellCount];
-        for (var i = 0; i < FaceCount; i++)
+        var playable = new List<int>(CellCount);
+        for (var i = 0; i < CellCount; i++)
         {
-            values[i * 2] = i + 1;
-            values[i * 2 + 1] = i + 1;
+            var kind = LianliankanThemes.CellKind(Issue, i);
+            if (kind == LianliankanThemes.LlkCellKind.Block) _cells[i] = Obstacle;
+            else if (kind == LianliankanThemes.LlkCellKind.Face) playable.Add(i);
+            else _cells[i] = 0;
         }
 
-        Shuffle(values);
-        Array.Copy(values, _cells, CellCount);
-        RemainingCount = CellCount;
+        // 可消除格必为偶数（U16-1 钉点阵）。真出现奇数就丢最后一格当空位 ——
+        // 宁可少一块也不能让成对闸在"自己生成的盘"上失效（那会让存档永远读不回来）。
+        if (playable.Count % 2 == 1) playable.RemoveAt(playable.Count - 1);
+
+        var pairs = playable.Count / 2;
+        var basePairs = pairs / FaceCount;
+        var extra = pairs % FaceCount;                 // 前 extra 张脸多摊一对
+
+        var values = new List<int>(playable.Count);
+        for (var f = 0; f < FaceCount; f++)
+        {
+            var copies = 2 * (basePairs + (f < extra ? 1 : 0));
+            for (var k = 0; k < copies; k++) values.Add(f + 1);
+        }
+
+        Shuffle(values);                               // 原地洗牌
+        for (var i = 0; i < playable.Count; i++) _cells[playable[i]] = values[i];
+
+        RemainingCount = playable.Count;
     }
 
-    /// <summary>把<b>剩余</b>方块的值在占用格之间重排（占用位置不变 ⇒ 剩余数不变）。</summary>
+    /// <summary>
+    /// 把<b>剩余方块</b>的值在占用格之间重排（占用位置不变 ⇒ 剩余数不变）。
+    /// <para>⚠ <c>&gt; 0</c> 不是 <c>!= 0</c>（H-023 #2）：黑块是 <c>-1</c>，写成 <c>!= 0</c> 会把它卷进重排，
+    /// 症状是"每重排一次五官就游走"——图案逐局变形，而其余判据全绿。</para>
+    /// </summary>
     private void ShuffleRemaining()
     {
         var slots = new List<int>(CellCount);
         for (var i = 0; i < CellCount; i++)
         {
-            if (_cells[i] != 0) slots.Add(i);
+            if (_cells[i] > 0) slots.Add(i);
         }
         if (slots.Count < 2) return;
 
@@ -248,9 +308,13 @@ public sealed class LianliankanCore
     }
 
     /// <summary>Fisher-Yates（用内嵌 <see cref="Rng"/>，不用 <c>System.Random</c>）。</summary>
-    private void Shuffle(int[] values)
+    /// <remarks>
+    /// 参数是 <see cref="IList{T}"/> 而不是 <c>int[]</c>：铺盘时待洗的是一张 <c>List&lt;int&gt;</c>
+    /// （张数随月份变），重排时是数组 —— 两处共用同一份洗牌，否则两套随机序迟早对不上。
+    /// </remarks>
+    private void Shuffle(IList<int> values)
     {
-        for (var i = values.Length - 1; i > 0; i--)
+        for (var i = values.Count - 1; i > 0; i--)
         {
             var j = _rng.Next(i + 1);
             (values[i], values[j]) = (values[j], values[i]);
@@ -304,7 +368,7 @@ public sealed class LianliankanCore
     {
         for (var i = 0; i < CellCount; i++)
         {
-            if (_cells[i] == 0) continue;
+            if (_cells[i] <= 0) continue;                  // H-023 #3：两枚黑块会被判成"一对"
             for (var j = i + 1; j < CellCount; j++)
             {
                 if (_cells[j] == _cells[i]) return (i, j);
@@ -313,7 +377,12 @@ public sealed class LianliankanCore
         return (-1, -1);
     }
 
-    /// <summary>行优先找第一对相邻格：先看右侧、再看下方（4 邻接）。</summary>
+    /// <summary>
+    /// 行优先找第一对相邻格：先看右侧、再看下方（4 邻接）。
+    /// <para><paramref name="occupied"/> = true 时是"两个都<b>有脸</b>的相邻格"（<c>&gt; 0</c>）；
+    /// = false 时是"两个都<b>空</b>的相邻格"（<c>== 0</c>，黑块天然不算空，<b>这一支不许改</b>：
+    /// 它问的是"能不能落一枚脸"，黑块不是脸）。</para>
+    /// </summary>
     private (int A, int B) FirstAdjacent(bool occupied)
     {
         static int Idx(int r, int c) => r * Cols + c;
@@ -323,17 +392,17 @@ public sealed class LianliankanCore
             for (var c = 0; c < Cols; c++)
             {
                 var p = Idx(r, c);
-                if (occupied ? _cells[p] == 0 : _cells[p] != 0) continue;
+                if (occupied ? _cells[p] <= 0 : _cells[p] != 0) continue;
 
                 if (c + 1 < Cols)
                 {
                     var q = Idx(r, c + 1);
-                    if (occupied ? _cells[q] != 0 : _cells[q] == 0) return (p, q);
+                    if (occupied ? _cells[q] > 0 : _cells[q] == 0) return (p, q);
                 }
                 if (r + 1 < Rows)
                 {
                     var q = Idx(r + 1, c);
-                    if (occupied ? _cells[q] != 0 : _cells[q] == 0) return (p, q);
+                    if (occupied ? _cells[q] > 0 : _cells[q] == 0) return (p, q);
                 }
             }
         }
@@ -346,9 +415,14 @@ public sealed class LianliankanCore
 
     private static int Index(int r, int c) => r * Cols + c;
 
-    /// <summary>格上的头像编号（0 = 空 / 越界）。</summary>
+    /// <summary>格上的头像编号（0 = 空、<c>-1</c> = 黑块、越界 0）。</summary>
     public int FaceAt(int r, int c) => InBoard(r, c) ? _cells[Index(r, c)] : 0;
 
+    /// <summary>
+    /// 这一格能不能落一枚<b>脸</b>（黑块与越界都不行）。
+    /// <para>⚠ 这里的 <c>== 0</c> 是<b>刻意的</b>，不要在"统一改 &gt; 0"那轮顺手改掉：它问的是
+    /// "空吗"，而黑块不是空 —— <c>-1</c> 天然被排除，改了反而错。</para>
+    /// </summary>
     public bool IsEmpty(int r, int c) => !InBoard(r, c) || _cells[Index(r, c)] == 0;
 
     /// <summary>
@@ -364,7 +438,7 @@ public sealed class LianliankanCore
         if (r1 == r2 && c1 == c2) return false;
 
         var face = _cells[Index(r1, c1)];
-        if (face == 0 || face != _cells[Index(r2, c2)]) return false;
+        if (face <= 0 || face != _cells[Index(r2, c2)]) return false;   // H-023 #5：两枚黑块不许判成可连
 
         // 坐标范围 [-1, Rows] × [-1, Cols]：越界一律视为空格（那圈边界）
         var cols = Cols + 2;
@@ -373,6 +447,8 @@ public sealed class LianliankanCore
 
         var queue = new Queue<(int R, int C, int D, int T)>();
 
+        // H-023：黑块（-1）在这里走 `!= 0` 分支 ⇒ 算"挡路"。这是刻意的取舍（《57》v2.7 §4 末注）：
+        // 黑块只做装饰的话连线会从黑块上穿过去（第 6 月蛇、第 3 月虎最明显），观感更差。
         bool Blocked(int r, int c) => InBoard(r, c) && _cells[Index(r, c)] != 0;
         int StateIndex(int r, int c, int d) => ((r + 1) * cols + (c + 1)) * 4 + d;
         bool OutOfRange(int r, int c) => r < -1 || r > Rows || c < -1 || c > Cols;
@@ -435,7 +511,7 @@ public sealed class LianliankanCore
         if (r1 == r2 && c1 == c2) return null;
 
         var face = _cells[Index(r1, c1)];
-        if (face == 0 || face != _cells[Index(r2, c2)]) return null;
+        if (face <= 0 || face != _cells[Index(r2, c2)]) return null;   // H-023 #6：与 CanConnect 同一道脸闸
 
         // 与 CanConnect 同一套状态编码：坐标范围 [-1, Rows] × [-1, Cols]，状态 = (r, c, 进入方向)
         var cols = Cols + 2;
@@ -446,7 +522,7 @@ public sealed class LianliankanCore
         Array.Fill(parent, -1);
 
         bool OutOfRange(int r, int c) => r < -1 || r > Rows || c < -1 || c > Cols;
-        bool Blocked(int r, int c) => InBoard(r, c) && _cells[Index(r, c)] != 0;
+        bool Blocked(int r, int c) => InBoard(r, c) && _cells[Index(r, c)] != 0;   // 黑块挡路，同 CanConnect
         int StateIndex(int r, int c, int d) => ((r + 1) * cols + (c + 1)) * 4 + d;
         (int R, int C) CellOf(int s)
         {
@@ -562,7 +638,7 @@ public sealed class LianliankanCore
     {
         for (var i = 0; i < CellCount; i++)
         {
-            if (_cells[i] == 0) continue;
+            if (_cells[i] <= 0) continue;                  // H-023 #7：提示不许高亮两枚黑块
             if (excludeIdx == i) continue;
 
             for (var j = i + 1; j < CellCount; j++)
@@ -588,24 +664,24 @@ public sealed class LianliankanCore
         return true;
     }
 
-    /// <summary>消除一格（只清值，不做连通判定 —— 判定由调用方先做）。</summary>
+    /// <summary>消除一格（只清值，不做连通判定 —— 判定由调用方先做）。黑块不可消（H-023 #8）。</summary>
     public bool Remove(int r, int c)
     {
         if (!InBoard(r, c)) return false;
         var i = Index(r, c);
-        if (_cells[i] == 0) return false;
+        if (_cells[i] <= 0) return false;
 
         _cells[i] = 0;
         RemainingCount--;
         return true;
     }
 
-    /// <summary>盘上是否还存在任意一对可连的同号（死局判定）。</summary>
+    /// <summary>盘上是否还存在任意一对可连的同号（死局判定）。<b>两枚黑块不算一对</b>（H-023 #9）。</summary>
     public bool HasAnyPair()
     {
         for (var i = 0; i < CellCount; i++)
         {
-            if (_cells[i] == 0) continue;
+            if (_cells[i] <= 0) continue;
             for (var j = i + 1; j < CellCount; j++)
             {
                 if (_cells[j] != _cells[i]) continue;
@@ -617,8 +693,10 @@ public sealed class LianliankanCore
 
     /// <summary>
     /// 死局重排：只重排剩余方块，重排后必须存在可连对（上限 + 确定性兜底）。
-    /// <para>剩余 2 块时必然可连（空盘任意两格 ≤2 拐），所以死局只可能出现在 ≥4 块时 ——
-    /// 这条是"性质"写进单测，不是 if 分支。</para>
+    /// <para>空洞盘上"剩 2 块必然可连"是<b>旧结论</b>（48 格时代）：H-023 起黑块挡路，两块之间
+    /// 可能 ≥3 拐（《57》v2.7 §4 实测 3.0%~5.9% 的格位对）。所以兜底不能省 ——
+    /// <see cref="ForcePair"/> 把一对脸搬到两个相邻空格，0 拐必通。
+    /// 代价是玩家会看到"一对瞬移"（每 1~2 局一次），这是本版<b>已知且接受</b>的取舍。</para>
     /// </summary>
     public bool Reshuffle()
     {
@@ -721,6 +799,9 @@ public sealed class LianliankanCore
         var remaining = 0;
         foreach (var v in cells)
         {
+            // H-023：黑块（-1）随档往返，但**不计入 counts、不计入 remaining**。
+            // ⚠ 顺序必须先 continue 再判越界 —— 反过来 counts[-1] 直接 IndexOutOfRange。
+            if (v == Obstacle) continue;
             if (v < 0 || v > FaceCount) return null;
             if (v == 0) continue;
             counts[v]++;

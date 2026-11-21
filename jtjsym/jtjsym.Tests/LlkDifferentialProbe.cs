@@ -70,7 +70,10 @@ public class LlkDifferentialProbe
     }
 
     /// <summary>
-    /// 差分盘源（300 张、密度从稀疏到全满、48 格填 24 对与真实盘同构）。
+    /// 差分盘源（24 张、20×16 = 320 格、密度 0.25~0.6、成对填脸）。
+    /// <para><b>H-023 起从 48 格提到 320 格，张数同时从 300 降到 24</b>：每张盘的同脸对数
+    /// 从 24 涨到约 500（方块多了 3~4 倍、每种脸的张数从 2 涨到 6~10），比较次数的量级由
+    /// 「张数 × 每张对数」决定 —— 不降张数会让这条差分从秒级变成分钟级。</para>
     /// <para><b>抽成方法是为了让 U1（<c>TryFindPath</c> 差分）复用同一批盘</b> —— 两处各写一份随机构造，
     /// 盘源一旦漂移，两个差分就不再是同一个命题（《39》§8.1 U1）。<b>参照实现一个字不动。</b></para>
     /// <para>这里用 <c>System.Random</c> 是<b>故意的</b>，与产品代码"禁用 System.Random、改自实现 SplitMix64"
@@ -80,29 +83,32 @@ public class LlkDifferentialProbe
     internal static IEnumerable<int[]> Boards()
     {
         var rng = new Random(20261113);
-        for (var iter = 0; iter < 300; iter++)
+        for (var iter = 0; iter < 24; iter++)
         {
-            // 随机密度盘：48 格填 24 对（与真实盘同构），密度从稀疏到全满
-            var fill = 0.3 + 0.7 * rng.NextDouble();
-            var cells = new int[48];
-            var slots = Enumerable.Range(0, 48).Where(_ => rng.NextDouble() < fill).ToList();
+            // 随机密度盘：320 格按比例铺脸（H-023 起盘面 20×16），密度从稀疏到中密。
+            // 上界刻意压在 0.6：再密一对都不通，差分只剩"全 false"这一种答案，判别力反而下降。
+            var fill = 0.25 + 0.35 * rng.NextDouble();
+            var cells = new int[LianliankanCore.CellCount];
+            var slots = Enumerable.Range(0, LianliankanCore.CellCount)
+                .Where(_ => rng.NextDouble() < fill).ToList();
             if (slots.Count < 2) continue;
-            var values = new int[slots.Count];
-            for (var i = 0; i < values.Length; i += 2)
+
+            // 成对填脸：奇数个槽位时最后一格留空（否则成对闸会整档丢弃，差分样本变 0 张）
+            var values = new List<int>(slots.Count);
+            for (var i = 0; i + 1 < slots.Count; i += 2)
             {
-                var f = rng.Next(1, 25);
-                values[i] = f;
-                if (i + 1 < values.Length) values[i + 1] = f;
+                var f = rng.Next(1, LianliankanCore.FaceCount + 1);
+                values.Add(f);
+                values.Add(f);
             }
-            // 奇数个槽位时最后一个值落单 → 改 0
-            if (values.Length % 2 == 1) values[^1] = 0;
-            for (var i = values.Length - 1; i > 0; i--)
+
+            for (var i = values.Count - 1; i > 0; i--)
             {
                 var j = rng.Next(i + 1);
                 (values[i], values[j]) = (values[j], values[i]);
             }
-            for (var i = 0; i < slots.Count; i++) cells[slots[i]] = values[i];
 
+            for (var i = 0; i < values.Count; i++) cells[slots[i]] = values[i];
             yield return cells;
         }
     }
@@ -116,17 +122,17 @@ public class LlkDifferentialProbe
         {
             iter++;
             var core = RestoreCore(cells);
-            for (var a = 0; a < 48; a++)
+            for (var a = 0; a < LianliankanCore.CellCount; a++)
             {
-                if (cells[a] == 0) continue;
-                for (var b = a + 1; b < 48; b++)
+                if (cells[a] <= 0) continue;
+                for (var b = a + 1; b < LianliankanCore.CellCount; b++)
                 {
                     if (cells[b] != cells[a]) continue;
-                    var got = core.CanConnect(a / 6, a % 6, b / 6, b % 6);
-                    var want = Reference(cells, 8, 6, a / 6, a % 6, b / 6, b % 6);
+                    var got = core.CanConnect(a / LianliankanCore.Cols, a % LianliankanCore.Cols, b / LianliankanCore.Cols, b % LianliankanCore.Cols);
+                    var want = Reference(cells, LianliankanCore.Rows, LianliankanCore.Cols, a / LianliankanCore.Cols, a % LianliankanCore.Cols, b / LianliankanCore.Cols, b % LianliankanCore.Cols);
                     checkedPairs++;
                     Assert.True(got == want,
-                        $"iter={iter} 盘={string.Join(',', cells)} 格 {a}({a / 6},{a % 6})↔{b}({b / 6},{b % 6}) face={cells[a]}：BFS={got} 参照={want}");
+                        $"iter={iter} 盘={string.Join(',', cells)} 格 {a}({a / LianliankanCore.Cols},{a % LianliankanCore.Cols})↔{b}({b / LianliankanCore.Cols},{b % LianliankanCore.Cols}) face={cells[a]}：BFS={got} 参照={want}");
                 }
             }
         }
@@ -135,7 +141,7 @@ public class LlkDifferentialProbe
 
     internal static LianliankanCore RestoreCore(int[] cells)
     {
-        var snap = new LianliankanSnapshot { V = 1, Issue = 20261113, Cells = cells, ElapsedSec = 1 };
+        var snap = new LianliankanSnapshot { V = LianliankanSnapshot.CurrentVersion, Issue = 20261113, Cells = cells, ElapsedSec = 1 };
         var core = LianliankanCore.TryFrom(snap, 20261113);
         Assert.NotNull(core);
         return core!;

@@ -170,6 +170,20 @@ public static class LlkCopy
     public static string ShortName(int face) =>
         face >= 1 && face <= ShortNames.Length ? ShortNames[face - 1] : "??";
 
+    /// <summary>
+    /// 兜底字牌的<b>单字</b>标（H-023）：两字标的首字。
+    /// <para><b>为什么降到单字</b>：16 列之后 320 屏格宽只有 15px，两字 + 4px 色条 + 四向 2px
+    /// 需 40px 格宽，放不下（《57》v2.7 §6 #7）；不降就会被 <c>overflow:hidden</c> 裁掉一半。</para>
+    /// <para><b>单字不唯一</b>：魏娆/魏姝/魏老夫人都是「魏」，陆濯/陆秋都是「陆」。这是刻意的取舍 ——
+    /// 这一层只承担"不是纯平色块"，族色条与格子的 <c>aria-label</c>（全名）仍可区分。
+    /// <see cref="ShortName"/> 那份两字标的唯一性（U8）<b>不受影响</b>，字牌图仍用两字。</para>
+    /// </summary>
+    public static string ShortName1(int face)
+    {
+        var two = ShortName(face);
+        return two.Length == 0 ? two : TrimToTextElements(two, 1);
+    }
+
     // ───────────────────── 兜底字牌的图化（D-39） ─────────────────────
     // 为什么要把它做成**图**而不是 HTML 文本：自动暗化（Android Auto Dark / 桌面 --force-dark-mode）
     // 只反转**文本与被指定的背景色**，图片像素一律不动（实测：sprite 与 SVG data-URI 在暗化下保持原色）。

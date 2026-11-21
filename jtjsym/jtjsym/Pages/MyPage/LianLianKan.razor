@@ -56,8 +56,10 @@
     }
 
     <div class="llk-board-wrap">
-        @* 48 格恒定存在：消除只是加 .is-gone（透明 + 缩小），不移除节点 ——
-           盘面不会因为消除而重排，e2e 的 data-idx 也就永远指同一格 *@
+        @* 320 个格位恒定存在：消除只是加 .is-gone（透明 + 缩小），**不移除节点** ——
+           盘面不会因为消除而重排，e2e 的 data-idx 也就永远指同一格。
+           ⚠ H-023 起格位（320）≠ 方块数（134~216）：空白与黑块也占一个格位节点，
+             删掉它们会让 readCells 的 DOM 顺序与 idx(r,c) 脱钩。 *@
         @* D-31：重排动画的两个挂点。data-llk-reshuffling 给 e2e 当"动画中"的唯一锚，
            aria-busy 给读屏软件同一语义（两者都不改布局）。
            ⚠ 属性名带 llk 前缀：《39》已建立 data-llk-* 专门标识"状态机标记"
@@ -85,22 +87,27 @@
                 //   会让 Razor 解析失败（49 个 CS 报错，整个 code 块被挤出类体、连 _Imports 的 using 都不生效）。
                 var accent = face > 0 ? LianliankanThemes.ById(face)?.Accent : null;
 
-                @* data-face 只在非空格上出现：它是"这张脸还在不在盘上"的唯一判据，
-                   写成 data-face="0" 会让 LL-12 的 {1..24} 集合断言多出一个 0 *@
+                @* data-face 只在**有脸**的格上出现：它是"这张脸还在不在盘上"的唯一判据。
+                   ① 写成 data-face="0" 会让 LL-12 的 {1..24} 集合断言多出一个 0；
+                   ② 黑块（-1）也**不**输出该属性 —— 于是 readCells 天然把黑块读成 0，
+                      与 Core 的"黑块不是方块"同口径（e2e 不用额外区分）。 *@
                 <div class="llk-cell @CellClass(idx, face) @FaceClass(showFace)"
                      role="gridcell"
                      data-idx="@idx"
                      data-face="@(face > 0 ? face.ToString() : null)"
-                     data-llk-zodiac="@(LianliankanThemes.IsZodiacCell(issue, idx) ? "1" : null)"
                      style="--c:@pos.Col;--r:@pos.Row;--fc:@(accent ?? "#8C8F96")"
-                     aria-label="@(name ?? "空")"
+                     aria-label="@(name ?? (face == LianliankanCore.Obstacle ? "石头" : "空"))"
                      @onclick="() => OnCellClickedAsync(idx)">
                     @if (face > 0)
                     {
                         @* 兜底字牌（H-016）：正常态 display:none，只有探测失败（.llk-no-sprite）时由 CSS 露出。
                            读屏语义走格子的 aria-label（全名），这里 aria-hidden 免得同一张脸被念两遍。
-                           用条件渲染而非恒渲染空 span：空格子少一个节点。 *@
-                        <span class="llk-face-fb" aria-hidden="true">@LlkCopy.ShortName(face)</span>
+                           用条件渲染而非恒渲染空 span：空格子少一个节点。
+                           ⚠ H-023 起是**单字**（ShortName1）：格宽从 48 格时代的 59px 掉到 15px，
+                             两字 + 4px 色条 + 四向 2px 需 40px 格宽，放不下（《57》v2.7 §6 #7）。
+                             单字会撞（魏娆/魏姝/魏老夫人都是「魏」，陆濯/陆秋都是「陆」）—— 这一层只做
+                             "不是纯平色块"的降级，族色条与 aria-label 全名仍可区分。 *@
+                        <span class="llk-face-fb" aria-hidden="true">@LlkCopy.ShortName1(face)</span>
                     }
                 </div>
             }
@@ -215,7 +222,12 @@
         flex-direction: column;
         align-items: center;
         gap: 10px;
-        margin-top: 8px;
+        margin: 8px 0 0;
+        /* ⚠ H-023 曾试过 `margin: 8px -16px 0`（吃掉内容区左右内边距，格宽 13.25 → 15.25）。
+           **已撤回**：棋盘是 aspect-locked 的正方形方阵，加宽 32px 就长高 40px（20 行 × 32/16），
+           而 320×568 的纵向预算只有 464px —— 提示行/恢复行一出现 scrollHeight 就 575 > 568，
+           LL-13 当场判红。用「格子大 15%」换「页面滚 7px」不划算。
+           《57》v2.7 §5.1 给的 320 屏 13.25px / 390 屏 17.6px 就是**不加这个负边距**的数字。 */
     }
 
     .llk-status {
@@ -240,23 +252,10 @@
         color: #B3423C;
     }
 
-    /* 生肖月主题（H-023）：形状格叠一层淡主色。
-       ⚠ **必须是 ::after，不能是 box-shadow**：.llk-cell 的边框在两个分支里写法不同
-         （兜底分支 box-shadow:inset 0 0 0 1px，覆盖分支 border:1px + box-shadow:none），
-         染色若也走 box-shadow 就得两处各写一遍，且后写的会**整体覆盖**而不是叠加 ——
-         实测追加 `inset 0 0 0 100px rgba(...)` 后那 1px 灰边整条消失。
-         ::after 与边框完全解耦，overflow:hidden + border-radius:6px 自动把它裁进圆角。
-       ⚠ **pointer-events:none 不能省**：染色层盖在格子上，漏了这行手点就点不到格子
-         （@@onclick 在父元素上能冒泡，而 e2e 用 dispatchEvent 直达格心 —— 症状是"本地手点不好使、e2e 全绿"）。
-       染色只由 data-llk-zodiac 驱动，与 data-face / is-gone 无关：格子被消除时父元素 opacity 过渡
-       会让染色一起淡出，正是想要的反馈。 */
-    .llk-cell[data-llk-zodiac="1"]::after {
-        content: "";
-        position: absolute;
-        inset: 0;
-        background: rgba(179, 66, 60, 0.16);
-        pointer-events: none;
-    }
+    /* 生肖月主题（H-023）：形状由**铺盘**表达 —— 有方块的格位拼成生肖，没有染色层。
+       v1.x 这里曾有一条 `.llk-cell[data-llk-zodiac="1"]::after` 的淡红染色，v2.7 已整条删除：
+       16 列下 194~216 个格子都会被染上，剪影反而被红色糊掉（《57》v2.7 §1.3）。
+       ⚠ 别再把它加回来 —— 加回来的症状不是"多一层颜色"，而是"看不出是哪个生肖"。 */
 
     .llk-board-wrap {
         position: relative;
@@ -265,16 +264,19 @@
         justify-content: center;
     }
 
-    /* 棋盘尺寸零 vw 算术（《36》v2.1 §3.1）：轨道等分 ⇒ 格宽 = min(容器宽/6, 64px)，
-       max-width 封顶后桌面上最多 384px 宽（格 59px），375 屏约 49px、320 屏约 42px。
-       不写 min(32px, (100vw − 侧栏)/6) —— 那个公式把 250px 侧栏算成了可用宽（《34》实测溢出 14~115px）。 */
+    /* 棋盘尺寸零 vw 算术（《36》v2.1 §3.1）：轨道等分 ⇒ 格宽 = min(容器宽/16, 24px)，
+       max-width 封顶后桌面上最多 384px 宽（格 20px），375 屏约 17px、320 屏约 13px。
+       不写 min(32px, (100vw − 侧栏)/16) —— 那个公式把 250px 侧栏算成了可用宽（《34》实测溢出 14~115px）。
+       ⚠ H-023：列数 6 → 16。**只改这一处**：gap / max-width / 轨道等分方式全部沿用。
+         16 列的直接后果是格宽只有 8×6 时代的 1/3（《57》v2.7 §5.1），这是盘面比例换来的，
+         不是缺陷；可辨认性由"每月一张点阵 + 状态行文字"兜底。 */
     .llk-board {
         /* H-015：连接线 SVG 以棋盘为原点。不加 relative 会挂到 .llk-board-wrap 上，
            而棋盘在 wrap 里是 margin:0 auto 居中的 —— 两套坐标差一个横向偏移，线会整条跑偏。 */
         position: relative;
         display: grid;
-        grid-template-columns: repeat(6, minmax(0, 1fr));
-        gap: 6px;
+        grid-template-columns: repeat(16, minmax(0, 1fr));
+        gap: 4px;
         width: 100%;
         max-width: min(100%, 384px);
         margin: 0 auto;
@@ -365,24 +367,42 @@
            那时 top/right/bottom/left 保持 auto，绝对定位元素回落到**静态位置**（格内左上角），
            字牌仍可见但会贴边。拆开写各内核等价，零副作用。
            ⚠ 这条**不宣称**能解决"字牌完全不可见"：真机视频里 48 格是均匀深棕（不是米白 #F3ECE1），
-           说明当时整页还处在启发式暗化下（D-33 现象 1），字牌被压成深底深字。 */
-        top: 2px;
-        right: 2px;
-        bottom: 2px;
-        left: 2px;
-        border-radius: 4px;
+           说明当时整页还处在启发式暗化下（D-33 现象 1），字牌被压成深底深字。
+           H-023：H-016 时代这里是 `inset:2px` + `13px` 两字 + `4px` 色条，需 40px 格宽；
+             16 列下 320 屏只有 15px ⇒ 改 1px 内缩 + 2px 色条 + **单字** + 字号随格宽走。
+             不改的话字被 overflow:hidden 裁掉一半，FT-92/93 的像素判据会红（D-33/D-39 两轮白修）。 */
+        top: 1px;
+        right: 1px;
+        bottom: 1px;
+        left: 1px;
+        border-radius: 2px;
         background: #F3ECE1;                    /* 固定米纸底，与 .llk-cell 的 background-color 同值 */
         color: #2B2B2B;                         /* 固定深字：12.07:1 */
-        border-left: 4px solid var(--fc, #8C8F96);
-        font-size: 13px;
+        border-left: 2px solid var(--fc, #8C8F96);
+        font-size: min(11px, 62%);              /* 62% 相对格子宽度 ⇒ 320 屏约 9px、桌面 12px */
         line-height: 1.05;
-        letter-spacing: .5px;
         pointer-events: none;                   /* 点击仍落在格子上 */
     }
 
     .llk-cell.is-selected {
         outline: 3px solid #B3423C;
         outline-offset: -3px;
+    }
+
+    /* H-023：黑块（格值 -1）。它既不是脸也不是"已消除"，所以**必须有自己的类**：
+       ⚠ 不能让黑块走 .is-gone —— 那是 opacity:0 + scale(.6)，整块深色会跟着消失，
+         点阵里的眼睛/鼻子就没了；也不能只靠 data-face 缺省，空格同样是缺省。
+       ⚠ `background-image: none` 不能省：黑块不带 --c/--r（兜底 0,0），
+         不砍掉 sprite 就会从左上角露出一张脸。
+       ⚠ 这里同时写 border 与 box-shadow：.llk-cell 的边框在两个分支里写法不同
+         （兜底 inset 阴影 / @@supports 分支 border + box-shadow:none），
+         `.llk-cell.is-block` 的优先级高于两者，一处写死即可覆盖两支。 */
+    .llk-cell.is-block {
+        background-image: none;
+        background-color: #3A3129;
+        border: 0;
+        box-shadow: inset 0 0 0 1px rgba(255, 255, 255, .10), inset 0 -3px 6px rgba(0, 0, 0, .35);
+        cursor: default;
     }
 
     /* 逻辑立即消除、视觉延迟消失：点中即改 Cells 并重渲染，这里只是 300ms 的过渡。
@@ -821,7 +841,10 @@
     private string CellClass(int idx, int face)
     {
         var classes = new List<string>(6);
-        if (face == 0) classes.Add("is-gone");          // 已消除的格子不抖（face>0 才加 is-shake）
+        // H-023：黑块走 is-block，**不能**走 is-gone（那是 opacity:0，深色块会消失）。
+        // 其余（空 / 脸）照旧：空格靠 is-gone 淡出，有脸的格才拿得到交互类。
+        if (face == LianliankanCore.Obstacle) classes.Add("is-block");
+        else if (face == 0) classes.Add("is-gone");      // 已消除的格子不抖（face>0 才加 is-shake）
         else
         {
             // 重排淡出/淡入（D-31）只作用于**还在盘上的格**：is-gone 格拿不到，
@@ -1293,7 +1316,7 @@
         if (isRestoring || isReshuffling || showRules || game.IsCleared || isTimedOut) return;
 
         var face = game.Cells[idx];
-        if (face == 0) return;                          // 空格：不参与选中
+        if (face <= 0) return;                          // 空格 / 黑块：不参与选中
 
         showResumeTip = false;
 

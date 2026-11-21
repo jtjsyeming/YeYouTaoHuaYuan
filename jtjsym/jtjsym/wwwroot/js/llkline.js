@@ -22,8 +22,12 @@ const HINT_LIFE = 1600;      // 与页面 ShowFeedbackAsync 的 FeedbackMs 同�
 const SUCCESS_DRAW = 340;    // 描线时长，也是 .llk-cell.is-gone 的 transition-delay
 const SUCCESS_HOLD = 160;
 const FADE = 200;
-const ROWS = 8;              // 镜像 LianliankanCore.Rows/Cols（JS 读不到 C# 常量，两处必须同时改）
-const COLS = 6;
+// 镜像 LianliankanCore.Rows / Cols（JS 读不到 C# 常量，两处必须同时改）。
+// ⚠ H-023 / v2.7 把盘面从 8×6 推到 **20×16**，这里**忘改就是静默画歪**：
+//   c ≥ 6 的列会被当成"盘外"直接钳到 boardW − EDGE，r 的取行又按 r*6 走 ——
+//   症状不是报错，是线从第 6 列开始整条贴到右边、拐点圆落在莫名其妙的位置（LL-30 抓到 24px 偏差）。
+const ROWS = 20;
+const COLS = 16;
 
 let seq = 0;
 let host = null;

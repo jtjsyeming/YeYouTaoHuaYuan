@@ -102,7 +102,8 @@ public class LianliankanCoreTests
         var b = LianliankanCore.NewDaily(Today);
 
         Assert.Equal(a.Cells.ToArray(), b.Cells.ToArray());
-        Assert.Equal(LianliankanCore.CellCount, a.RemainingCount);
+        // H-023：剩余数是「可消除方块数」，不是格位数（320）。
+        Assert.Equal(LianliankanThemes.PlayableCount(Today), a.RemainingCount);
     }
 
     /// <summary>不同期号至少一格不同（抽查 8 个相邻期号，防止 seed 只用了 issue 的低位）。</summary>
@@ -231,7 +232,7 @@ public class LianliankanCoreTests
         Assert.Equal(core.Cells.ToArray(), back!.Cells.ToArray());
         Assert.Equal(core.Issue, back.Issue);
         Assert.Equal(core.RemainingCount, back.RemainingCount);
-        Assert.Equal(LianliankanCore.CellCount - 2, back.RemainingCount);
+        Assert.Equal(LianliankanThemes.PlayableCount(Today) - 2, back.RemainingCount);
     }
 
     /// <summary>结构闸：长度错 / 值域越界 / 某头像剩余奇数 / 期号不符 / 全 0（已通关）一律整档丢弃。</summary>
@@ -255,9 +256,11 @@ public class LianliankanCoreTests
 
         Assert.NotNull(LianliankanCore.TryFrom(good, Today));                       // 对照：好档必须过
 
-        Assert.Null(LianliankanCore.TryFrom(Mutate(s => s.Cells = s.Cells!.Take(47).ToArray()), Today));
+        Assert.Null(LianliankanCore.TryFrom(Mutate(s => s.Cells = s.Cells!.Take(LianliankanCore.CellCount - 1).ToArray()), Today));
         Assert.Null(LianliankanCore.TryFrom(Mutate(s => s.Cells![0] = 25), Today));
-        Assert.Null(LianliankanCore.TryFrom(Mutate(s => s.Cells![0] = -1), Today));
+        // ⚠ H-023 起 -1 是**合法值**（黑块），越界要用 -2 造：写成 -1 会被「成对闸」顺手拒掉，
+        //   看着红、红的却不是值域闸（假阳性）。
+        Assert.Null(LianliankanCore.TryFrom(Mutate(s => s.Cells![0] = -2), Today));
         Assert.Null(LianliankanCore.TryFrom(Mutate(s => s.V = 2), Today));
         Assert.Null(LianliankanCore.TryFrom(null, Today));
         Assert.Null(LianliankanCore.TryFrom(good, Today + 1));                      // 期号闸
@@ -325,9 +328,9 @@ public class LianliankanCoreTests
     /// <summary>U15-3：限时边界单点 —— 299 不算超时、300 算、301 也算（含等号，H-020）。</summary>
     [Theory]
     [InlineData(0, false)]
-    [InlineData(299, false)]
-    [InlineData(300, true)]
-    [InlineData(301, true)]
+    [InlineData(499, false)]
+    [InlineData(500, true)]
+    [InlineData(501, true)]
     public void IsOverLimit_Boundary(int sec, bool expected) =>
         Assert.Equal(expected, LianliankanCore.IsOverLimit(sec));
 
@@ -362,15 +365,29 @@ public class LianliankanCoreTests
     // ─────────────────────────── 今日最快（秒，越小越好） ───────────────────────────
 
     [Theory]
-    [InlineData(null, null)]
-    [InlineData("", null)]
-    [InlineData("abc", null)]
-    [InlineData("{}", null)]                                              // issue=0 ≠ 今日
-    [InlineData("{\"issue\":20260101,\"sec\":9}", null)]                  // 昨天（或任意别的日子）
-    [InlineData("{\"issue\":20261112,\"sec\":0}", null)]                  // 0 秒非法（与 D-27 同口径）
-    [InlineData("{\"issue\":20261112,\"sec\":87}", 87)]
-    public void TryParseBest_FollowsTodayAndPositiveRule(string? raw, int? expected) =>
-        Assert.Equal(expected, LianliankanCore.TryParseBest(raw, Today));
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("abc")]
+    [InlineData("{}")]                                                    // issue=0 ≠ 今日
+    public void TryParseBest_GarbageIsNoRecord(string? raw) =>
+        Assert.Null(LianliankanCore.TryParseBest(raw, Today));
+
+    /// <summary>
+    /// 本地榜的两道闸：期号必须对、秒数必须在 1..一天。
+    /// <para><paramref name="n"/> 用 <c>PlayableCount</c> <b>现算</b>而不是写字面量 198：
+    /// 写死等于把点阵的派生量复制成第二份真源，改图之后这条会假红/假绿。</para>
+    /// </summary>
+    [Fact]
+    public void TryParseBest_RequiresIssueAndBlockCount()
+    {
+        var n = LianliankanThemes.PlayableCount(Today);
+        var json = (int issue, int sec, int? blocks) =>
+            $"{{\"issue\":{issue},\"sec\":{sec},\"n\":{(blocks is null ? "null" : blocks.ToString())}}}";
+
+        Assert.Equal(87, LianliankanCore.TryParseBest(json(Today, 87, n), Today));   // 对照：好档要认
+        Assert.Null(LianliankanCore.TryParseBest(json(20260101, 9, 194), Today));     // 别关的成绩
+        Assert.Null(LianliankanCore.TryParseBest(json(Today, 0, n), Today));          // 0 秒（与 D-27 同口径）
+    }
 
     [Theory]
     [InlineData(null, 1, 1)]        // 首条纪录
@@ -393,58 +410,90 @@ public class LianliankanCoreTests
     //
     // ⚠ 布局全部出自《39》§9 的 C# 实测，**不是手工推演**：v2.0 的布局 C 就是推演产物
     //   （"外圈 2 拐"），实测路径却在盘内。人脑枚举外圈岔路必漏，所以下面每条盘面都当成"钉子"用。
+    //
+    // H-023 重做：盘面从 8×6 = 48 格变成 20×16 = 320 格。**布局不能只是"放大"** ——
+    //   多出来的空白会凭空造出更短的路，原来"必须 3 拐"的盘会变成 2 拐、原来自个儿堵死的格会通。
+    //   所以下面每条改用 **黑块（-1）当墙**：把整盘填成障碍，只挖出想要的那几个空格。
+    //   这样"连通性"就完全由设计决定，与盘面多大无关（黑块不配对、不计入 remaining）。
 
-    /// <summary>U3 用的布局 C'：外圈 2 拐。<b>(1,1) 那个 9 是关键</b> —— 抽掉它，盘内 2 拐就通了。</summary>
-    private static readonly int[] LayoutOuterTwoTurns =
+    /// <summary>造盘：整盘填 <paramref name="fill"/>，再按坐标放脸。</summary>
+    private static int[] Board(int fill, params (int R, int C, int Face)[] tiles)
     {
-        1, 2, 3, 2, 3, 1,
-        0, 9, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 9,
-    };
+        var cells = new int[LianliankanCore.CellCount];
+        if (fill != 0) Array.Fill(cells, fill);
+        foreach (var (r, c, face) in tiles) cells[r * LianliankanCore.Cols + c] = face;
+        return cells;
+    }
 
-    /// <summary>U4 用的布局 A'：盘内 3 拐（(3,2)↔(3,5)）。</summary>
-    private static readonly int[] LayoutInnerThreeTurns =
+    /// <summary>把若干格挖成空位（无方块、可通行）。</summary>
+    private static void Open(int[] cells, params (int R, int C)[] holes)
     {
-        11, 0, 8, 0, 0, 0,
-        0, 12, 0, 0, 11, 0,
-        12, 0, 0, 0, 13, 0,
-        0, 0, 1, 0, 14, 1,
-        0, 0, 13, 0, 0, 0,
-        0, 14, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0,
-        8, 0, 0, 0, 0, 0,
-    };
+        foreach (var (r, c) in holes) cells[r * LianliankanCore.Cols + c] = 0;
+    }
 
-    /// <summary>U5 / LL-18 用的布局 B：彻底没路（但不限拐数也是 null）。</summary>
-    private static readonly int[] LayoutDeadEnd =
-    {
-        3, 3, 2, 6, 6, 0,
-        5, 1, 2, 1, 8, 8,
-        4, 4, 0, 7, 7, 0,
-        0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 5,
-        0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0,
-    };
+    private static int[] Sealed(params (int R, int C, int Face)[] tiles) =>
+        Board(LianliankanCore.Obstacle, tiles);
 
-    /// <summary>LL-17 用的布局 D：外圈 3 拐（(0,0)↔(5,5)），12 块 1~6 各两张。</summary>
-    private static readonly int[] LayoutOuterThreeTurns =
+    /// <summary>
+    /// U3 用的布局 C''：外圈 2 拐。整盘只有第 0 行的 6 格是空的，其余全是黑块 ——
+    /// 于是 (0,0) 与 (0,5) 之间唯一的路必然走出盘外（上边界那一圈）。
+    /// <para>v1.x 版本靠 (1,1) 放一个 9 来堵盘内路；现在直接铺满黑块，比"堵"更结实：**
+    /// 多宽的盘都不会凭空长出第二条路**。</para>
+    /// </summary>
+    private static int[] LayoutOuterTwoTurns() =>
+        Sealed((0, 0, 1), (0, 1, 2), (0, 2, 3), (0, 3, 2), (0, 4, 3), (0, 5, 1));
+
+    /// <summary>
+    /// U4 用的布局 A''：盘内 3 拐（(3,2)↔(2,9)）。
+    /// <para>两格各自只有一个出口：(3,2) 只能向下、(2,9) 只能向左。于是任何路都是
+    /// ↓ → → ↑ → → 四段 = <b>3 拐</b>，且全在盘内（不经过外圈）。3 段（2 拐）不可能：
+    /// 那要求"竖着进 (2,9)"，而 (1,9)/(3,9) 都是黑块。</para>
+    /// </summary>
+    private static int[] LayoutInnerThreeTurns()
     {
-        1, 2, 3, 4, 5, 6,
-        2, 0, 0, 0, 0, 0,
-        3, 0, 0, 0, 0, 0,
-        4, 0, 0, 0, 0, 0,
-        5, 0, 0, 0, 0, 0,
-        6, 0, 0, 0, 0, 1,
-        0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0,
-    };
+        var cells = Sealed((3, 2, 1), (2, 9, 1));
+        Open(cells,
+            (4, 2), (5, 2), (5, 3), (5, 4),          // ↓ 到底、再向右
+            (4, 4), (3, 4), (2, 4),                  // ↑ 回到第 2 行
+            (2, 5), (2, 6), (2, 7), (2, 8));         // → 到 B
+        return cells;
+    }
+
+    /// <summary>
+    /// U5 用的布局 B''：两块同脸被黑块彻底封死（不限拐数也是 null）。
+    /// <para>(1,1) 与 (1,3) 四邻全被黑块占满，且都在盘内 ⇒ 连外圈都够不着。
+    /// 另在 (10,10)/(10,12) 放一对可直连的「2」，让 <c>HasAnyPair</c> 为真（不是死局盘）。</para>
+    /// </summary>
+    private static int[] LayoutDeadEnd()
+    {
+        var cells = Sealed((1, 1, 1), (1, 3, 1), (10, 10, 2), (10, 12, 2));
+        Open(cells, (10, 11));
+        return cells;
+    }
+
+    /// <summary>
+    /// LL-17 用的布局 D''：外圈 3 拐（(0,0)↔(5,5)）。
+    /// <para>第 0 行占满、(5,0) 占住，于是左侧绕行被挡；B 的唯一开口是右边的 (5,6)，
+    /// 只能从盘外右上角绕下来：↑ → → ↓ → ← 四段 = <b>3 拐</b>，且必经过盘外。</para>
+    /// <para>值域：1 在 (0,0) 与 B；2..11 各两张（第 0 行一份、第 0 列一份）。共 22 块。</para>
+    /// </summary>
+    private static int[] LayoutOuterThreeTurns()
+    {
+        var cells = new int[LianliankanCore.CellCount];
+        Array.Fill(cells, LianliankanCore.Obstacle);
+
+        int[] row0 = { 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 2, 3, 4, 5, 6 };
+        for (var c = 0; c < LianliankanCore.Cols; c++) cells[0 * LianliankanCore.Cols + c] = row0[c];
+
+        int[] col0 = { 7, 8, 9, 10, 11 };
+        for (var r = 0; r < col0.Length; r++) cells[(r + 1) * LianliankanCore.Cols + 0] = col0[r];
+
+        cells[5 * LianliankanCore.Cols + 5] = 1;          // B
+
+        // 第 5 行从 B 的右侧一路开到盘边：那是"从盘外绕下来"的落地通道
+        for (var c = 6; c < LianliankanCore.Cols; c++) cells[5 * LianliankanCore.Cols + c] = 0;
+        return cells;
+    }
 
     /// <summary>从裸数组造盘：走 <c>TryFrom</c>，顺带把"结构闸放行"一起验了。</summary>
     private static LianliankanCore FromCells(int[] cells) => LlkDifferentialProbe.RestoreCore(cells);
@@ -470,11 +519,11 @@ public class LianliankanCoreTests
                 for (var b = a + 1; b < LianliankanCore.CellCount; b++)
                 {
                     if (cells[b] != cells[a]) continue;
-                    var got = core.TryFindPath(a / 6, a % 6, b / 6, b % 6, LianliankanCore.TurnLimit) is not null;
-                    var want = core.CanConnect(a / 6, a % 6, b / 6, b % 6);
+                    var got = core.TryFindPath(a / LianliankanCore.Cols, a % LianliankanCore.Cols, b / LianliankanCore.Cols, b % LianliankanCore.Cols, LianliankanCore.TurnLimit) is not null;
+                    var want = core.CanConnect(a / LianliankanCore.Cols, a % LianliankanCore.Cols, b / LianliankanCore.Cols, b % LianliankanCore.Cols);
                     compared++;
                     Assert.True(got == want,
-                        $"iter={iter} 格 {a}({a / 6},{a % 6})↔{b}({b / 6},{b % 6}) face={cells[a]}：TryFindPath={got} CanConnect={want} 盘={string.Join(',', cells)}");
+                        $"iter={iter} 格 {a}({a / LianliankanCore.Cols},{a % LianliankanCore.Cols})↔{b}({b / LianliankanCore.Cols},{b % LianliankanCore.Cols}) face={cells[a]}：TryFindPath={got} CanConnect={want} 盘={string.Join(',', cells)}");
                 }
             }
         }
@@ -503,14 +552,14 @@ public class LianliankanCoreTests
                 {
                     if (cells[b] != cells[a]) continue;
 
-                    var path = core.TryFindPath(a / 6, a % 6, b / 6, b % 6, int.MaxValue);
+                    var path = core.TryFindPath(a / LianliankanCore.Cols, a % LianliankanCore.Cols, b / LianliankanCore.Cols, b % LianliankanCore.Cols, int.MaxValue);
                     if (path is null) continue;
                     hits++;
 
                     Assert.True(path.Points.Count >= 2, $"iter={iter} 路径点太少：{path.Points.Count}");
                     Assert.Equal(path.Points.Count - 2, path.Turns);
-                    Assert.Equal((a / 6, a % 6), path.Points[0]);       // ← 补起点
-                    Assert.Equal((b / 6, b % 6), path.Points[^1]);
+                    Assert.Equal((a / LianliankanCore.Cols, a % LianliankanCore.Cols), path.Points[0]);       // ← 补起点
+                    Assert.Equal((b / LianliankanCore.Cols, b % LianliankanCore.Cols), path.Points[^1]);
 
                     for (var k = 1; k < path.Points.Count; k++)
                     {
@@ -539,7 +588,7 @@ public class LianliankanCoreTests
     [Fact]
     public void TryFindPath_OuterRing_GoesOutside()
     {
-        var core = FromCells(LayoutOuterTwoTurns);
+        var core = FromCells(LayoutOuterTwoTurns());
 
         Assert.True(core.CanConnect(0, 0, 0, 5));                   // 判定口径：通
         var path = core.TryFindPath(0, 0, 0, 5, int.MaxValue);
@@ -553,12 +602,12 @@ public class LianliankanCoreTests
     [Fact]
     public void TryFindPath_ThreeTurnsInBoard()
     {
-        var core = FromCells(LayoutInnerThreeTurns);
+        var core = FromCells(LayoutInnerThreeTurns());
 
-        Assert.False(core.CanConnect(3, 2, 3, 5));
-        Assert.Null(core.TryFindPath(3, 2, 3, 5, LianliankanCore.TurnLimit));
+        Assert.False(core.CanConnect(3, 2, 2, 9));
+        Assert.Null(core.TryFindPath(3, 2, 2, 9, LianliankanCore.TurnLimit));
 
-        var path = core.TryFindPath(3, 2, 3, 5, int.MaxValue);
+        var path = core.TryFindPath(3, 2, 2, 9, int.MaxValue);
         Assert.NotNull(path);
         Assert.Equal(3, path!.Turns);
         Assert.All(path.Points, p => Assert.True(LianliankanCore.InBoard(p.R, p.C), $"{p} 跑出了盘外"));
@@ -568,7 +617,7 @@ public class LianliankanCoreTests
     [Fact]
     public void TryFindPath_DeadEnd_Null()
     {
-        var core = FromCells(LayoutDeadEnd);
+        var core = FromCells(LayoutDeadEnd());
 
         Assert.True(core.HasAnyPair());                             // 盘上仍有别的对，不是死局
         Assert.Null(core.TryFindPath(1, 1, 1, 3, int.MaxValue));
@@ -578,7 +627,7 @@ public class LianliankanCoreTests
     [Fact]
     public void TryFindPath_LayoutD_IsThreeTurnsOutside()
     {
-        var core = FromCells(LayoutOuterThreeTurns);
+        var core = FromCells(LayoutOuterThreeTurns());
 
         Assert.False(core.CanConnect(0, 0, 5, 5));
         var path = core.TryFindPath(0, 0, 5, 5, int.MaxValue);
@@ -613,15 +662,15 @@ public class LianliankanCoreTests
                     if (cells[b] != cells[a]) continue;
 
                     var want = -1;
-                    for (var k = 0; k <= 8 && want < 0; k++)
+                    for (var k = 0; k <= 16 && want < 0; k++)
                     {
-                        if (core.TryFindPath(a / 6, a % 6, b / 6, b % 6, k) is not null) want = k;
+                        if (core.TryFindPath(a / LianliankanCore.Cols, a % LianliankanCore.Cols, b / LianliankanCore.Cols, b % LianliankanCore.Cols, k) is not null) want = k;
                     }
 
-                    var got = core.TryFindPath(a / 6, a % 6, b / 6, b % 6, int.MaxValue)?.Turns ?? -1;
+                    var got = core.TryFindPath(a / LianliankanCore.Cols, a % LianliankanCore.Cols, b / LianliankanCore.Cols, b % LianliankanCore.Cols, int.MaxValue)?.Turns ?? -1;
                     compared++;
                     Assert.True(want == got,
-                        $"iter={iter} 格 {a}({a / 6},{a % 6})↔{b}({b / 6},{b % 6}) face={cells[a]}：最省={want} 实得={got} 盘={string.Join(',', cells)}");
+                        $"iter={iter} 格 {a}({a / LianliankanCore.Cols},{a % LianliankanCore.Cols})↔{b}({b / LianliankanCore.Cols},{b % LianliankanCore.Cols}) face={cells[a]}：最省={want} 实得={got} 盘={string.Join(',', cells)}");
                 }
             }
         }
@@ -639,18 +688,11 @@ public class LianliankanCoreTests
     [Fact]
     public void TryFindPath_TwoTurns_NotOverReported()
     {
-        // 布局出自《47》v2.0 §1.2（v1.0 只给了三值结论、没给盘面，U10 一度不可执行）
-        var core = FromCells(new[]
-        {
-            1, 0, 0, 2, 0, 0,
-            0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0,
-            2, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 1, 0,
-            0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0,
-        });
+        // 布局出自《47》v2.0 §1.2，H-023 用黑块重做（原盘面是 8×6，放大后会凭空长出 1 拐的捷径）：
+        // A(0,0) 只能向右、(5,4)=B 只能从左边进 ⇒ 任何路都是 → ↓ → 三段 = 2 拐。
+        var cells = Sealed((0, 0, 1), (5, 4, 1), (9, 9, 2), (9, 11, 2));
+        Open(cells, (0, 1), (0, 2), (0, 3), (1, 3), (2, 3), (3, 3), (4, 3), (5, 3), (9, 10));
+        var core = FromCells(cells);
 
         Assert.True(core.CanConnect(0, 0, 5, 4));                                    // 判定口径：通
         Assert.Equal(2, core.TryFindPath(0, 0, 5, 4, LianliankanCore.TurnLimit)!.Turns);   // 有界：2（一直是对的）
@@ -682,18 +724,8 @@ public class LianliankanCoreTests
         Assert.NotNull(skipped);
         Assert.Equal((7, 4, 7, 5), skipped!.Value);
 
-        // 全堵盘（2×2 交错死局）⇒ null
-        Assert.Null(FromCells(new[]
-        {
-            0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0,
-            0, 0, 1, 2, 0, 0,
-            0, 0, 2, 1, 0, 0,
-            0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0,
-            0, 0, 0, 0, 0, 0,
-        }).FindHintPair());
+        // 全堵盘（2×2 交错死局）⇒ null。H-023 起用黑块封死四周，保证"放大盘面"不会长出绕行路。
+        Assert.Null(FromCells(Sealed((3, 2, 1), (4, 3, 1), (3, 3, 2), (4, 2, 2))).FindHintPair());
     }
 
     /// <summary>
@@ -901,6 +933,121 @@ public class LianliankanCoreTests
             var oldFaces = before.Where(v => v > 0).OrderBy(v => v).ToArray();
             var newFaces = after.Where(v => v > 0).OrderBy(v => v).ToArray();
             Assert.Equal(oldFaces, newFaces);
+        }
+    }
+
+    // ─────────────── 黑块（H-023 / C-110，U17-1 ~ U17-5） ───────────────
+    //
+    // 黑块是格值 -1：不可消、不配对、**挡路**。它们在 Core 里有 9 处判据（《57》v2.7 §3），
+    // 少改一处的症状全是静默的 —— 黑块被消掉、被洗走、被判成一对、或者"永远消不完"。
+    // 所以下面每条各钉一处，别指望读代码保证。
+
+    /// <summary>
+    /// U17-1：<c>Remove</c> 对黑块返回 <c>false</c> 且不扣剩余数。
+    /// <para>漏改的症状：<c>_cells[i] = 0</c> 把黑块抹成空格 —— 点阵上的眼睛/鼻子凭空消失，
+    /// 而"剩余数"也跟着少 1，最后变成"消完了但盘上还有脸"。</para>
+    /// </summary>
+    [Fact]
+    public void U17_1_Remove_RefusesObstacle()
+    {
+        var cells = Sealed((0, 0, 1), (0, 1, 1), (9, 9, 2), (9, 10, 2));
+        var core = FromCells(cells);
+        var before = core.RemainingCount;
+
+        Assert.False(core.Remove(5, 5));                          // (5,5) 是黑块
+        Assert.Equal(LianliankanCore.Obstacle, core.FaceAt(5, 5));
+        Assert.Equal(before, core.RemainingCount);
+
+        Assert.True(core.Remove(0, 0));                           // 对照：脸可以消
+        Assert.Equal(before - 1, core.RemainingCount);
+    }
+
+    /// <summary>
+    /// U17-2：<c>HasAnyPair</c> / <c>FindHintPair</c> <b>不把两枚黑块当一对</b>。
+    /// <para>盘面：整盘黑块，只挖两格放一对**互不可达**的「1」。于是"存在可连对"必须为假；
+    /// 若哪一处还写着 <c>== 0</c>，相邻的两枚黑块（-1 == -1）会被判成一对 —— 死局判定从此永远为真，
+    /// 重排再也不会触发，玩家直接卡死。</para>
+    /// </summary>
+    [Fact]
+    public void U17_2_ObstaclesAreNotPair()
+    {
+        var cells = Board(LianliankanCore.Obstacle, (5, 5, 1), (15, 15, 1));
+        var core = FromCells(cells);
+
+        Assert.Equal(2, core.RemainingCount);                     // 黑块不计入
+        Assert.False(core.HasAnyPair());                          // 两块被黑块彻底封死
+        Assert.Null(core.FindHintPair());
+        Assert.False(core.CanConnect(6, 6, 6, 7));                // 两枚相邻黑块不是一对
+        Assert.Null(core.TryFindPath(6, 6, 6, 7, int.MaxValue));
+    }
+
+    /// <summary>
+    /// U17-3：重排只动脸，<b>黑块位置一格不变</b>。
+    /// <para>漏改 <c>ShuffleRemaining</c> 的收槽判据（<c>!= 0</c> 未改成 <c>&gt; 0</c>）的症状是
+    /// "每重排一次，五官就在盘上游走"——图案逐局变形，而所有既有判据照样绿。</para>
+    /// </summary>
+    [Fact]
+    public void U17_3_Reshuffle_KeepsObstaclesInPlace()
+    {
+        var cells = Sealed((3, 2, 1), (4, 3, 1), (3, 3, 2), (4, 2, 2));
+        var core = FromCells(cells);
+        Assert.False(core.HasAnyPair());
+
+        var blocksBefore = Enumerable.Range(0, LianliankanCore.CellCount)
+            .Where(i => cells[i] == LianliankanCore.Obstacle).ToArray();
+
+        Assert.True(core.Reshuffle());
+
+        var blocksAfter = Enumerable.Range(0, LianliankanCore.CellCount)
+            .Where(i => core.Cells[i] == LianliankanCore.Obstacle).ToArray();
+        Assert.Equal(blocksBefore, blocksAfter);
+        Assert.Equal(4, core.RemainingCount);
+    }
+
+    /// <summary>
+    /// U17-4：快照往返 <b>逐格相等（含 -1）</b>。
+    /// <para>这条同时钉住 <c>TryFrom</c> 的两个口：① <c>-1</c> 必须先 <c>continue</c> 再判越界
+    /// （反过来 <c>counts[-1]</c> 直接 IndexOutOfRange）；② 黑块不参与 <c>remaining</c> 计数
+    /// （否则 <c>RemainingCount</c> 会比真实方块数多出十几个，通关判定永远不成立）。</para>
+    /// <para>只改成 <c>v &lt; -1</c> 放行是不够的写法对照：那样黑块仍会走进 <c>counts[v]++</c>。</para>
+    /// </summary>
+    [Fact]
+    public void U17_4_Snapshot_RoundTripsObstacles()
+    {
+        var core = LianliankanCore.NewDaily(Today);
+        var snap = core.ToSnapshot(9);
+        var back = LianliankanCore.TryFrom(snap, Today);
+
+        Assert.NotNull(back);
+        Assert.Equal(core.Cells.ToArray(), back!.Cells.ToArray());
+        Assert.Contains(core.Cells, v => v == LianliankanCore.Obstacle);      // 盘上确实有黑块
+        Assert.Equal(core.RemainingCount, back.RemainingCount);
+
+        // 黑块数 = 点阵里 'o' 的格数，且"可消除数 + 黑块数 + 空位数 = 320"
+        var art = LianliankanThemes.ZodiacArt[LianliankanThemes.ZodiacIndex(Today)];
+        var blocks = art.Sum(row => row.Count(ch => ch == 'o'));
+        Assert.Equal(blocks, core.Cells.Count(v => v == LianliankanCore.Obstacle));
+        Assert.Equal(LianliankanCore.CellCount,
+            core.Cells.Count(v => v > 0) + blocks + core.Cells.Count(v => v == 0));
+    }
+
+    /// <summary>
+    /// U17-5：每日盘的剩余数 = <c>PlayableCount(issue)</c>（12 个月逐月验）。
+    /// <para>漏改 <c>FillAllShuffled</c> 里那句 <c>RemainingCount = CellCount</c> 的症状最刁：
+    /// 盘上只有 194 块、计数却是 320 —— 消到盘上没块了，<c>IsCleared</c> 仍为 false，
+    /// <b>永远不通关</b>，而且进度条/剩余数看着"还剩一大截"。</para>
+    /// </summary>
+    [Fact]
+    public void U17_5_NewDaily_RemainingEqualsPlayableCount()
+    {
+        for (var m = 1; m <= 12; m++)
+        {
+            var issue = 20260000 + m * 100 + 1;
+            var core = LianliankanCore.NewDaily(issue);
+
+            Assert.Equal(LianliankanThemes.PlayableCount(issue), core.RemainingCount);
+            Assert.Equal(core.Cells.Count(v => v > 0), core.RemainingCount);
+            Assert.False(core.IsCleared);
         }
     }
 }
