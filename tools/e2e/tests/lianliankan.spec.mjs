@@ -1,8 +1,10 @@
 // H-014 / H-015 / D-31 / D-32 / H-016 / D-33 / D-34 / D-37 / D-38 / H-017 / D-39 / P-077 / H-018：
 // 每日一关连连看（LL-01~LL-41）+ 关卡日历与服务端每日榜（LL-38~41，H-018）
 // 存储键（全部带 jtjsym. 命名空间，且都收在 LlkKeys 里）：
-//   sessionStorage['jtjsym.llk.session']  = {v:1, issue, cells[48], elapsedSec}
-//   localStorage['jtjsym.llk.best']      = {"issue":20261112,"sec":87}   ← 单键单条，越小越好
+//   sessionStorage['jtjsym.llk.session']  = {v:1, issue, cells[320], elapsedSec}
+//   localStorage['jtjsym.llk.best']      = {"issue":20261112,"sec":87,"n":198}   ← 单键单条，越小越好
+//   ⚠ H-023 起多一个 n = 这一关的可消除方块数。**没有 n 键的档会被整条作废**（8×6 时代的成绩），
+//     所以造纪录的用例必须把 n 写对，否则「本关最快」永远是「—」，而用例看着一切正常。
 // ⚠ 别用 helpers.readBest：它锚的是「最高分」，对连连看恒返回 -1（扫雷那轮踩过同样的坑）。
 //
 // 判据纪律（沿用 C-53/54 的教训）：
@@ -32,8 +34,8 @@ import { check, checkEq, open, openLlk, sleep, trackErrors } from './helpers.mjs
 
 const SK = 'jtjsym.llk.session';
 const BK = 'jtjsym.llk.best';
-const COLS = 6;
-const ROWS = 8;
+const COLS = 16;
+const ROWS = 20;
 const N = ROWS * COLS;
 
 /** 期号 = 北京时间（UTC+8）的 yyyyMMdd，与 LianliankanCore.IssueFor 同口径。 */
@@ -44,7 +46,7 @@ const todayIssue = () => {
 
 const idx = (r, c) => r * COLS + c;
 
-/** 48 格的头像编号（0 = 空）。DOM 顺序就是 idx 顺序。 */
+/** 320 格的头像编号（0 = 空、黑块 -1 也读成 0）。DOM 顺序就是 idx 顺序。 */
 const readCells = page =>
   page.$$eval('.llk-cell', els => els.map(e => {
     const v = e.getAttribute('data-face');
@@ -104,8 +106,8 @@ const readLineSvg = page =>
  *
  * `startedAtMs`（D-42）：起表时刻（Unix 毫秒）。**默认 null = 老档形态** ——
  * Core 的 `StartedAtOf` 会按"读到它的此刻往前推 elapsedSec"折算，于是"刚起表 elapsedSec 秒"。
- * 要造"已经玩了 301 秒"这种档，就显式传 `Date.now() - 301000`：
- * 光传 `elapsedSec: 301` 是不够的（那只是"上一次存档的读数"，起表时刻会被折算成"现在刚起表"）。
+ * 要造"已经玩了 501 秒"这种档，就显式传 `Date.now() - 501000`：
+ * 光传 `elapsedSec: 501` 是不够的（那只是"上一次存档的读数"，起表时刻会被折算成"现在刚起表"）。
  *
  * ⚠ `startedAtMs: null` 会显式写进 JSON。`null` 与"字段缺席"在 `long?` 上都读成 null，
  *   两种写法等价，不必特殊处理（LL-44 用"带值"那条，其余用例沿用 null）。
@@ -128,6 +130,58 @@ const cellsWith = entries => {
   return cells;
 };
 
+// ───────────────────────── H-023：点阵与黑块 ─────────────────────────
+// 《57》v2.7 起形状由**铺盘**表达（有方块的格位拼成生肖），所以 test 侧需要三样东西：
+// ① 点阵本身（从 C# 源码解析，不抄第二份）；② 可消除方块数（best 载荷的 n 闸用它）；
+// ③ 一张"整盘黑块 + 挖洞"的造盘器（几何用例靠它把连通性钉死，与盘面多大无关）。
+
+/** 黑块格值，与 <c>LianliankanCore.Obstacle</c> 同值。 */
+const OBSTACLE = -1;
+
+/**
+ * 从 C# 源码解析 12 张点阵 —— **唯一真源**，测试里不再抄第二份。
+ * 抄一份的代价是「改图必漏测试」，而漏了的样子是「盘面全对，但形状是上个月的」。
+ *
+ * ⚠ **别把"分组"写进正则**。v2.7 的点阵每张图前面有一行注释
+ * （`new[]   // 1 鼠：可消除 194（97 对）…`），它夹在 `new[]` 与 `{` 之间 ⇒
+ * `/new\[\]\s*\{\s*(…)/` 一张都匹配不到。实测那个写法返回 **0 张**，
+ * 而"0 张"会让下游的 `playableCount()` 变成 0、`shapeIdx()` 变成空数组，
+ * 断言全写成"空集合 vs 空集合"照样绿。所以这里改成**逐行抓、再按 ROWS 切张**：
+ * 行是 16 字符的引号串，切张的边界由 `ROWS` 决定，缺行时最后一张会短一截，交给 LL-50 判红。
+ */
+const readArt = () => {
+  const src = fs.readFileSync(
+    new URL('../../../jtjsym/jtjsym/Services/LianliankanThemes.cs', import.meta.url), 'utf8');
+  const block = src.slice(src.indexOf('ZodiacArt'), src.indexOf('public static int ZodiacIndex'));
+  const rows = [...block.matchAll(/"([.#o+]{16})"/g)].map(m => m[1]);
+  const arts = [];
+  for (let i = 0; i < rows.length; i += ROWS) arts.push(rows.slice(i, i + ROWS));
+  return arts;
+};
+
+/** 点阵 → 可消除格（`#` 与 `+` 同义）的 idx 升序数组。 */
+const shapeIdx = art => {
+  const out = [];
+  art.forEach((row, r) => [...row].forEach((ch, c) => {
+    if (ch === '#' || ch === '+') out.push(r * COLS + c);
+  }));
+  return out;
+};
+
+/** 期号 → 可消除方块数。best 载荷的 `n` 必须与它一致，否则页面把那条纪录当废档。 */
+const playableCount = issue => {
+  const month = Math.floor(issue / 100) % 100;
+  return shapeIdx(readArt()[(month - 1) % 12]).length;
+};
+
+/** 造盘：整盘填 `fill`，再按坐标放脸、按坐标挖空（挖空 = 可通行的空格）。 */
+const boardOf = (fill, tiles = [], holes = []) => {
+  const cells = new Array(N).fill(fill);
+  for (const [r, c, face] of tiles) cells[idx(r, c)] = face;
+  for (const [r, c] of holes) cells[idx(r, c)] = 0;
+  return cells;
+};
+
 const clickCell = async (page, i) => {
   await page.locator(`.llk-cell[data-idx="${i}"]`).click();
   await sleep(220);            // 一次 SignalR 往返；真正的判据仍用 poll
@@ -146,8 +200,8 @@ const busyCount = page => page.locator('.llk-board[data-llk-reshuffling]').count
 /**
  * 正在跑 **script 动画**（FLIP）的格（H-017），按 data-idx 升序。
  *
- * 必须排掉 CSSTransition / CSSAnimation：44 个 is-gone 格自带 88 个带 transform 的过渡，
- * 「数有 transform 动画的格」在原地不动时也会数到 44 —— 那种判据在没实现 FLIP 时照样绿
+ * 必须排掉 CSSTransition / CSSAnimation：每个 is-gone 格自带两条带 transform 的过渡，
+ * 「数有 transform 动画的格」在原地不动时也会数到一大片 —— 那种判据在没实现 FLIP 时照样绿
  * （《48》v2.0 §1.5 逐时刻实测）。脚本动画才能区分"方块真的在飞"。
  */
 const flipDetail = page => page.evaluate(() => {
@@ -200,8 +254,8 @@ const eliminateAnyPair = async page => {
 };
 
 test.describe('LL 连连看', () => {
-  test('LL-01 首屏：48 格、24 张脸各两张、标题期号、sprite 200、预渲染已含盘面', async ({ page, request }) => {
-    // ① 预渲染 HTML（服务端确定性铺盘 ⇒ 首包就该有 48 格与格位变量）
+  test('LL-01 首屏：320 格位、24 张脸各 4~10 张、标题期号、sprite 200、预渲染已含盘面', async ({ page, request }) => {
+    // ① 预渲染 HTML（服务端确定性铺盘 ⇒ 首包就该有 320 个格位与格位变量）
     const html = await (await request.get('/lianliankan')).text();
     const cellCount = (html.match(/class="llk-cell/g) || []).length;
     const colVars = (html.match(/--c:/g) || []).length;
@@ -215,11 +269,20 @@ test.describe('LL 连连看', () => {
     const counts = {};
     for (const v of cells) counts[v] = (counts[v] ?? 0) + 1;
     const faces = Object.keys(counts).map(Number).filter(v => v > 0);
-    const paired = faces.length === 24 && faces.every(f => counts[f] === 2);
+    // H-023：**不再是"每种脸恰好两张"** —— 一局只有 134~216 块（随月份变），24 张脸按对均分，
+    // 于是每种脸 4~10 张、且必为偶数（成对闸的用户可见前提）。判据用"偶数且在区间内"，
+    // 不写死 4/6/8/10 的具体组合：那个组合随月份变（97 对 ⇒ 23 张脸 4 对 + 1 张脸 5 对）。
+    const paired = faces.length === 24
+      && faces.every(f => counts[f] % 2 === 0 && counts[f] >= 4 && counts[f] <= 10);
+    const blockCount = await page.locator('.llk-cell.is-block').count();
 
     check('LL-01-格数', cells.length === N && cells.every(v => v === 0 || (v >= 1 && v <= 24)),
       `格数=${cells.length}；值域=[${Math.min(...cells)}, ${Math.max(...cells)}]`);
     check('LL-01-成对', paired, `不同头像=${faces.length} 张，每种张数=${JSON.stringify(counts)}`);
+    check('LL-01-方块数', cells.filter(v => v > 0).length === playableCount(todayIssue()),
+      `可消除方块=${cells.filter(v => v > 0).length}（应 ${playableCount(todayIssue())}，点阵派生）`);
+    check('LL-01-黑块', blockCount > 0 && cells.filter(v => v > 0).length + blockCount <= N,
+      `黑块节点 ${blockCount} 个（应 >0：点阵里 'o' 的格数；且方块+黑块+空位 = ${N}）`);
 
     const h1 = ((await page.textContent('h1').catch(() => '')) || '').trim();
     check('LL-01-期号', h1 === `地球日${todayIssue()}关`, `标题="${h1}"（应「地球日${todayIssue()}关」）`);
@@ -357,7 +420,7 @@ test.describe('LL 连连看', () => {
     };
 
     // ① 预置一条很慢的纪录 → 通关后应变小
-    await setBest(page, JSON.stringify({ issue, sec: 999 }));
+    await setBest(page, JSON.stringify({ issue, sec: 999, n: playableCount(issue) }));
     await playOnce();
     await expect.poll(() => readBestStored(page), { timeout: 6000 }).not.toBe(null);
     const first = storedSec(await readBestStored(page));
@@ -369,18 +432,19 @@ test.describe('LL 连连看', () => {
     check('LL-07-文案', /^本关最快：\d+$/.test(bestTxt), `状态行="${bestTxt}"（应「本关最快：秒数」）`);
 
     // ② 预置 1 秒（打不破）→ 通关后仍是 1
-    await setBest(page, JSON.stringify({ issue, sec: 1 }));
+    await setBest(page, JSON.stringify({ issue, sec: 1, n: playableCount(issue) }));
     await playOnce();
     const second = storedSec(await readBestStored(page));
     checkEq('LL-07-不覆盖', second, 1);
 
     // ③ 跨天残留 → 显示「—」且能正常开局
-    await setBest(page, JSON.stringify({ issue: 20260101, sec: 9 }));
+    await setBest(page, JSON.stringify({ issue: 20260101, sec: 9, n: playableCount(20260101) }));
     await page.reload({ waitUntil: 'domcontentloaded' });
     await page.waitForFunction(() => !!window.Blazor, null, { timeout: 15000 }).catch(() => {});
     await sleep(1300);
     check('LL-07-跨天', (await readBestText(page)).includes('—'), `榜文案="${await readBestText(page)}"`);
-    check('LL-07-可玩', (await readCells(page)).filter(v => v > 0).length === N, `盘上块数=${(await readCells(page)).filter(v => v > 0).length}`);
+    check('LL-07-可玩', (await readCells(page)).filter(v => v > 0).length === playableCount(todayIssue()),
+      `盘上块数=${(await readCells(page)).filter(v => v > 0).length}（应 ${playableCount(todayIssue())}）`);
 
     // ④ 坏值 → 同样「—」，且不影响开局
     await setBest(page, 'abc');
@@ -545,8 +609,8 @@ test.describe('LL 连连看', () => {
 
     const cells = await readCells(page);
     const filled = cells.filter(v => v > 0).length;
-    // ⚠ 别照抄《38》里的「is-gone 数为 0」：那张判据是按满盘（48 块）写的，而这张盘只有 4 块，
-    //   另外 44 格**本来就**是 is-gone（空格）。这里要的是"这两格没被消除"：data-face 还在、块数仍是 4。
+    // ⚠ 别照抄《38》里的「is-gone 数为 0」：那张判据是按满盘写的，而这张盘只有 4 块，
+    //   另外那些格**本来就**是 is-gone（空格）。这里要的是"这两格没被消除"：data-face 还在、块数仍是 4。
     check('LL-13-未消除', cells[idx(0, 0)] === 1 && cells[idx(0, 1)] === 2 && filled === 4,
       `两格=${cells[idx(0, 0)]}/${cells[idx(0, 1)]}，剩余块数=${filled}（应 4；少一块就是被消了）`);
 
@@ -684,7 +748,7 @@ test.describe('LL 连连看', () => {
 
     const label = await page.getAttribute('[role="dialog"]', 'aria-label');
     const lines = await page.$$eval('.llk-rules-line', els => els.map(e => e.textContent.trim()));
-    // H-020 起多了第 5 行「· 单局限时 300 秒」，H-023 起又多了第 6 行「· 每月换一个生肖图案」。
+    // H-020 起多了第 5 行「· 单局限时 <N> 秒」（v2.7 起 N=500），H-023 起又多了第 6 行「· 每月换一个生肖图案」。
     // **断行数而不是断内容**：内容由 LlkCopy 单点生成，与 Core 的 TimeLimitSec 同源，
     // 这里再抄一遍"300"就是把常量复制成第二份真源。（第 6 行的内容由 LL-51 精确断。）
     check('LL-15-文案', label === '连连看玩法' && lines.length === 6,
@@ -735,23 +799,23 @@ test.describe('LL 连连看', () => {
 
   test('LL-17 ③ 层：外圈 3 拐 → 虚线 + 拐点 + 贴盘边 + 「最多两次」文案且不抖', async ({ page }) => {
     await openLlk(page);
-    // 布局 D（《39》§9，C# 实测）：12 块、1~6 各两张。整行 0 与整列 0 都被占，(0,0) 四邻全堵
-    // ⇒ 3 拐里唯一的最省解必然走出盘外 ⇒ 钳到盘边这条判据才有东西可看。
-    await seedSession(page, {
-      cells: [
-        1, 2, 3, 4, 5, 6,
-        2, 0, 0, 0, 0, 0,
-        3, 0, 0, 0, 0, 0,
-        4, 0, 0, 0, 0, 0,
-        5, 0, 0, 0, 0, 0,
-        6, 0, 0, 0, 0, 1,
-        0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0,
-      ],
-      elapsed: 5,
-    });
-    check('LL-17-前置', (await readCells(page)).filter(v => v > 0).length === 12,
-      `块数=${(await readCells(page)).filter(v => v > 0).length}（应 12）`);
+    // 布局 D''（《57》v2.7 §7.2 重做）：整盘黑块当墙，只挖出「第 0 行 + 第 0 列 + 第 5 行右段」。
+    // 几何照抄《39》§9 那张 6×6 的精髓 —— (0,0) 的四邻全堵（右/下是脸，上/左出盘），
+    // (5,5) 的三面全堵、只能往右走进第 5 行那条空走廊 ⇒ 最省解必然 ↑→→↓← 从盘外绕，正好 3 拐。
+    // ⚠ 不能把 8×6 的盘面直接"放进更大的盘"：多出来的空白会凭空造出 2 拐捷径，
+    //   "必须走出盘外"这条判据会静默失效。所以用**黑块当墙**，把几何钉死。
+    // ⚠ 每种脸必须偶数张（`TryFrom` 的成对闸）：col0 给 2~6 各一张，row0 再补一张，
+    //   剩下的 10 格两两成对（7~11 各两张）—— 共 22 块、12 张脸全部为偶数。
+    const cells = boardOf(OBSTACLE);
+    const row0 = [1, 2, 3, 4, 5, 6, 7, 7, 8, 8, 9, 9, 10, 10, 11, 11];
+    row0.forEach((f, c) => { cells[idx(0, c)] = f; });
+    [2, 3, 4, 5, 6].forEach((f, i) => { cells[idx(i + 1, 0)] = f; });
+    cells[idx(5, 5)] = 1;                                  // B：与 A 同脸
+    for (let c = 6; c < COLS; c++) cells[idx(5, c)] = 0;    // 从盘外绕下来的落地通道
+
+    await seedSession(page, { cells, elapsed: 5 });
+    check('LL-17-前置', (await readCells(page)).filter(v => v > 0).length === 22,
+      `块数=${(await readCells(page)).filter(v => v > 0).length}（应 22；!=22 说明档被成对闸丢弃）`);
 
     await clickCell(page, idx(0, 0));
     await clickCell(page, idx(5, 5));
@@ -772,9 +836,9 @@ test.describe('LL 连连看', () => {
     check('LL-17-贴边', edgeHits >= 2, `贴盘边的点=${edgeHits} 个（应 ≥2）：${svg.raw}`);
 
     // 两格不清除 + 不抖（③ 层的画面已经给了答案，再抖就是两个信号打架）
-    const cells = await readCells(page);
-    check('LL-17-未消除', cells[idx(0, 0)] === 1 && cells[idx(5, 5)] === 1,
-      `两格=${cells[idx(0, 0)]}/${cells[idx(5, 5)]}（应都还在）`);
+    const after = await readCells(page);
+    check('LL-17-未消除', after[idx(0, 0)] === 1 && after[idx(5, 5)] === 1,
+      `两格=${after[idx(0, 0)]}/${after[idx(5, 5)]}（应都还在）`);
     checkEq('LL-17-不抖', await shakeIdx(page), []);
 
     await expect.poll(() => readClickTip(page), { timeout: 4000 }).toContain('最多拐两次弯');
@@ -784,22 +848,14 @@ test.describe('LL 连连看', () => {
 
   test('LL-18 ④ 层：完全没路 → 抖动 + 无任何 SVG + 整句「这两张连不上」', async ({ page }) => {
     await openLlk(page);
-    // 布局 B（《39》§9）：(1,1)/(1,3) 同脸但无限拐也走不通；盘上另有可连对，所以不会触发重排
-    await seedSession(page, {
-      cells: [
-        3, 3, 2, 6, 6, 0,
-        5, 1, 2, 1, 8, 8,
-        4, 4, 0, 7, 7, 0,
-        0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 5,
-        0, 0, 0, 0, 0, 0,
-        0, 0, 0, 0, 0, 0,
-      ],
-      elapsed: 6,
-    });
-    check('LL-18-前置', (await readCells(page)).filter(v => v > 0).length === 16,
-      `块数=${(await readCells(page)).filter(v => v > 0).length}（应 16）`);
+    // 布局 B''（《57》v2.7 §7.2 重做）：整盘黑块 + 挖洞，(1,1) 与 (1,3) 同脸且四邻全被黑块占满
+    // ⇒ 连"从盘外绕"都够不着（两格都在盘内）。另在 (10,10)/(10,12) 放一对可直连的「2」，
+    // 让 HasAnyPair 为真 —— 否则恢复时会触发自动重排，把死局"救活"，这条用例就失效了。
+    const cells = boardOf(OBSTACLE, [[1, 1, 1], [1, 3, 1], [10, 10, 2], [10, 12, 2]], [[10, 11]]);
+
+    await seedSession(page, { cells, elapsed: 6 });
+    check('LL-18-前置', (await readCells(page)).filter(v => v > 0).length === 4,
+      `块数=${(await readCells(page)).filter(v => v > 0).length}（应 4）`);
 
     await clickCell(page, idx(1, 1));
     await clickCell(page, idx(1, 3));
@@ -811,9 +867,9 @@ test.describe('LL 连连看', () => {
     checkEq('LL-18-抖动', await shakeIdx(page), [idx(1, 1), idx(1, 3)]);
     check('LL-18-无线', (await page.locator('svg.llk-line-svg').count()) === 0,
       `SVG 数=${await page.locator('svg.llk-line-svg').count()}（④ 层不画线）`);
-    const cells = await readCells(page);
-    check('LL-18-未消除', cells[idx(1, 1)] === 1 && cells[idx(1, 3)] === 1,
-      `两格=${cells[idx(1, 1)]}/${cells[idx(1, 3)]}（应都还在）`);
+    const after = await readCells(page);
+    check('LL-18-未消除', after[idx(1, 1)] === 1 && after[idx(1, 3)] === 1,
+      `两格=${after[idx(1, 1)]}/${after[idx(1, 3)]}（应都还在）`);
   });
 
   test('LL-19 提示三次：3→2→1→0、每次恰两格同脸 is-hint、0 后禁用、刷新仍 0', async ({ page }) => {
@@ -989,7 +1045,7 @@ test.describe('LL 连连看', () => {
     // ★ 第二击用裸 click（clickCell 内含 sleep(220)，会把描线窗口睡过去）
     await page.locator(`.llk-cell[data-idx="${B}"]`).click();
 
-    // 约束 1：锚点必须**按格**，不能数 is-gone 总数 —— 这张盘只有 4 块，另外 44 格本来就是 is-gone。
+    // 约束 1：锚点必须**按格**，不能数 is-gone 总数 —— 这张盘只有 4 块，另外那些格本来就是 is-gone。
     // 它同时兼任"渲染已落地"：实测 is-gone / data-face 消失 / --c 跳变在同一帧（第二击后 ~21ms）。
     await expect.poll(
       () => page.locator(`.llk-cell[data-idx="${A}"].is-gone`).count(),
@@ -1057,7 +1113,9 @@ test.describe('LL 连连看', () => {
 
     check('LL-24-牌面可见', card.hasCard && card.display === 'flex',
       `兜底字牌应 display:flex（实际 hasCard=${card.hasCard} display="${card.display}"）`);
-    check('LL-24-两字标', card.text.length === 2, `字牌文案="${card.text}"（应恰好两字）`);
+    // v2.7（H-023）：盘面 16 列 ⇒ 320 屏格宽只有 13.25px，两字（+4px 色条 +四向内缩）需要 40px
+    // 才放得下。字牌因此降成**单字标**（`LlkCopy.ShortName1`）。判据同时守住"没退回两字"。
+    check('LL-24-单字标', card.text.length === 1, `字牌文案="${card.text}"（应恰好一字）`);
     check('LL-24-sprite已关', !card.bgImage.includes('faces.png') && card.bgImage.includes('data:image/svg+xml'),
       // D-39 起降级态**不再**把 background-image 清成 none，而是收成"只剩字牌图"的一层
       //（理由见 LianLianKan.razor 里 .llk-board.llk-no-sprite 的注释）。判据因此从"等于 none"
@@ -1122,7 +1180,7 @@ test.describe('LL 连连看', () => {
       };
     });
     check('LL-26-牌面隐藏', card.fbDisplay === 'none',
-      `正常态字牌必须 display:none（实际 "${card.fbDisplay}"）—— 48 格布局零变化`);
+      `正常态字牌必须 display:none（实际 "${card.fbDisplay}"）—— 满盘布局零变化`);
     check('LL-26-sprite在', card.bgImage.includes('faces.png'),
       `正常态格子应声明 sprite（backgroundImage="${card.bgImage}"）`);
   });
@@ -1233,7 +1291,7 @@ test.describe('LL 连连看', () => {
     });
     const before = (await readCells(page)).filter(v => v > 0).length;
     check('LL-29-前置', before === 4,
-      `块数=${before}（应 4；注入档被成对闸丢弃时会退回真实每日盘 = 48）`);
+      `块数=${before}（应 4；注入档被成对闸丢弃时会退回真实每日盘 = ${playableCount(todayIssue())}）`);
 
     await clickCell(page, idx(0, 0));
     await clickCell(page, idx(5, 4));
@@ -1257,7 +1315,7 @@ test.describe('LL 连连看', () => {
     });
     const before = (await readCells(page)).filter(v => v > 0).length;
     check('LL-30-前置', before === 4,
-      `块数=${before}（应 4；注入档被成对闸丢弃时会退回真实每日盘 = 48）`);
+      `块数=${before}（应 4；注入档被成对闸丢弃时会退回真实每日盘 = ${playableCount(todayIssue())}）`);
 
     await clickCell(page, idx(0, 1));
     await clickCell(page, idx(1, 0));
@@ -1388,7 +1446,7 @@ test.describe('LL 连连看', () => {
   });
 
   // ─────────────── 比例零依赖（LL-35 / LL-36） ───────────────
-  test('LL-35 320×568 下格子仍是 1:1 且不小于 40px（D-39 / P1）', async ({ browser }) => {
+  test('LL-35 320×568 下格子仍是 1:1 且不小于 12px（D-39 / P1）', async ({ browser }) => {
     // ⚠ 这条在 CI 上**不可能红**：Chromium 156 / Firefox 157 都支持 aspect-ratio，走的是
     //   @supports 覆盖分支 —— 把 padding-bottom 兜底整个删掉，它照样绿。它守的是"新内核分支
     //   没被兜底改动弄坏"（防止有人把兜底写错、连带把 aspect-ratio 那条也弄坏）。
@@ -1397,8 +1455,11 @@ test.describe('LL 连连看', () => {
     const ctx = await browser.newContext({ viewport: { width: 320, height: 568 }, isMobile: true, hasTouch: true });
     const mp = await ctx.newPage();
     await open(mp, '/lianliankan', 1400);
+    // ⚠ 必须量**有方块**的格（`[data-face]`）：空位与黑块都带 `.is-gone` 的 `transform: scale(.6)`，
+    //   `getBoundingClientRect()` 返回的是**缩小 40% 后的矩形** —— v2.7 首个格恰好是空位，
+    //   一度读出 9.15px（15.25 × 0.6）而判红。这条断言的语义是"格子不塌陷"，不是"空位不缩放"。
     const m = await mp.evaluate(() => {
-      const r = document.querySelector('.llk-cell').getBoundingClientRect();
+      const r = document.querySelector('.llk-cell[data-face]').getBoundingClientRect();
       return { w: r.width, h: r.height };
     });
     await ctx.close();
@@ -1406,8 +1467,10 @@ test.describe('LL 连连看', () => {
     const ratio = m.h === 0 ? Infinity : m.w / m.h;
     check('LL-35-比例', ratio >= 0.98 && ratio <= 1.02,
       `${m.w.toFixed(2)}×${m.h.toFixed(2)}，比例 ${ratio.toFixed(3)}（应 1 ±0.02）`);
-    check('LL-35-高度', m.h >= 40,
-      `格高 ${m.h.toFixed(2)}px（应 ≥40；比例塌陷时这里读到 2.0，整盘变成 58px 扁带）`);
+    // 阈值 12：v2.7 盘面 16 列（原先 6 列），390 屏格宽 17.6、320 屏 21.25-8=13.25。
+    // 仍远高于"比例塌陷"的读数 2.0，所以这条对 P1 的守卫力没变 —— 别为了"看起来严"留 40。
+    check('LL-35-高度', m.h >= 12,
+      `格高 ${m.h.toFixed(2)}px（应 ≥12；比例塌陷时这里读到 2.0，整盘变成一条扁带）`);
   });
 
   test('LL-36 三处关键声明还在（D-39 / P1+P2，静态）', async () => {
@@ -1435,8 +1498,14 @@ test.describe('LL 连连看', () => {
     //   所以这里拆成两段：**正常态**判两层 + 两组 size；**降级态**判"只剩字牌层"。
     await openLlk(page);
 
-    const two = await page.evaluate(() => {
-      const c = document.querySelector('.llk-cell[data-idx="0"]');
+    // v2.7：格位 0 在多数生肖图上都是**空位**（鼠的 row0 = `..####....####..`），
+    // 空位没有 --fb、也没有 llk-face-N 类 ⇒ 判断据必须落在"确实铺了方块"的格上。
+    // 从点阵里取当月第一张可消除格当探针，不写死 idx。
+    const month = Math.floor(todayIssue() / 100) % 100;
+    const probe = shapeIdx(readArt()[(month - 1) % 12])[0];
+
+    const two = await page.evaluate(id => {
+      const c = document.querySelector(`.llk-cell[data-idx="${id}"]`);
       const cs = getComputedStyle(c);
       return {
         bg: cs.backgroundImage,
@@ -1445,7 +1514,7 @@ test.describe('LL 连连看', () => {
         fb: cs.getPropertyValue('--fb').trim(),
         cls: c.className,
       };
-    });
+    }, probe);
     check('LL-37-两层', two.bg.includes('faces.png') && two.bg.includes('data:image/svg+xml'),
       `正常态应同时声明 sprite 与字牌图（实际 "${two.bg.slice(0, 70)}…"）`);
     // ⚠ 判据是**第二层的值必须是 100% 100%**，不是"逗号数 = 1"。
@@ -1471,10 +1540,10 @@ test.describe('LL 连连看', () => {
       { timeout: 12_000, intervals: [100, 200, 500, 1000] },
     ).toBe('fallback');
 
-    const one = await page.evaluate(() => {
-      const cs = getComputedStyle(document.querySelector('.llk-cell[data-idx="0"]'));
+    const one = await page.evaluate(id => {
+      const cs = getComputedStyle(document.querySelector(`.llk-cell[data-idx="${id}"]`));
       return { bg: cs.backgroundImage, size: cs.backgroundSize };
-    });
+    }, probe);
     check('LL-37-只剩字牌层', !one.bg.includes('faces.png') && one.bg.includes('data:image/svg+xml'),
       `降级后应只剩字牌图（实际 "${one.bg.slice(0, 70)}…"）；若为 none 说明改回了 background-image: none`);
     check('LL-37-字牌铺满', one.size === '100% 100%', `降级后 backgroundSize="${one.size}"（应 100% 100%）`);
@@ -1638,7 +1707,7 @@ test.describe('关卡日历与服务端榜单（H-018）', () => {
 
   test('LL-40 旧关复玩：?issue= 让 TryFrom 按所选期号恢复（H-018 / C-95）', async ({ page }) => {
     const ISSUE = 20261105;
-    // 只贴两组角（2 个头像各 2 张，过成对闸）⇒ 48 格在场时一眼看出"没恢复"
+    // 只贴两组角（2 个头像各 2 张，过成对闸）⇒ 满盘在场时一眼看出"没恢复"
     const board = cellsWith([[idx(0, 0), 1], [idx(0, 1), 1], [idx(7, 4), 2], [idx(7, 5), 2]]);
 
     await page.goto(`/lianliankan?issue=${ISSUE}`, { waitUntil: 'domcontentloaded' });
@@ -1658,9 +1727,9 @@ test.describe('关卡日历与服务端榜单（H-018）', () => {
 
     const live = await page.evaluate(() => [...document.querySelectorAll('.llk-cell')]
       .map(c => Number(c.getAttribute('data-face'))).filter(v => v !== 0).length);
-    // 若 TryFrom 还是拿"今天"当期望期号 ⇒ 期号闸丢弃这份档 ⇒ 回落真实每日盘 ⇒ 48 块
+    // 若 TryFrom 还是拿"今天"当期望期号 ⇒ 期号闸丢弃这份档 ⇒ 回落真实每日盘 ⇒ 满盘（${playableCount(todayIssue())} 块）
     check('LL-40-恢复', live === 4,
-      `恢复后在场 ${live} 块（应 4；48 = TryFrom 用了今天的期号，把这份档整档丢了）`);
+      `恢复后在场 ${live} 块（应 4；${playableCount(todayIssue())} = TryFrom 用了今天的期号，把这份档整档丢了）`);
     check('LL-40-期号', (await page.textContent('h1')).includes('20261105'),
       `标题="${(await page.textContent('h1')).trim()}"`);
   });
@@ -1783,30 +1852,30 @@ test.describe('关卡日历与服务端榜单（H-018）', () => {
   });
 });
 
-// ───── D-42 / H-020 / H-021：计时改成时间差 + 300 秒限时 + 结算体验（C-101~C-103） ─────
+// ───── D-42 / H-020 / H-021：计时改成时间差 + 限时（H-023 起 500 秒）+ 结算体验（C-101~C-103） ─────
 //
 // 判据纪律（这三条是这个主题最容易写错的地方）：
 //   ① **时间差 ≠ 计数器**。要证明"时间不再依赖 tick"，必须走**会 dispose 组件**的路径（切页），
 //      而不是派发 hidden —— 后者旧实现也照样涨（《54》§4.2 的实测反证），只能当辅助闸（LL-09）。
 //   ② **容差只能往小取**。切页前读数本身滞后 tick 至多 1 秒，返回后是精确值 ⇒
 //      "离开 3 秒"只能断言 `+2`；断言 `+3` 会偶发红。
-//   ③ **超时读数是冻结值**。300 秒整即判负、显示 300 而不是 301/302 ——
-//      注入 301 秒的档若显示 301，说明"冻结在限时"那条没做。
+//   ③ **超时读数是冻结值**。500 秒整即判负、显示 500 而不是 501/502 ——
+//      注入 501 秒的档若显示 501，说明"冻结在限时"那条没做。
 //
 // 编号接上一批（LL-42）。表里原本缺 LL-46，本批补齐；LL-48 补的是「首点起表」这个
 // **零覆盖**点（42 条里没有一条断言"点之前 elapsed 恒 0"，删掉 startedAt 初值也不会红）。
 
 test.describe('计时与限时（D-42 / H-020 / H-021）', () => {
-  test('LL-43 恢复即超时：注入已用满 301 秒的档 → 时间到遮罩、锁盘、无留名入口（H-020）', async ({ page }) => {
+  test('LL-43 恢复即超时：注入已用满 501 秒的档 → 时间到遮罩、锁盘、无留名入口（H-020）', async ({ page }) => {
     await openLlk(page);
-    // ⚠ **必须传 startedAtMs**。光传 elapsedSec: 301 是没用的 —— 那只表示"上一次存档的读数"，
+    // ⚠ **必须传 startedAtMs**。光传 elapsedSec: 501 是没用的 —— 那只表示"上一次存档的读数"，
     //   而 StartedAtOf 会把它折算成"现在刚起表"（于是用时 0、不超时），用例会假绿。
     const payload = JSON.stringify({
       v: 1,
       issue: todayIssue(),
       cells: cellsWith([[idx(0, 0), 1], [idx(0, 1), 1], [idx(7, 4), 2], [idx(7, 5), 2]]),
-      elapsedSec: 301,
-      startedAtMs: Date.now() - 301_000,
+      elapsedSec: 501,
+      startedAtMs: Date.now() - 501_000,
     });
     // ⚠ **不走 seedSession**：它自带 sleep(1100)，等于把"打开即超时"这条判据让给 tick
     //   （而 tick 的判定是 LL-44 守的）。这里要的是"恢复流程自己就判" —— 不删档、不等一拍。
@@ -1826,10 +1895,10 @@ test.describe('计时与限时（D-42 / H-020 / H-021）', () => {
     // 丢掉前面已经采到的证据（LL-43-恢复即判 那条才是主判据）。
     const title = ((await page.textContent('.llk-timeout .llk-overlay-title').catch(() => '')) || '').trim();
     const sub = ((await page.textContent('.llk-timeout .llk-overlay-sub').catch(() => '')) || '').trim();
-    check('LL-43-文案', title === '时间到' && sub === '游戏结束 · 用满 300 秒', `标题="${title}" 副行="${sub}"`);
+    check('LL-43-文案', title === '时间到' && sub === '游戏结束 · 用满 500 秒', `标题="${title}" 副行="${sub}"`);
 
-    // 读数冻结在限时：注入的是 301~302 秒，显示 300 才是"冻结"，显示 301+ 就是没冻。
-    check('LL-43-冻结', (await readElapsed(page)) === 300, `用时=${await readElapsed(page)}（应 300，不是 301/302）`);
+    // 读数冻结在限时：注入的是 501~502 秒，显示 500 才是"冻结"，显示 501+ 就是没冻。
+    check('LL-43-冻结', (await readElapsed(page)) === 500, `用时=${await readElapsed(page)}（应 500，不是 501/502）`);
 
     // 超时局不进榜、也没有留名入口 —— 有输入框就等于把"超时"当成成绩在收集名字。
     // ⚠ 记录行要读**遮罩自己的文本**，不能拿 `.llk-timeout .llk-best` 去数节点：
@@ -1860,26 +1929,26 @@ test.describe('计时与限时（D-42 / H-020 / H-021）', () => {
       `超时遮罩按钮 ${await page.locator('.llk-timeout .llk-overlay-btn').count()} 个（应 2：再来一局 / 返回关卡选择）`);
   });
 
-  test('LL-44 到点自动超时：注入已用 298 秒的档 → 数秒内自己弹出（H-020）', async ({ page }) => {
+  test('LL-44 到点自动超时：注入已用 498 秒的档 → 数秒内自己弹出（H-020）', async ({ page }) => {
     await openLlk(page);
-    // 298 秒 + seedSession 自带的 sleep(1100) ⇒ 打开时约 299 秒，**还没到限时**。
+    // 498 秒 + seedSession 自带的 sleep(1100) ⇒ 打开时约 499 秒，**还没到限时**。
     // 于是这条考的是 tick 的判定（而 LL-43 考的是恢复流程的判定）—— 两条各守一处，缺一不可。
     await seedSession(page, {
       cells: cellsWith([[idx(0, 0), 1], [idx(0, 1), 1], [idx(7, 4), 2], [idx(7, 5), 2]]),
-      elapsed: 298,
-      startedAtMs: Date.now() - 298_000,
+      elapsed: 498,
+      startedAtMs: Date.now() - 498_000,
     });
 
     // 打开那一刻不该已经超时（否则说明折算错了，这条就成了 LL-43 的重复）
     const atOpen = await page.locator('.llk-timeout').count();
-    check('LL-44-前置', atOpen === 0, `打开时已弹超时遮罩 ${atOpen} 个（应 0 —— 档里只有 299 秒）`);
+    check('LL-44-前置', atOpen === 0, `打开时已弹超时遮罩 ${atOpen} 个（应 0 —— 档里只有 499 秒）`);
 
     await expect.poll(() => page.locator('.llk-timeout').count(), { timeout: 8000 }).toBe(1);
-    check('LL-44-冻结', (await readElapsed(page)) === 300, `用时=${await readElapsed(page)}（应 300）`);
+    check('LL-44-冻结', (await readElapsed(page)) === 500, `用时=${await readElapsed(page)}（应 500）`);
 
     // tick 已经退出：再等 2 秒读数也不该继续涨
     await sleep(2000);
-    check('LL-44-停表', (await readElapsed(page)) === 300, `2 秒后用时=${await readElapsed(page)}（应仍 300）`);
+    check('LL-44-停表', (await readElapsed(page)) === 500, `2 秒后用时=${await readElapsed(page)}（应仍 500）`);
   });
 
   test('LL-45 切页时间不丢（D-42 主闸）：离开 3 秒回来，用时比走表前至少多 2', async ({ page }) => {
@@ -1931,8 +2000,8 @@ test.describe('计时与限时（D-42 / H-020 / H-021）', () => {
     await openLlk(page);
     await seedSession(page, {
       cells: cellsWith([[idx(0, 0), 1], [idx(0, 1), 1], [idx(7, 4), 2], [idx(7, 5), 2]]),
-      elapsed: 305,
-      startedAtMs: Date.now() - 305_000,
+      elapsed: 505,
+      startedAtMs: Date.now() - 505_000,
     });
     await expect.poll(() => page.locator('.llk-timeout').count(), { timeout: 8000 }).toBe(1);
 
@@ -1944,7 +2013,8 @@ test.describe('计时与限时（D-42 / H-020 / H-021）', () => {
     check('LL-46-不重弹', (await page.locator('.llk-timeout').count()) === 0,
       `刷新后仍弹超时遮罩 ${await page.locator('.llk-timeout').count()} 个（超时局必须删档）`);
     const live = (await readCells(page)).filter(v => v > 0).length;
-    check('LL-46-新盘', live === 48, `剩余块数=${live}（应 48：全新的每日盘，不是那张 4 块的残局）`);
+    check('LL-46-新盘', live === playableCount(todayIssue()),
+      `剩余块数=${live}（应 ${playableCount(todayIssue())}：全新的每日盘，不是那张 4 块的残局）`);
     check('LL-46-归零', (await readElapsed(page)) === 0, `用时=${await readElapsed(page)}（新盘还没起表）`);
   });
 
@@ -1952,7 +2022,7 @@ test.describe('计时与限时（D-42 / H-020 / H-021）', () => {
     await openLlk(page);
 
     // ① 破纪录：先写一条 60 秒的纪录，再以 5~6 秒通关 ⇒ 差值约 54 秒（不会撞到 99 的上限）
-    await setBest(page, JSON.stringify({ issue: todayIssue(), sec: 60 }));
+    await setBest(page, JSON.stringify({ issue: todayIssue(), sec: 60, n: playableCount(todayIssue()) }));
     await seedSession(page, { cells: cellsWith([[idx(0, 0), 5], [idx(0, 1), 5]]), elapsed: 5 });
     await clickCell(page, idx(0, 0));
     await clickCell(page, idx(0, 1));
@@ -1974,8 +2044,8 @@ test.describe('计时与限时（D-42 / H-020 / H-021）', () => {
     await openLlk(page);
     await seedSession(page, {
       cells: cellsWith([[idx(0, 0), 1], [idx(0, 1), 1], [idx(7, 4), 2], [idx(7, 5), 2]]),
-      elapsed: 302,
-      startedAtMs: Date.now() - 302_000,
+      elapsed: 502,
+      startedAtMs: Date.now() - 502_000,
     });
     await expect.poll(() => page.locator('.llk-timeout').count(), { timeout: 8000 }).toBe(1);
     await page.locator('.llk-timeout .llk-overlay-btn').last().click();
@@ -2018,8 +2088,8 @@ test.describe('计时与限时（D-42 / H-020 / H-021）', () => {
 //
 // 判据 = 三个"零" + 一条功能锚：
 //   ① script transform 动画格峰值 = 0 —— 判别式必须是 `instanceof Animation && !CSSTransition && !CSSAnimation`。
-//      只数"有 transform 动画"会恒绿：44 个 is-gone 格自带 88 个带 transform 的 CSSTransition
-//      （第 11 版红检 6 实测 anyTransform=44，关掉 FLIP 照样过）。
+//      只数"有 transform 动画"会恒绿：成片的 is-gone 格各自带两条 transform 的 CSSTransition
+//      （第 11 版红检 6 实测"原地不动"也会被数到，关掉 FLIP 照样过）。
 //   ② is-shuffle-fly 峰值 = 0 —— JS 侧没起播的正面锚（该 class 只由 playShuffle 加）。
 //   ③ is-shuffle-in 峰值 = 0 —— **唯一能把红检锚到页面 shuffleInMs = 0 那一行的判据**；
 //      没有它，①②都只指向 JS 层，删掉页面的 0 短路也不会红。
@@ -2066,13 +2136,17 @@ test.describe('reduced-motion 降级', () => {
       let peakScript = 0, peakFly = 0, peakP2 = 0, ticks = 0;
       const tick = () => {
         ticks++;
-        let sc = 0, fly = 0, p2 = 0;
-        for (const el of document.querySelectorAll('.llk-cell')) {
-          if (el.classList.contains('is-shuffle-fly')) fly++;
-          if (el.classList.contains('is-shuffle-in')) p2++;
+        let sc = 0;
+        // ⚠ 只对**有方块**的格调 getAnimations()：320 个 `.llk-cell` 逐一 getAnimations 约 37ms/轮，
+        //   1500ms 只跑得出 40 轮，下面的"采样确实跑了"自检会判红（v2.7 首跑就是这么红的）。
+        //   语义没变：FLIP 只让带脸的格飞，空位/黑块永远不会是飞行主体。
+        for (const el of document.querySelectorAll('.llk-cell[data-face]')) {
           if (el.getAnimations().some(a => isScript(a) &&
             (a.effect?.getKeyframes?.() ?? []).some(k => 'transform' in k))) sc++;
         }
+        // 这两个 class 只用选择器数，不碰 getAnimations —— 便宜，且能覆盖到任何格
+        const fly = document.querySelectorAll('.llk-cell.is-shuffle-fly').length;
+        const p2 = document.querySelectorAll('.llk-cell.is-shuffle-in').length;
         if (sc > peakScript) peakScript = sc;
         if (fly > peakFly) peakFly = fly;
         if (p2 > peakP2) peakP2 = p2;
@@ -2099,32 +2173,13 @@ test.describe('reduced-motion 降级', () => {
   });
 });
 
-// ───────────────────────── 生肖月主题（H-023 / C-106~C-108） ─────────────────────────
-// 形状挂在**格位**上（data-llk-zodiac + ::after 染色），与 cells、快照、成对闸全不相干 ——
-// 所以这里的判据只有两类：① 染色格集合是不是当月那张图；② 生肖文案是不是当月那个。
+// ───────────────────────── 生肖月主题（H-023 / C-106~C-108 / v2.7 重写） ─────────────────────────
+// v2.7 起形状由**铺盘**表达（有方块的格位拼成生肖），不再有 data-llk-zodiac + ::after 染色。
+// 所以这里的判据只有两类：① 铺盘格位集合是不是当月那张点阵；② 生肖文案是不是当月那个。
 test.describe('生肖月主题（H-023）', () => {
   const ZODIAC_NAMES = '鼠牛虎兔龙蛇马羊猴鸡狗猪';
   const MONTH_CN = ['一月', '二月', '三月', '四月', '五月', '六月',
                     '七月', '八月', '九月', '十月', '十一月', '十二月'];
-
-  /**
-   * C# 侧点阵的**真源**：直接读源码解析，不在测试里抄第二份。
-   * 抄一份的代价是"改图必漏测试"，而漏了的样子是"染色全对但图案是上个月的"—— 看不出来。
-   */
-  const readArt = () => {
-    const src = fs.readFileSync(
-      new URL('../../../jtjsym/jtjsym/Services/LianliankanThemes.cs', import.meta.url), 'utf8');
-    const block = src.slice(src.indexOf('ZodiacArt'), src.indexOf('public static int ZodiacIndex'));
-    return [...block.matchAll(/new\[\]\s*\{\s*("[.#]{6}"(?:\s*,\s*"[.#]{6}")*)\s*\}/g)]
-      .map(m => m[1].split(',').map(s => s.trim().replace(/"/g, '')));
-  };
-
-  /** 点阵 → 形状格的 idx 升序数组（`art[r][c] === '#' ? r*6+c`）。 */
-  const shapeIdx = art => {
-    const out = [];
-    art.forEach((row, r) => [...row].forEach((ch, c) => { if (ch === '#') out.push(r * COLS + c); }));
-    return out;
-  };
 
   test('LL-49 日历能翻回 2026-01：连点到「上个月」禁用（H-023 / MinIssue 放宽）', async ({ page }) => {
     await open(page, '/llkcalendar', 1200);
@@ -2164,40 +2219,55 @@ test.describe('生肖月主题（H-023）', () => {
     check('LL-49-生肖副标题', end.zodiac === '鼠月 · 一月', `生肖副标题="${end.zodiac}"（2026-01 = 鼠）`);
   });
 
-  test('LL-50 盘面染色格与当月点阵逐格一致（H-023）', async ({ page }) => {
+  test('LL-50 铺盘格位集合与当月点阵逐格一致（H-023 / v2.7 重写）', async ({ page }) => {
     const today = todayIssue();
     const month = Math.floor(today / 100) % 100;
     const arts = readArt();
-    check('LL-50-点阵可解析', arts.length === 12 && arts.every(a => a.length === 8),
-      `从 C# 源码解析到 ${arts.length} 张（应 12 张 × 8 行）`);
+    check('LL-50-点阵可解析',
+      arts.length === 12 && arts.every(a => a.length === ROWS && a.every(row => row.length === COLS)),
+      `从 C# 源码解析到 ${arts.length} 张（应 12 张 × ${ROWS} 行 × ${COLS} 字符）；` +
+      `实测每张行数=${JSON.stringify(arts.map(a => a.length))}、首张每行列数=${JSON.stringify((arts[0] ?? []).map(r => r.length))}`);
 
     const expected = shapeIdx(arts[(month - 1) % 12]);
     await openLlk(page);
 
-    const got = await page.$$eval('.llk-cell[data-llk-zodiac="1"]',
+    // v2.7：形状不再靠 ::after 染色，而是「有方块的格位拼成生肖」。
+    // data-face 只在**有脸**的格上出现（razor 里写的是 `face > 0 ? ... : null`）⇒
+    // [data-face] 的 idx 集合就是"铺了方块的格位"，逐格比才有意义。
+    const got = await page.$$eval('.llk-cell[data-face]',
       els => els.map(e => Number(e.dataset.idx)).sort((a, b) => a - b));
-    // 逐格比而不是比数量：行列写反（idx/6 ↔ idx%6）时格数一模一样，只有集合能抓
+    // 逐格比而不是比数量：行列写反（idx/ROWS ↔ idx%COLS）时格数一模一样，只有集合能抓
     check('LL-50-集合', JSON.stringify(got) === JSON.stringify(expected),
-      `染色格 ${got.length} 个，期望 ${expected.length} 个（第 ${month} 张图）；实测=${JSON.stringify(got)}`);
+      `铺盘格 ${got.length} 个，期望 ${expected.length} 个（第 ${month} 张图）；` +
+      `差集（实测多出）=${JSON.stringify(got.filter(i => !expected.includes(i)).slice(0, 12))}、` +
+      `（实测缺少）=${JSON.stringify(expected.filter(i => !got.includes(i)).slice(0, 12))}`);
 
-    // 染色层真的画出来了：::after 的背景色是**直接证据**（data 属性只证明"该染"，不证明"染上了"）
-    const paint = await page.evaluate(() => {
-      const el = document.querySelector('.llk-cell[data-llk-zodiac="1"]');
+    // 黑块真的画成了黑块：既不能走 .is-gone（opacity:0 + scale(.6) 会整块消失），
+    // 也要 background-image:none（否则 sprite 会从 --c/--r 兜底 (0,0) 处露出半张兔脸）。
+    const block = await page.evaluate(() => {
+      const el = document.querySelector('.llk-cell.is-block');
       if (!el) return null;
-      const cs = getComputedStyle(el, '::after');
-      return { bg: cs.backgroundColor, pe: cs.pointerEvents, content: cs.content };
+      const cs = getComputedStyle(el);
+      return {
+        n: document.querySelectorAll('.llk-cell.is-block').length,
+        bg: cs.backgroundImage,
+        opacity: cs.opacity,
+        face: el.getAttribute('data-face'),
+      };
     });
-    check('LL-50-染色层',
-      !!paint && paint.bg === 'rgba(179, 66, 60, 0.16)' && paint.content !== 'none' && paint.pe === 'none',
-      paint ? `::after 背景=${paint.bg}、content=${paint.content}、pointer-events=${paint.pe}`
-            : '找不到带 data-llk-zodiac 的格子');
+    check('LL-50-黑块',
+      !!block && block.bg === 'none' && block.opacity === '1' && block.face === null,
+      block ? `.is-block 共 ${block.n} 个；background-image=${block.bg}（应 none）、` +
+              `opacity=${block.opacity}（应 1）、data-face=${block.face}（应 null）`
+            : '整个盘面找不到 .llk-cell.is-block（黑块没渲染出来）');
 
-    // pointer-events:none 的后果判据：真点一下，格子必须能被选中（染色层不许吃掉点击）
+    // 方块真的可点：真点一下（不用 force），选中数必须为 1。
+    // 这里以前判的是"染色层不吃点击"，v2.7 没有染色层了，但"格位被遮挡/覆盖"仍是真风险。
     const target = expected[0];
     await page.locator(`.llk-cell[data-idx="${target}"]`).click();
     await expect.poll(() => page.locator('.llk-cell.is-selected').count(), { timeout: 3000 }).toBe(1);
     check('LL-50-可点', (await page.locator('.llk-cell.is-selected').count()) === 1,
-      `点击染色格 idx=${target} 后选中数=${await page.locator('.llk-cell.is-selected').count()}（应 1）`);
+      `点击铺盘格 idx=${target} 后选中数=${await page.locator('.llk-cell.is-selected').count()}（应 1）`);
   });
 
   test('LL-51 生肖文案：状态行与规则遮罩第 6 行（H-023）', async ({ page }) => {
@@ -2234,14 +2304,18 @@ test.describe('生肖月主题（H-023）', () => {
 
     await open(page, '/lianliankan', 1200);
     // 今日纪录 42 秒：若历史关读的是主键，它就会显示成"本关最快：42"
-    await page.evaluate(([k, t]) => localStorage.setItem(k, JSON.stringify({ issue: t, sec: 42 })), [MAIN, today]);
+    // ⚠ `playableCount` 是 **Node 侧**的函数，不能写进 `page.evaluate` 的回调体里
+    //   （回调在浏览器里执行 ⇒ ReferenceError: playableCount is not defined）。先在本侧算好再传进去。
+    await page.evaluate(([k, t, n]) => localStorage.setItem(k, JSON.stringify({ issue: t, sec: 42, n })),
+      [MAIN, today, playableCount(today)]);
 
     await open(page, `/lianliankan?issue=${past}`, 1400);
     check('LL-52-历史关不读今日', (await readBestText(page)) === '本关最快：—',
       `历史关（${past}）的「本关最快」="${await readBestText(page)}"（应 —：今日纪录不许串过来）`);
 
     // 反向：历史关自己的子键要读得到
-    await page.evaluate(([k, p]) => localStorage.setItem(k, JSON.stringify({ issue: p, sec: 77 })), [PAST_KEY, past]);
+    await page.evaluate(([k, i, n]) => localStorage.setItem(k, JSON.stringify({ issue: i, sec: 77, n })),
+      [PAST_KEY, past, playableCount(past)]);
     await open(page, `/lianliankan?issue=${past}`, 1400);
     check('LL-52-子键可读', (await readBestText(page)) === '本关最快：77',
       `历史关的「本关最快」="${await readBestText(page)}"（应 77：子键 ${PAST_KEY}）`);
