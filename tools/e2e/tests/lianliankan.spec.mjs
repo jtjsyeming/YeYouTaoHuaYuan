@@ -1557,7 +1557,18 @@ test.describe('LL 连连看', () => {
 // ⚠ 绝不能改成 `tools/e2e/.tmp/…`：FT-53 的豁免正则只认 `functiontest.mjs` 与 `.workbuddy/`，
 //   而 `.gitignore` 没有 `.tmp/` ⇒ 跑完 e2e 会留下未跟踪文件 ⇒ FT-53 判红（《51》§1.3）。
 const LLK_DATA_DIR = path.join(os.tmpdir(), 'jtjsym-e2e-llk');
-const LLK_DATA_FILE = path.join(LLK_DATA_DIR, 'llk-records.json');
+// 站点**自己报的**数据目录（D-43）。落盘断言与 LL-42 的破坏目标都用它 ⇒ 断言跟着站点走：
+// 环境问题（谁起站、带没带 Lianliankan__DataDir）红在下面 LL-39 的「前置」，
+// 产品问题（提交真的没落盘）红在「落盘」，两者不再共用一个失败指纹。
+// 为什么不能只用计划目录：`LLK_DATA_DIR` 与「站点正在用的目录」只在注入生效时才等价，
+// 而三处起站路径里有两处曾经漏了注入（tests.yml 自检实例、site-runner.mjs），
+// 于是 LL-39 会红、LL-42 会把没人用的目录换成文件从而**静默失效**（D-43 的实测证据）。
+// ⚠ Windows 上 C# 的 Path.GetFullPath 给反斜杠 + 盘符大写，node 的 path.join 给正斜杠 ⇒ 比对前归一。
+const norm = p => String(p ?? '').replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase();
+const siteDataDir = async page => {
+  const r = await page.request.get('/llkhealth?detail=1');
+  return r.ok() ? ((await r.json()).dataDir ?? '') : '';
+};
 
 test.describe('关卡日历与服务端榜单（H-018）', () => {
   // 本轮从空榜开始：否则"无纪录格显示 —"和"提交后出现名字"都会受上一次运行的残留影响。
@@ -1642,6 +1653,15 @@ test.describe('关卡日历与服务端榜单（H-018）', () => {
     //   实测：同一台站上连跑两遍 llk spec，第一遍绿、第二遍红。
     // 修法：**先问服务端**（渲染出来的日历就是缓存的样子）哪一天还没有纪录，再拿那一天做提交。
     //   这样无论跑第几遍都能拿到一个"缓存里确实没有"的期号，提交必然被采纳。
+    // D-43：环境契约显式化 —— 先问「站点实际用的数据目录是哪儿」，把"环境不对"这条挡在落盘断言之前。
+    //   红了看这一条就知道是「谁起站、带没带 Lianliankan__DataDir」，不必再去猜落盘（CI 看 tests.yml
+    //   自检步骤的锚点，本机看 site-runner.mjs）。用 page.request 不走页面，问完再导航，红了也少一步。
+    const site = await siteDataDir(page);
+    check('LL-39-前置', norm(site) === norm(LLK_DATA_DIR),
+      `站点数据目录 "${site}" ≠ 计划目录 "${LLK_DATA_DIR}" —— 落盘/失败文案会红在环境上（D-43）：`
+      + `CI 看 tests.yml 自检步骤的注入、本机看 site-runner 的 spawn env`);
+    const SITE_FILE = path.join(site || LLK_DATA_DIR, 'llk-records.json');   // 以站点为准，不以计划为准
+
     await page.goto('/llkcalendar', { waitUntil: 'domcontentloaded' });
     const free = await page.evaluate(() => {
       const c = [...document.querySelectorAll('.llk-cal-cell')]
@@ -1679,9 +1699,9 @@ test.describe('关卡日历与服务端榜单（H-018）', () => {
 
     // 落盘断言放在**看日历之前**：文件不在 ⇒ 直接说"当前实例用的不是 e2e 数据目录"，
     // 而不是让下一条"日历上没有名字"莫名其妙地红。
-    check('LL-39-落盘', fs.existsSync(LLK_DATA_FILE),
-      `榜单文件不在 ${LLK_DATA_FILE}（webServer.env 没生效？或复用了手工起的实例）`);
-    const raw = fs.existsSync(LLK_DATA_FILE) ? fs.readFileSync(LLK_DATA_FILE, 'utf8') : '';
+    check('LL-39-落盘', fs.existsSync(SITE_FILE),
+      `榜单文件不在 ${SITE_FILE}（站点数据目录 = "${site}"；D-43：先看 LL-39-前置 是否已红）`);
+    const raw = fs.existsSync(SITE_FILE) ? fs.readFileSync(SITE_FILE, 'utf8') : '';
     check('LL-39-内容', raw.includes(String(ISSUE)) && raw.includes('测试者'),
       `文件内容="${raw.slice(0, 200)}"`);
 
@@ -1817,9 +1837,13 @@ test.describe('关卡日历与服务端榜单（H-018）', () => {
     await page.locator('.llk-cell[data-idx="1"]').click();
     await expect.poll(() => page.locator('.llk-overlay-title').textContent(), { timeout: 5_000 }).toBe('全部消除');
 
-    // 换脸：目录 → 文件
-    fs.rmSync(LLK_DATA_DIR, { recursive: true, force: true });
-    fs.writeFileSync(LLK_DATA_DIR, 'x');
+    // 换脸：目录 → 文件。**目标是站点自己报的目录**（D-43），不是"我以为的"那个：
+    //   环境不对时把计划目录换成文件，站点照常写自己的落点 ⇒ 提交成功、文案永不出现，
+    //   这条用例就变成"碰巧 poll 超时才红"，而它要守的「失败必须有反馈」根本没被测过
+    //   （D-43 实测：那个实例的 bin/<Configuration>/llk-data 里躺着成功写入的「失败者」）。
+    const target = (await siteDataDir(page)) || LLK_DATA_DIR;
+    fs.rmSync(target, { recursive: true, force: true });
+    fs.writeFileSync(target, 'x');
     try {
       await page.locator('.llk-name-input').fill('失败者');
       await page.locator('.llk-name-btn').click();
@@ -1846,8 +1870,8 @@ test.describe('关卡日历与服务端榜单（H-018）', () => {
         `徽标="${(await page.textContent('.llk-cal-badge')).trim()}"`);
     } finally {
       // 必须恢复：workers:1 且同 spec 内顺序执行，污染会让后续任何一条读写都用不了这个目录
-      fs.rmSync(LLK_DATA_DIR, { force: true });
-      fs.mkdirSync(LLK_DATA_DIR, { recursive: true });
+      fs.rmSync(target, { force: true });
+      fs.mkdirSync(target, { recursive: true });
     }
   });
 });

@@ -19,6 +19,9 @@ const SITE_MANAGED = process.env.PW_SITE_MANAGED === '1';
 // 用系统临时目录：天然不进工作区，Win/ubuntu 都成立。
 // spec 侧按同样的 path.join(os.tmpdir(), 'jtjsym-e2e-llk') 自己算一遍（不 import 本文件 ——
 // 两处算的是同一个字符串，靠这条注释互相指向）。
+// CI 的自检实例（tests.yml）与 tools/e2e/site-runner.mjs 也用同一个 path.join 现算后注入（D-43）：
+// 三处起站路径里只有「Playwright 自起站」会走下面的 webServer.env，另两处必须自己带 ——
+// 漏了就是 LL-39 落盘断言 + LL-42 失败文案整链假红（产品全绿，只有这两条在叫）。
 export const LLK_DATA_DIR = path.join(os.tmpdir(), 'jtjsym-e2e-llk');
 
 export default defineConfig({

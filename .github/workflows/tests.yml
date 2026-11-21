@@ -109,6 +109,14 @@ jobs:
       - name: 自检：环境与静态资源可达性（诊断 32/v2 §3.2）
         working-directory: tools/e2e
         run: |
+          # D-43：本步骤起的实例会被 Playwright 复用（reuseExistingServer: true），而复用路径下
+          # webServer.env 一个字都不生效 ⇒ 数据目录必须在这里注入，且必须与 spec 侧同源。
+          # 用 node 现算、不写死 /tmp：os.tmpdir() 会随 TMPDIR 变（ubuntu 26.04 起 /tmp 已是
+          # tmpfs + quota，官方建议改指 RUNNER_TEMP），写死就是给将来埋一条「只有 CI 红」的坑。
+          LLK_DATA_DIR=$(node -e "console.log(require('path').join(require('os').tmpdir(),'jtjsym-e2e-llk'))")
+          export Lianliankan__DataDir="$LLK_DATA_DIR"
+          echo "--- Lianliankan:DataDir 注入 ${LLK_DATA_DIR} ---"
+
           # 后台起站：nohup + 重定向，避免 step 结束后输出管道被收走
           nohup dotnet run --project ../../jtjsym/jtjsym --no-launch-profile \
                 --environment Development --urls http://localhost:14074 > /tmp/site.log 2>&1 &
@@ -151,6 +159,23 @@ jobs:
             exit 1
           fi
 
+          # ── D-43 防御锚点：问站点「你的数据目录是哪儿」，而不是猜 env 有没有传下去 ──
+          # ⚠ 不要写 `tr … | grep -m1 … || exit 1`：GitHub Actions 的 bash 带 `-o pipefail`，
+          #   grep -m1 提前退出会让上游收到 SIGPIPE ⇒ 整条管道退出码 141 ⇒ 环境明明正确也 exit 1
+          #   （实测：set -o pipefail; cat big | grep -m1 X → exit=141）。
+          # 问 /llkhealth 而不是读 /proc/<pid>/environ：前者证明「站点真的用了这个目录」并顺带验
+          #   可写，后者只证明「env 传下去了」—— appsettings / 命令行 / ASPNETCORE_ 前缀任一
+          #   条链路都能让两者分叉；且 pgrep -f jtjsym 会在宿主与 jtjsym.dll 之间取到谁看运气。
+          # 探针会真试写一次（建目录 → 写 selfcheck.tmp → 删），重复调用被 ProbeTtl=10s 挡掉。
+          GOT=$(curl -s "http://localhost:14074/llkhealth?detail=1" \
+                | node -pe "JSON.parse(require('fs').readFileSync(0,'utf8')).dataDir ?? ''" || true)
+          echo "--- Lianliankan:DataDir 站点实报 ---"
+          echo "期望 ${LLK_DATA_DIR}"
+          echo "实际 ${GOT}"
+          if [ "$GOT" != "$LLK_DATA_DIR" ]; then
+            echo "::error::站点数据目录是「${GOT}」，期望「${LLK_DATA_DIR}」—— LL-39 的落盘断言与 LL-42 的构造都会假红（D-43）"
+            exit 1
+          fi
       # PR/push：chromium 关键回归子集。**必须带 --project=chromium**，否则 firefox 项目也会被选中。
       # 子集定义已下沉到 tools/e2e/package.json 的 `test:pr`（P-027）：CI 与本地同源，
       # 不再各自维护一份 grep 白名单 —— 上一版的教训就是"白名单只在 yaml 里，漏了 D02-/NF-/D15- 等 40 条"。

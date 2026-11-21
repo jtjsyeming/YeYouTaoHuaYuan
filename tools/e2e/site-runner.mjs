@@ -28,6 +28,10 @@ const PROJECT = path.resolve(E2E_DIR, '../../jtjsym/jtjsym');           // 绝�
 const LOG = path.join(E2E_DIR, 'jtjsym-site.log');                      // 与 TRIS-23 同一路径
 const LEASE_DIR = path.join(os.tmpdir(), 'jtjsym-e2e');                 // 机器级，不进工作区
 const BASE_TXT = path.join(LEASE_DIR, 'base.txt');
+// D-43：每日榜数据目录，与 playwright.config.mjs 的 LLK_DATA_DIR、spec 侧同源（三处同一个 path.join）。
+// 这里必须**自己注入**：`playwright.config.mjs` 的 `webServer.env` 只在 Playwright 真起站时生效，
+// 而 PW_SITE_MANAGED=1 时它完全不碰站点 ⇒ 本文件起的实例就是唯一的站，env 得由本文件给。
+const LLK_DATA_DIR = path.join(os.tmpdir(), 'jtjsym-e2e-llk');
 const IS_WIN = process.platform === 'win32';
 
 const FIRST_PORT = 14074;
@@ -262,6 +266,11 @@ async function run() {
     child = spawn('dotnet', args, {
       cwd: E2E_DIR,                       // 日志落点与 webServer 的 `>` 目标同一文件
       stdio: ['ignore', out, out],
+      // D-43：`spawn` 的 env 是**替换**语义（不是 Playwright `webServer.env` 那种合并）——
+      // 只传 `{ Lianliankan__DataDir }` 会把 PATH / DOTNET_* / ASPNETCORE_* 全抹掉，站点直接起不来。
+      // 所以显式 `{ ...process.env, … }`；且**不复用** process.env 里可能已有的同名值，
+      // 否则「外面碰巧 export 过」会掩盖这条注入到底有没有生效。
+      env: { ...process.env, Lianliankan__DataDir: LLK_DATA_DIR },
       detached: !IS_WIN,                  // POSIX 下建进程组，才有 -pid 可杀
       windowsHide: true,
     });
