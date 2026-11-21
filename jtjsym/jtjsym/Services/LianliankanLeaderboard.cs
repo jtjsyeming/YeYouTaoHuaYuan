@@ -313,6 +313,9 @@ public sealed class LianliankanLeaderboard
                         if (rec is null) continue;
                         if (rec.Sec < 1 || rec.Sec > LianliankanCore.MaxElapsedSec) continue;
                         if (issue < LianliankanCore.MinIssue) continue;
+                        // H-023：方块数不符（含"老文件没有 n 键"）⇒ 旧盘面的成绩，整条作废。
+                        // 这一行就是"上线不用手动清档"的全部实现。
+                        if (rec.N != LianliankanThemes.PlayableCount(issue)) continue;
                         map[issue] = new LlkRecord(rec.Sec, NormalizeName(rec.Name), rec.Ts ?? string.Empty);
                     }
                 }
@@ -340,7 +343,15 @@ public sealed class LianliankanLeaderboard
             var payload = new Dictionary<int, LlkFileRecord>(map.Count);
             foreach (var (issue, rec) in map)
             {
-                payload[issue] = new LlkFileRecord { Sec = rec.Sec, Name = rec.Name, Ts = rec.Ts };
+                // n 由点阵现算（不是从 LlkRecord 带过来）：写入侧与读取侧必须同一处算法，
+                // 否则改图之后"新写进去的档自己都读不回来"。
+                payload[issue] = new LlkFileRecord
+                {
+                    Sec = rec.Sec,
+                    Name = rec.Name,
+                    Ts = rec.Ts,
+                    N = LianliankanThemes.PlayableCount(issue),
+                };
             }
 
             var tmp = FilePath + ".tmp";
@@ -359,11 +370,22 @@ public sealed class LianliankanLeaderboard
         }
     }
 
-    /// <summary>落盘形状：<c>{"20261101":{"sec":123,"name":"阿P","ts":"2026-11-01T21:04:11+08:00"}}</c>。</summary>
+    /// <summary>落盘形状：<c>{"20261101":{"sec":123,"name":"阿P","ts":"…","n":198}}</c>。</summary>
     private sealed class LlkFileRecord
     {
         [JsonPropertyName("sec")] public int Sec { get; set; }
         [JsonPropertyName("name")] public string? Name { get; set; }
         [JsonPropertyName("ts")] public string? Ts { get; set; }
+
+        /// <summary>
+        /// 这一关的可消除方块数（H-023）。<b>读的时候按它作废旧盘面的成绩</b> ——
+        /// 盘面从 48 格变成 320 格（每月 134~216 块），旧成绩与新盘面没有可比性。
+        /// </summary>
+        /// <remarks>
+        /// 用"存 n + 读取时校验"而不是"上线当天手动清 <c>llk-records.json</c>"：后者漏做一次，
+        /// 症状与做对完全一样（旧纪录挂着、永远打不破），而 ECS 上没人会去核对。
+        /// 校验放读取侧 ⇒ 老文件不需要任何迁移动作，下一次写入自然把它洗干净。
+        /// </remarks>
+        [JsonPropertyName("n")] public int? N { get; set; }
     }
 }

@@ -90,11 +90,19 @@ public sealed class LianliankanSnapshot
     [JsonPropertyName("startedAtMs")] public long? StartedAtUnixMs { get; set; }
 }
 
-/// <summary>本地榜的载荷：<c>{"issue":20261112,"sec":87}</c>（《36》v2.1 §4.1）。</summary>
+/// <summary>本地榜的载荷：<c>{"issue":20261112,"sec":87,"n":198}</c>（《36》v2.1 §4.1 / 《57》v2.7 §7.4）。</summary>
+/// <remarks>
+/// <see cref="N"/> 是"这一关有多少块可消除"（<c>PlayableCount</c>）。H-023 把盘面从 48 格改成
+/// 320 格之后，<b>旧纪录与新盘面没有可比性</b>：不记 n 的话 8×6 时代的 87 秒会一直挂着、永远打不破，
+/// 而且不报错。读的时候按 <c>n == PlayableCount(issue)</c> 整条作废 —— 与快照的长度闸同构、零迁移。
+/// </remarks>
 public sealed class LlkBestRecord
 {
     [JsonPropertyName("issue")] public int Issue { get; set; }
     [JsonPropertyName("sec")] public int Sec { get; set; }
+
+    /// <summary>可消除方块数。<b>可空</b>：H-023 之前落的档没有这个键 ⇒ 读成 <c>null</c> ⇒ 整条作废。</summary>
+    [JsonPropertyName("n")] public int? N { get; set; }
 }
 
 /// <summary>
@@ -829,11 +837,16 @@ public sealed class LianliankanCore
     // ───────────────────────── 本关最快（秒，越小越好） ─────────────────────────
 
     /// <summary>
-    /// 解析本地榜。坏值（非 JSON / 期号与当前这关不符 / <c>sec &lt; 1</c> / 超出一天）一律当"没有纪录"。
+    /// 解析本地榜。坏值（非 JSON / 期号与当前这关不符 / <c>sec &lt; 1</c> / 超出一天 / <b>方块数不符</b>）
+    /// 一律当"没有纪录"。
     /// <para><b>方向与 2048/Tetris 相反</b>（越小越好），照抄 <c>Score &gt; Best</c> 会静默地永不刷新 ——
     /// 同 <c>MinesweeperCore.TryParseBest</c>（《35》C-59 踩过）。</para>
     /// <param name="todayIssue">要取的期号 —— 今日那关，或日历里选中的历史关（<c>?issue=</c>）。
     /// <b>不是"必须等于今天"</b>：这里只做"这一条是不是这一关的"比对（《53》D-41 改口）。</param>
+    /// <remarks>
+    /// 方块数闸（<c>n</c>）是 H-023 加的：盘面从 48 格变成 320 格，旧纪录（没有 <c>n</c> 键）与新盘面
+    /// 不可比。不闸的话症状是"本关最快 85 秒"永远打不破且不报错 —— 与 P-105 那类静默失效同型。
+    /// </remarks>
     /// </summary>
     public static int? TryParseBest(string? raw, int todayIssue)
     {
@@ -850,6 +863,7 @@ public sealed class LianliankanCore
         }
 
         if (rec is null || rec.Issue != todayIssue) return null;   // 期号不符：不显示别关的成绩
+        if (rec.N != LianliankanThemes.PlayableCount(todayIssue)) return null;   // 方块数不符：旧盘面的成绩
         if (rec.Sec < 1 || rec.Sec > MaxElapsedSec) return null;
         return rec.Sec;
     }
@@ -862,7 +876,12 @@ public sealed class LianliankanCore
 
     /// <summary>本地榜的落盘载荷。序列化只在这一处，键写错也只有一个地方要改。</summary>
     public static string BestJson(int issue, int sec) =>
-        JsonSerializer.Serialize(new LlkBestRecord { Issue = issue, Sec = sec });
+        JsonSerializer.Serialize(new LlkBestRecord
+        {
+            Issue = issue,
+            Sec = sec,
+            N = LianliankanThemes.PlayableCount(issue),   // 与 TryParseBest 的闸同源，别在两处各算一遍
+        });
 
     // ───────────────────────── 确定性随机源 ─────────────────────────
 

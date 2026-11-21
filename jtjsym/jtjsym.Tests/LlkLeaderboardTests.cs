@@ -368,4 +368,41 @@ public sealed class LlkLeaderboardTests : IDisposable
         Assert.Null(await _board.SubmitAsync(20251231, 42, "早于下界"));        // 下界前一天：拒收
         Assert.NotNull(await _board.SubmitAsync(LianliankanCore.MinIssue, 43, "恰好下界"));  // 下界当天：放行
     }
+
+    // ───────────────────────── U16-6 服务端榜的 n 闸（H-023 / v2.7） ─────────────────────────
+
+    /// <summary>
+    /// U16-6：<b>读取时按 <c>n != PlayableCount(issue)</c> 作废旧盘面的成绩</b>。
+    /// <para>盘面从 8×6=48 格变成 20×16=320 格（每月 134~216 个方块），
+    /// 旧成绩与新盘面没有可比性 —— 沿用会让"本关最快 85 秒"永远打不破、而且不报错。</para>
+    /// <para><b>三档缺一不可</b>：① 旧 <c>n=48</c> 被作废；② <c>n</c> 缺失（v2.7 之前写出的文件）被作废；
+    /// ③ <c>n</c> 正确时不误杀 —— 只有第 ③ 档能证明闸不是"一律作废"。</para>
+    /// <para>用"存 <c>n</c> + 读取校验"而不是"上线当天手清 <c>llk-records.json</c>"：
+    /// 后者漏做一次的症状与做对完全一样（旧纪录挂着、打不破），ECS 上没人会去核对。</para>
+    /// </summary>
+    [Fact]
+    public async Task U16_6_LoadAsync_DropsRecordsWithForeignBlockCount()
+    {
+        var issue = DaysAgo(1);
+        var n = LianliankanThemes.PlayableCount(issue);
+        Directory.CreateDirectory(_dir);
+
+        // ① 旧盘面（48 格时代的纪录）
+        await File.WriteAllTextAsync(FilePath,
+            $"{{\"{issue}\":{{\"sec\":87,\"name\":\"旧盘面\",\"n\":48}}}}");
+        Assert.Null(await NewBoard(_dir).GetAsync(issue));      // 每个断言都用新实例：进程内有缓存
+
+        // ② 没有 n 字段（v2.7 之前写出的文件，等价于 n = null）
+        await File.WriteAllTextAsync(FilePath,
+            $"{{\"{issue}\":{{\"sec\":88,\"name\":\"无 n\"}}}}");
+        Assert.Null(await NewBoard(_dir).GetAsync(issue));
+
+        // ③ n 与当月点阵吻合 ⇒ 正常读出（证明闸不是"一律作废"）
+        await File.WriteAllTextAsync(FilePath,
+            $"{{\"{issue}\":{{\"sec\":89,\"name\":\"新盘面\",\"n\":{n}}}}}");
+        var ok = await NewBoard(_dir).GetAsync(issue);
+        Assert.NotNull(ok);
+        Assert.Equal(89, ok!.Sec);
+        Assert.Equal("新盘面", ok.Name);
+    }
 }

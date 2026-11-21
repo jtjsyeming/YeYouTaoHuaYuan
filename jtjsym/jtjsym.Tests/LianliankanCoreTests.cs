@@ -373,7 +373,10 @@ public class LianliankanCoreTests
         Assert.Null(LianliankanCore.TryParseBest(raw, Today));
 
     /// <summary>
-    /// 本地榜的两道闸：期号必须对、秒数必须在 1..一天。
+    /// 本地榜的三道闸：期号必须对、<b>方块数必须对</b>、秒数必须在 1..一天。
+    /// <para>方块数闸是 H-023 加的：盘面从 48 格变成 320 格（每月 134~216 块），旧纪录与新盘面不可比。
+    /// 不闸的症状是"本关最快 85 秒"永远打不破且不报错 —— 所以这里既钉"n 对才认"，
+    /// 也钉"<b>没有 n 键就作废</b>"（那是 8×6 时代落的档）。</para>
     /// <para><paramref name="n"/> 用 <c>PlayableCount</c> <b>现算</b>而不是写字面量 198：
     /// 写死等于把点阵的派生量复制成第二份真源，改图之后这条会假红/假绿。</para>
     /// </summary>
@@ -387,6 +390,11 @@ public class LianliankanCoreTests
         Assert.Equal(87, LianliankanCore.TryParseBest(json(Today, 87, n), Today));   // 对照：好档要认
         Assert.Null(LianliankanCore.TryParseBest(json(20260101, 9, 194), Today));     // 别关的成绩
         Assert.Null(LianliankanCore.TryParseBest(json(Today, 0, n), Today));          // 0 秒（与 D-27 同口径）
+        Assert.Null(LianliankanCore.TryParseBest(json(Today, 87, n + 2), Today));     // 方块数不符
+        Assert.Null(LianliankanCore.TryParseBest(json(Today, 87, null), Today));      // 老档：没有 n 键
+
+        // 真的落盘载荷里带 n，且与闸同源（BestJson → TryParseBest 必须互逆）
+        Assert.Equal(87, LianliankanCore.TryParseBest(LianliankanCore.BestJson(Today, 87), Today));
     }
 
     [Theory]
